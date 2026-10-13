@@ -1,4 +1,4 @@
-import type { ApiError, ChatSnapshot, ChatSummary, Me, Message, Question, StreamEvent } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, Me, Message, Question, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -33,7 +33,7 @@ const ui = {
   error: $('#error'),
 };
 
-const TOOL_ACTIVITY: Record<string, string> = {
+const TOOL_ACTIVITY: Record<ToolName, string> = {
   ask: 'Asking you a quick question…',
   web_run: 'Searching the web…',
   imagegen: 'Creating an image…',
@@ -45,6 +45,8 @@ const SUGGESTIONS = [
 ];
 const MAX_ATTACHMENTS = 4;
 const MAX_PICTURE_BYTES = 4 * 1024 * 1024;
+// Re-parsing markdown on every delta is wasted work; the final snapshot renders the complete reply.
+const STREAM_RENDER_MS = 120;
 
 interface Attachment { id: string; preview: string }
 
@@ -52,8 +54,8 @@ let me: Me | undefined;
 let chat: ChatSnapshot | undefined;
 let stream: EventSource | undefined;
 let attachments: Attachment[] = [];
-// The assistant reply currently receiving deltas; re-rendered at most once per frame.
-let streaming: {node: HTMLElement; text: string; frame?: number} | undefined;
+// The assistant reply currently receiving deltas; re-rendered at most every STREAM_RENDER_MS.
+let streaming: {node: HTMLElement; text: string; timer?: number} | undefined;
 let activeQuestionId: string | undefined;
 let errorTimer: number | undefined;
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
@@ -97,8 +99,12 @@ function icon(name: string, className?: string): SVGSVGElement {
 }
 
 // Markdown subset rendered with DOM nodes and textContent only; model text never becomes HTML.
+const FENCE = '```';
+const HEADING = /^(#{1,4})\s+(.*)/;
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
-const BLOCK_START = /^(?:```|#{1,4}\s|>\s?|\s*(?:[-*+]|\d+[.)])\s+|(?:-{3,}|\*{3,})\s*$)/;
+const QUOTE = /^>\s?/;
+const RULE = /^(?:-{3,}|\*{3,})\s*$/;
+const startsBlock = (line: string) => line.startsWith(FENCE) || [HEADING, LIST_ITEM, QUOTE, RULE].some(pattern => pattern.test(line));
 const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*?)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
 function renderMarkdown(target: HTMLElement, source: string) {
@@ -107,33 +113,34 @@ function renderMarkdown(target: HTMLElement, source: string) {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    if (line.startsWith('```')) {
+    const heading = HEADING.exec(line);
+    if (line.startsWith(FENCE)) {
       const code: string[] = [];
-      for (i++; i < lines.length && !lines[i].startsWith('```'); i++) code.push(lines[i]);
+      for (i++; i < lines.length && !lines[i].startsWith(FENCE); i++) code.push(lines[i]);
       i++;
       const pre = element('pre');
       pre.append(element('code', undefined, code.join('\n')));
       blocks.push(pre);
-    } else if (/^#{1,4}\s/.test(line)) {
-      const [, hashes, text] = line.match(/^(#{1,4})\s+(.*)$/) ?? ['', '#', line];
+    } else if (heading) {
+      const [, hashes, text] = heading;
       blocks.push(inline(element(hashes.length <= 2 ? 'h3' : 'h4'), text));
       i++;
     } else if (LIST_ITEM.test(line)) {
       const list = element(/^\s*\d/.test(line) ? 'ol' : 'ul');
       for (; i < lines.length && LIST_ITEM.test(lines[i]); i++) list.append(inline(element('li'), lines[i].replace(LIST_ITEM, '')));
       blocks.push(list);
-    } else if (/^>\s?/.test(line)) {
+    } else if (QUOTE.test(line)) {
       const quoted: string[] = [];
-      for (; i < lines.length && /^>\s?/.test(lines[i]); i++) quoted.push(lines[i].replace(/^>\s?/, ''));
+      for (; i < lines.length && QUOTE.test(lines[i]); i++) quoted.push(lines[i].replace(QUOTE, ''));
       blocks.push(inline(element('blockquote'), quoted.join('\n')));
-    } else if (/^(?:-{3,}|\*{3,})\s*$/.test(line)) {
+    } else if (RULE.test(line)) {
       blocks.push(element('hr'));
       i++;
     } else if (!line.trim()) {
       i++;
     } else {
       const paragraph: string[] = [];
-      for (; i < lines.length && lines[i].trim() && (paragraph.length === 0 || !BLOCK_START.test(lines[i])); i++) paragraph.push(lines[i]);
+      for (; i < lines.length && lines[i].trim() && (paragraph.length === 0 || !startsBlock(lines[i])); i++) paragraph.push(lines[i]);
       blocks.push(inline(element('p'), paragraph.join('\n')));
     }
   }
@@ -257,16 +264,15 @@ function appendDelta(text: string) {
   const target = streaming;
   if (!target) return;
   target.text += text;
-  target.frame ??= requestAnimationFrame(() => {
-    target.frame = undefined;
+  target.timer ??= window.setTimeout(() => {
+    target.timer = undefined;
     renderMarkdown(target.node, target.text);
     keepFollowing();
-  });
+  }, STREAM_RENDER_MS);
 }
 
 function setDrawer(open: boolean) {
   ui.workspace.classList.toggle('drawer-open', open);
-  ui.scrim.hidden = !open;
 }
 
 async function refreshList(): Promise<ChatSummary[]> {
@@ -283,7 +289,7 @@ async function refreshList(): Promise<ChatSummary[]> {
 
 async function openChat(id: string) {
   stream?.close();
-  clearAttachments();
+  dropAttachments(attachments);
   renderChat(await api<ChatSnapshot>(`/api/chats/${id}`));
   stream = new EventSource(`/api/chats/${id}/events`);
   stream.onmessage = message => {
@@ -291,7 +297,7 @@ async function openChat(id: string) {
     switch (event.type) {
       case 'snapshot': renderChat(event.chat); refreshList().catch(showError); break;
       case 'delta': appendDelta(event.text); break;
-      case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name] ?? 'Working…'; break;
+      case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
     }
@@ -317,9 +323,9 @@ async function enter() {
   if (list.length) await openChat(list[0].id); else await newChat();
 }
 
-function clearAttachments() {
-  for (const attachment of attachments) URL.revokeObjectURL(attachment.preview);
-  attachments = [];
+function dropAttachments(dropped: readonly Attachment[]) {
+  for (const attachment of dropped) URL.revokeObjectURL(attachment.preview);
+  attachments = attachments.filter(item => !dropped.includes(item));
   renderAttachments();
 }
 
@@ -332,11 +338,7 @@ function renderAttachments() {
     preview.src = attachment.preview;
     preview.alt = '';
     button.append(preview);
-    button.onclick = () => {
-      URL.revokeObjectURL(attachment.preview);
-      attachments = attachments.filter(item => item !== attachment);
-      renderAttachments();
-    };
+    button.onclick = () => dropAttachments([attachment]);
     return button;
   }));
 }
@@ -429,9 +431,7 @@ ui.composer.onsubmit = async event => {
     await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: sent.map(item => item.id)});
     // The composer stays editable while a message is accepted; keep anything added since.
     if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
-    for (const attachment of sent) URL.revokeObjectURL(attachment.preview);
-    attachments = attachments.filter(item => !sent.includes(item));
-    renderAttachments();
+    dropAttachments(sent);
   } catch (error) { setBusy(false); showError(error); }
 };
 ui.stop.onclick = () => {
@@ -456,7 +456,7 @@ ui.imageInput.onchange = async () => {
     if (attachments.length >= MAX_ATTACHMENTS) throw new Error('Attach up to four pictures per message');
     if (file.size > MAX_PICTURE_BYTES) throw new Error('Pictures must be 4 MB or smaller');
     const data = await readBase64(file);
-    const asset = await api<{id: string}>(`/api/chats/${chat.id}/uploads`, 'POST', {mimeType: file.type, data});
+    const asset = await api<AssetRef>(`/api/chats/${chat.id}/uploads`, 'POST', {mimeType: file.type, data});
     attachments.push({id: asset.id, preview: URL.createObjectURL(file)});
     renderAttachments();
   } catch (error) { showError(error); }

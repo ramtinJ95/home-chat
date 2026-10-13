@@ -61,7 +61,6 @@ body { margin: 0; min-height: 100dvh; }
 [hidden] { display: none !important; }
 button, input, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border: 0; background: none; padding: 0; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
-button:disabled { cursor: default; }
 a { color: var(--pine); text-underline-offset: 3px; }
 svg { width: 20px; height: 20px; flex: none; }
 :focus-visible { outline: 2px solid var(--pine); outline-offset: 2px; }
@@ -119,10 +118,18 @@ svg { width: 20px; height: 20px; flex: none; }
     radial-gradient(90% 70% at 100% 0%, rgb(194 105 74 / 0.55), transparent 60%),
     linear-gradient(160deg, #e9dcc0, #cfdcc8 55%, #2f5d4a);
 }
-.orb { position: absolute; border-radius: 50%; filter: blur(48px); opacity: 0.8; z-index: -1; animation: drift 18s var(--ease) infinite alternate; }
-.orb-pine { width: 46%; aspect-ratio: 1; left: 8%; top: 38%; background: #224536; }
-.orb-sand { width: 38%; aspect-ratio: 1; right: 6%; top: 10%; background: #f1dfb6; animation-delay: -6s; }
-.orb-clay { width: 26%; aspect-ratio: 1; right: 22%; bottom: 8%; background: #d07a58; animation-delay: -12s; }
+/* Soft-edged orbs come from the gradient itself; a blur filter is far costlier to repaint while they drift. */
+.orb {
+  position: absolute; aspect-ratio: 1; border-radius: 50%; opacity: 0.8; z-index: -1;
+  background: radial-gradient(closest-side, var(--orb) 45%, transparent);
+}
+.orb-pine { --orb: #224536; width: 46%; left: 8%; top: 38%; }
+.orb-sand { --orb: #f1dfb6; width: 38%; right: 6%; top: 10%; animation-delay: -6s; }
+.orb-clay { --orb: #d07a58; width: 26%; right: 22%; bottom: 8%; animation-delay: -12s; }
+/* Only the large side panel drifts; on phones the art is a small static header. */
+@media (min-width: 761px) {
+  .orb { animation: drift 18s var(--ease) infinite alternate; }
+}
 @keyframes drift { to { transform: translate(6%, -5%) scale(1.08); } }
 .login-art-caption {
   position: absolute; left: 48px; bottom: 40px; margin: 0;
@@ -144,7 +151,7 @@ svg { width: 20px; height: 20px; flex: none; }
   border: 1px solid var(--line); background: var(--card);
   transition: border-color 160ms, box-shadow 160ms;
 }
-.login-form input:focus { outline: none; border-color: var(--pine); box-shadow: 0 0 0 4px rgb(47 93 74 / 0.14); }
+.login-form input:focus { outline: none; border-color: var(--pine); box-shadow: 0 0 0 4px color-mix(in srgb, var(--pine) 14%, transparent); }
 .login-form .primary { margin-top: 6px; }
 
 /* Workspace */
@@ -153,7 +160,7 @@ svg { width: 20px; height: 20px; flex: none; }
 
 .sidebar {
   display: flex; flex-direction: column; gap: 14px; min-height: 0;
-  padding: 22px 16px 16px;
+  padding: max(22px, env(safe-area-inset-top)) 16px 16px;
   background: var(--paper-deep); border-right: 1px solid var(--line);
 }
 .sidebar-head { display: flex; align-items: center; justify-content: space-between; padding: 4px 8px 10px; }
@@ -177,7 +184,7 @@ svg { width: 20px; height: 20px; flex: none; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   transition: background 140ms, color 140ms;
 }
-.chat-list button:hover { background: rgb(47 93 74 / 0.07); color: var(--ink); }
+.chat-list button:hover { background: color-mix(in srgb, var(--pine) 7%, transparent); color: var(--ink); }
 .chat-list button.active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-soft); }
 .chat-list button.active::before {
   content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
@@ -199,9 +206,8 @@ svg { width: 20px; height: 20px; flex: none; }
 
 .topbar {
   display: flex; align-items: center; gap: 12px;
-  padding: 16px 28px; border-bottom: 1px solid var(--line);
-  background: color-mix(in srgb, var(--paper) 85%, transparent);
-  backdrop-filter: blur(12px);
+  padding: max(16px, env(safe-area-inset-top)) 28px 16px; border-bottom: 1px solid var(--line);
+  background: var(--paper);
 }
 .chat-title {
   flex: 1; min-width: 0; margin: 0;
@@ -213,7 +219,7 @@ svg { width: 20px; height: 20px; flex: none; }
   padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line);
   font-size: 0.72rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
 }
-.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--pine); box-shadow: 0 0 0 3px rgb(47 93 74 / 0.18); }
+.pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--pine); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pine) 18%, transparent); }
 
 .notice {
   margin: 14px auto 0; width: min(100% - 32px, 760px);
@@ -260,7 +266,6 @@ svg { width: 20px; height: 20px; flex: none; }
   width: 34px; height: 34px; border-radius: 12px;
   background: var(--card); border: 1px solid var(--line); color: var(--pine);
 }
-.avatar-mark svg { width: 20px; height: 20px; }
 
 .content { line-height: 1.72; }
 .content > :first-child { margin-top: 0; }
@@ -357,8 +362,7 @@ svg { width: 20px; height: 20px; flex: none; }
   background: var(--pine); color: var(--on-pine);
   transition: transform 160ms var(--ease), background 160ms, opacity 160ms;
 }
-.send:hover:not(:disabled) { background: var(--pine-deep); transform: translateY(-1px); }
-.send:disabled { opacity: 0.35; }
+.send:hover { background: var(--pine-deep); transform: translateY(-1px); }
 .stop {
   display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 14px;
   border-radius: 14px; background: var(--sage); color: var(--ink); font-size: 0.86rem; font-weight: 600;
@@ -408,14 +412,9 @@ svg { width: 20px; height: 20px; flex: none; }
     transform: none; visibility: visible; box-shadow: var(--shadow-lift);
     transition: transform 260ms var(--ease);
   }
-  .scrim { display: block; position: fixed; inset: 0; z-index: 15; background: rgb(20 26 23 / 0.35); }
-  /* Notch/status bar in standalone or landscape mode, and 44px touch targets. */
+  .scrim { position: fixed; inset: 0; z-index: 15; background: rgb(20 26 23 / 0.35); }
+  .workspace.drawer-open .scrim { display: block; }
   .topbar { padding: max(8px, env(safe-area-inset-top)) 10px 8px; gap: 6px; }
-  .sidebar { padding-top: max(22px, env(safe-area-inset-top)); }
-  .icon-button, .attach, .send { width: 44px; height: 44px; }
-  .stop { height: 44px; }
-  .chat-list button { padding: 13px 12px; }
-  .question .option { padding: 11px 18px; }
   .badge { display: none; }
   .messages { padding: 22px 16px 16px; }
   .message { gap: 10px; }
@@ -426,6 +425,14 @@ svg { width: 20px; height: 20px; flex: none; }
   .dock { padding: 0 10px max(10px, env(safe-area-inset-bottom)); }
   .dock > .fineprint { display: none; }
   .notice { width: calc(100% - 24px); }
+}
+
+/* 44px touch targets wherever the pointer is a finger, whatever the window width. */
+@media (pointer: coarse) {
+  .icon-button, .attach, .send { width: 44px; height: 44px; }
+  .stop { height: 44px; }
+  .chat-list button { padding: 13px 12px; }
+  .question .option { padding: 11px 18px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
