@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <title>Home Chat</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <section id="login" class="login-card">
+    <p class="eyebrow">HANDMADE OASIS / LOCAL PREVIEW</p>
+    <h1>A little room<br>for big ideas.</h1>
+    <p>Your private everyday assistant. Ask, explore, or make something beautiful.</p>
+    <form id="login-form">
+      <label for="access-code">Local access code</label>
+      <input id="access-code" type="password" autocomplete="current-password" required maxlength="128">
+      <button type="submit">Enter Home Chat</button>
+    </form>
+    <p class="hint">Local-only prototype. Google sign-in and public access are not enabled.</p>
+  </section>
+  <div id="workspace" hidden>
+    <aside>
+      <a class="brand" href="/">Home Chat<span>HANDMADE OASIS</span></a>
+      <button id="new-chat" class="new-chat">＋ New conversation</button>
+      <nav id="chat-list" aria-label="Conversations"></nav>
+      <div class="sidebar-footer"><span id="identity"></span><button id="logout" class="quiet">Sign out</button></div>
+    </aside>
+    <main>
+      <header><span id="chat-title">Your space to think</span><span class="badge">LOCAL ONLY</span></header>
+      <div id="provider-warning" class="notice" hidden>Codex needs a one-time sign-in to this isolated profile. The interface is ready, but AI replies are not connected yet.</div>
+      <section id="messages" aria-label="Conversation" aria-live="polite"></section>
+      <section id="question" class="question" hidden></section>
+      <div class="composer-area">
+        <div id="attachments" class="attachments"></div>
+        <form id="composer">
+          <textarea id="message" placeholder="What’s on your mind?" rows="2" maxlength="12000" aria-label="Message"></textarea>
+          <div class="composer-actions">
+            <label class="attach-button">Add picture<input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
+            <span id="activity"></span>
+            <button id="stop" type="button" class="quiet" hidden>Stop</button>
+            <button id="send" type="submit">Send ↑</button>
+          </div>
+        </form>
+        <p class="hint">Private local preview · Web search & images · Check important answers</p>
+      </div>
+    </main>
+  </div>
+  <div id="error" role="alert" hidden></div>
+</body>
+</html>

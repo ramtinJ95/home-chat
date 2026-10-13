@@ -1,0 +1,9 @@
+node_modules/
+.local/
+*.log
+.DS_Store
+auth.json
+local-access.json
+.env
+.env.*
+!.env.example

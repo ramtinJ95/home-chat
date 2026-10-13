@@ -1,0 +1,25 @@
+{
+  "name": "home-chat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=26.9.0" },
+  "scripts": {
+    "start": "node src/server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:runtime": "node scripts/check-runtime.mjs"
+  },
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.2.0",
+    "@howaboua/pi-codex-conversion": "3.0.52",
+    "@howaboua/pi-codex-web-run": "0.0.7",
+    "@howaboua/pi-codex-imagegen": "0.0.10",
+    "@howaboua/pi-ask": "0.0.14",
+    "ipaddr.js": "2.2.0",
+    "sharp": "0.35.5",
+    "undici": "8.10.2"
+  },
+  "devDependencies": {
+    "playwright-core": "1.64.0"
+  }
+}

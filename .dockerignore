@@ -1,0 +1,9 @@
+node_modules
+.git
+.local
+*.log
+.DS_Store
+auth.json
+local-access.json
+.env
+.env.*
