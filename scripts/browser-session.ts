@@ -17,6 +17,14 @@ export async function openSignedIn() {
     await page.locator('#access-code').fill(code);
     await page.locator('#login-form button').click();
     await page.locator('#workspace').waitFor({state: 'visible'});
-    return {browser, context, page, errors};
+    // The same signed-in session at phone size; its JavaScript errors land in `errors` too.
+    const openPhone = async () => {
+      const mobile = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, storageState: await context.storageState()});
+      const phone = await mobile.newPage(); phone.on('pageerror', error => errors.push(error.message));
+      await phone.goto(origin);
+      await phone.locator('#workspace').waitFor({state: 'visible'});
+      return phone;
+    };
+    return {browser, context, page, errors, openPhone};
   } catch (error) { await browser.close(); throw error; }
 }

@@ -4,7 +4,7 @@ import sharp from 'sharp';
 import { origin, openSignedIn } from './browser-session.ts';
 
 if (process.argv[2] !== '--confirm-subscription-usage') throw new Error('This live test uses subscription quota, including one generated image. Pass --confirm-subscription-usage to run.');
-const {browser, context, page, errors} = await openSignedIn();
+const {browser, context, page, errors, openPhone} = await openSignedIn();
 try {
   assert.equal(await page.locator('#provider-warning').isVisible(), false);
   if (await page.locator('#stop').isVisible() && (await page.locator('#chat-title').innerText()).startsWith('Reply exactly: Home Chat')) {
@@ -68,10 +68,7 @@ try {
   console.log('PASS live browser: image generation, private rendering and authenticated download');
   await page.screenshot({path: '.local/live-desktop.png', fullPage: true});
 
-  const mobile = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, storageState: await context.storageState()});
-  const phone = await mobile.newPage();
-  await phone.goto(origin);
-  await phone.locator('#workspace').waitFor({state: 'visible'});
+  const phone = await openPhone();
   await phone.locator('.message.assistant img').last().waitFor({state: 'visible'});
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await phone.screenshot({path: '.local/live-mobile.png', fullPage: true});

@@ -27,12 +27,13 @@ async function proxyStatus(target: string) {
 }
 const status = await readFile('/proc/self/status', 'utf8');
 assert.match(status, /CapEff:\s+0000000000000000/);
-for (const [host, port] of [
+const direct: [host: string, port: number][] = [
   ['172.30.91.1', 8080], ['172.30.91.1', 8765], ['100.64.0.1', 8765],
   ['100.64.0.2', 22], ['100.127.255.254', 22], ['192.168.1.1', 80],
   ['169.254.169.254', 80], ['1.1.1.1', 443], ['127.0.0.11', 53],
   ['::ffff:100.64.0.1', 8765], ['fd7a:115c:a1e0::1', 443], ['2606:4700:4700::1111', 443],
-] as [string, number][]) await blocked(host, port);
+];
+for (const [host, port] of direct) await blocked(host, port);
 for (const destination of ['127.0.0.1:443', 'host.docker.internal:443', '100.64.0.1:443', 'example.com:443', 'chatgpt.com:80', 'chatgpt.com.evil.test:443']) {
   assert.match(await proxyStatus(destination), /403/); console.log(`PROXY DENIED ${destination}`);
 }

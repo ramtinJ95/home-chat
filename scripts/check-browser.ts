@@ -1,9 +1,9 @@
 /// <reference lib="dom" />
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { origin, openSignedIn } from './browser-session.ts';
+import { openSignedIn } from './browser-session.ts';
 
-const {browser, context, page, errors} = await openSignedIn();
+const {browser, page, errors, openPhone} = await openSignedIn();
 try {
   assert.equal(await page.locator('#access-code').inputValue(), '');
   await page.screenshot({path: '.local/desktop.png', fullPage: true});
@@ -12,10 +12,7 @@ try {
   await page.locator('#attachments button').waitFor({state: 'visible'});
   await page.locator('#attachments button').click();
   assert.equal(await page.locator('#attachments button').count(), 0);
-  const mobile = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, storageState: await context.storageState()});
-  const phone = await mobile.newPage(); phone.on('pageerror', error => errors.push(error.message));
-  await phone.goto(origin);
-  await phone.locator('#workspace').waitFor({state: 'visible'});
+  const phone = await openPhone();
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await phone.screenshot({path: '.local/mobile.png', fullPage: true});
   assert.deepEqual(errors, []);
