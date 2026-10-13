@@ -11,7 +11,7 @@
   --card: #fffdfa;
   --ink: #2b2633;
   --ink-soft: #5e5869;
-  --muted: #8a8392;
+  --muted: #6f6877;
   --line: #e9e2d8;
   --accent: #6f5fa8;
   --accent-deep: #5d4f94;
@@ -132,9 +132,14 @@ svg { width: 20px; height: 20px; flex: none; }
   .orb { animation: drift 18s var(--ease) infinite alternate; }
 }
 @keyframes drift { to { transform: translate(6%, -5%) scale(1.08); } }
+/* Shades the bottom band above the orbs so the ivory caption stays readable. */
+.login-art::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to top, rgb(43 38 51 / 0.6), transparent 55%);
+}
 .login-art-caption {
-  position: absolute; left: 48px; bottom: 40px; margin: 0;
-  font: italic 1.1rem var(--serif); color: rgb(251 248 241 / 0.85); letter-spacing: 0.02em;
+  position: absolute; z-index: 1; left: 48px; bottom: 40px; margin: 0;
+  font: italic 1.1rem var(--serif); color: #fdfbff; letter-spacing: 0.02em;
 }
 .login-panel {
   display: flex; flex-direction: column; justify-content: center; gap: 22px;
@@ -197,7 +202,7 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .avatar {
   display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
-  background: linear-gradient(140deg, var(--accent), var(--oak)); color: var(--on-accent);
+  background: linear-gradient(140deg, var(--accent), var(--accent-deep)); color: var(--on-accent);
   font: 600 0.9rem var(--sans);
 }
 .identity { flex: 1; font-size: 0.88rem; font-weight: 600; }
