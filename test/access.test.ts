@@ -95,3 +95,29 @@ test('Access configuration is explicit and refuses ambiguous values', () => {
   assert.throws(() => accessConfigFromEnv({...env, HOME_CHAT_PUBLIC_HOST: 'https://home-chat.example.test'}));
   assert.throws(() => accessConfigFromEnv({...env, HOME_CHAT_GUEST_EMAIL: 'owner@example.test'}));
 });
+
+test('held keys survive a failed hourly refresh, and unseen kids are retried after a minute', async t => {
+  t.mock.timers.enable({apis: ['Date']});
+  const first = keyPair('k1');
+  const second = keyPair('k2');
+  let published: object[] | undefined = [first.jwk];
+  let fetches = 0;
+  const verify = createAccessVerifier(config, async () => {
+    fetches++;
+    if (!published) throw new Error('offline');
+    return published as never;
+  });
+  const signed = (pair: ReturnType<typeof keyPair>) => token(pair.privateKey, validClaims(), {alg: 'RS256', kid: pair.kid});
+  await verify(signed(first));
+  // An hour later Cloudflare is unreachable: the refresh fails, but the key already held still verifies.
+  published = undefined;
+  t.mock.timers.tick(61 * 60_000);
+  assert.equal((await verify(signed(first))).user, 'owner');
+  assert.equal(fetches, 2);
+  // Cloudflare is back with a rotated key; an unseen kid is fetched once the minute has passed.
+  published = [first.jwk, second.jwk];
+  await assert.rejects(() => verify(signed(second)), AccessDenied);
+  t.mock.timers.tick(61_000);
+  assert.equal((await verify(signed(second))).user, 'owner');
+  assert.equal(fetches, 3);
+});

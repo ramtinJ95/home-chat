@@ -65,8 +65,8 @@ function decodePart(part: string): Record<string, unknown> {
 export function createAccessVerifier(config: AccessConfig, source: AccessKeySource = fetchAccessKeys(config.team)) {
   const issuer = `https://${accessTeamHost(config.team)}`;
   let keys = new Map<string, KeyObject>();
-  let fetchedAt = 0;
-  let attemptedAt = 0;
+  let fetchedAt = -Infinity;
+  let attemptedAt = -Infinity;
   let refreshing: Promise<void> | undefined;
 
   const refresh = () => refreshing ??= (async () => {
@@ -91,7 +91,7 @@ export function createAccessVerifier(config: AccessConfig, source: AccessKeySour
     }
     const key = keys.get(kid);
     if (key) return key;
-    if (!fetchedAt) throw new Error('Cloudflare Access keys have not been loaded yet');
+    if (fetchedAt === -Infinity) throw new Error('Cloudflare Access keys have not been loaded yet');
     throw new AccessDenied('Access token signed with an unknown key');
   }
 
