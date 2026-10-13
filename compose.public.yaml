@@ -1,0 +1,41 @@
+# Public deployment (home-macmini only): Cloudflare Tunnel in front, Cloudflare Access (Google sign-in) on every
+# request, verified again by the app. Layered on compose.yaml; .env sets COMPOSE_FILE so plain `docker compose`
+# uses both. Values come from .env (see .env.example), which stays on the host.
+services:
+  app:
+    restart: unless-stopped
+    # Only the tunnel reaches the app; nothing is published on the host.
+    ports: !reset []
+    environment:
+      HOME_CHAT_MODE: access
+      HOME_CHAT_PUBLIC_HOST: ${HOME_CHAT_PUBLIC_HOST:?set in .env}
+      HOME_CHAT_ACCESS_TEAM: ${HOME_CHAT_ACCESS_TEAM:?set in .env}
+      HOME_CHAT_ACCESS_AUD: ${HOME_CHAT_ACCESS_AUD:?set in .env}
+      HOME_CHAT_OWNER_EMAIL: ${HOME_CHAT_OWNER_EMAIL:?set in .env}
+      HOME_CHAT_GUEST_EMAIL: ${HOME_CHAT_GUEST_EMAIL:-}
+  egress:
+    restart: unless-stopped
+    environment:
+      # Lets the app fetch Access signing keys from <team>.cloudflareaccess.com, in addition to OpenAI.
+      HOME_CHAT_ACCESS_TEAM: ${HOME_CHAT_ACCESS_TEAM:?set in .env}
+  tunnel:
+    image: cloudflare/cloudflared:2026.10.0@sha256:9b49eed8f62806d5d45ddf59ecefb5710429598ea6d3fcccd2af938f621b2b07
+    # The image's entrypoint is `cloudflared --no-autoupdate`. Routes live in the Cloudflare dashboard: exactly one
+    # public hostname to http://app:8080, and never a private network route.
+    command: ["tunnel", "run"]
+    environment:
+      TUNNEL_TOKEN: ${HOME_CHAT_TUNNEL_TOKEN:?set in .env}
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [local_ingress]
+    depends_on:
+      app: {condition: service_healthy}
+    mem_limit: 256m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options: {max-size: "2m", max-file: "2"}
