@@ -7,3 +7,4 @@ auth.json
 local-access.json
 .env
 .env.*
+public/app.js

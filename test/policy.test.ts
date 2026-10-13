@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allowedDestination, publicAddress, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.mjs';
+import { allowedDestination, publicAddress, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.ts';
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');
@@ -38,4 +38,14 @@ test('web tool rejects local URLs and non-HTTP schemes', async () => {
     await assert.rejects(() => validateToolInput('web_run', {open: [{ref_id: url}]}, '/tmp'));
   }
   await validateToolInput('web_run', {open: [{ref_id: 'https://example.com/article'}]}, '/tmp');
+  await validateToolInput('web_run', {}, '/tmp');
+});
+
+test('tool input lists that are not lists are rejected, not skipped', async () => {
+  await assert.rejects(() => validateToolInput('web_run', {open: 'http://localhost'}, '/tmp'));
+  await assert.rejects(() => validateToolInput('web_run', {find: {ref_id: 'http://localhost'}}, '/tmp'));
+  await assert.rejects(() => validateToolInput('imagegen', {referenced_image_paths: '/data/profile/auth.json'}, '/tmp'));
+  await assert.rejects(() => validateToolInput('web_run', null, '/tmp'));
+  // imagegen's schema allows null for "no reference images".
+  await validateToolInput('imagegen', {prompt: 'A landscape', referenced_image_paths: null}, '/tmp');
 });

@@ -14,6 +14,6 @@ try {
   console.log('Codex login saved in the isolated profile. No credentials were printed.');
 } catch (error) {
   // Never print provider response bodies or OAuth credential objects.
-  console.error('Codex device login did not complete: ' + (error.name ?? 'Error'));
+  console.error('Codex device login did not complete: ' + ((error as Error).name ?? 'Error'));
   process.exitCode = 1;
 }

@@ -1,0 +1,12 @@
+{
+  // Browser script: compiles app.ts to app.js next to it (git-ignored, built in the Docker image).
+  // skipLibCheck stays off so this project type-checks src/api.d.ts; it has no dependency typings to slow it down.
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "verbatimModuleSyntax": true
+  },
+  "files": ["app.ts"]
+}

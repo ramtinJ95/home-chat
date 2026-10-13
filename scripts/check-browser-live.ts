@@ -1,30 +1,20 @@
-import {chromium} from 'playwright-core';
-import {execFileSync} from 'node:child_process';
-import {mkdir} from 'node:fs/promises';
+/// <reference lib="dom" />
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
+import { origin, openSignedIn } from './browser-session.ts';
 
 if (process.argv[2] !== '--confirm-subscription-usage') throw new Error('This live test uses subscription quota, including one generated image. Pass --confirm-subscription-usage to run.');
-await mkdir('.local', {recursive: true, mode: 0o700});
-let code = execFileSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/show-access.mjs', 'owner'], {encoding: 'utf8'}).trim();
-const browser = await chromium.launch({executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
-const errors = [];
+const {browser, context, page, errors, openPhone} = await openSignedIn();
 try {
-  const context = await browser.newContext({viewport: {width: 1360, height: 950}});
-  const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));
-  await page.goto('http://127.0.0.1:8787');
-  await page.locator('#access-code').fill(code); code = '';
-  await page.locator('#login-form button').click();
-  await page.locator('#workspace').waitFor({state: 'visible'});
   assert.equal(await page.locator('#provider-warning').isVisible(), false);
   if (await page.locator('#stop').isVisible() && (await page.locator('#chat-title').innerText()).startsWith('Reply exactly: Home Chat')) {
     await page.locator('#stop').click();
-    await page.waitForFunction(() => !document.querySelector('#send').disabled, undefined, {timeout: 15_000});
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled, undefined, {timeout: 15_000});
   }
   await page.locator('#new-chat').click();
   await page.locator('.empty').waitFor({state: 'visible'});
 
-  const begin = async text => {
+  const begin = async (text: string) => {
     await page.locator('#message').fill(text);
     const response = page.waitForResponse(response => response.url().endsWith('/messages') && response.request().method() === 'POST');
     await page.locator('#send').click();
@@ -32,9 +22,9 @@ try {
     assert.equal(accepted.status(), 202, `Message rejected: ${await accepted.text()}`);
   };
   const finish = async () => {
-    await page.waitForFunction(() => !document.querySelector('#send').disabled, undefined, {timeout: 240_000});
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled, undefined, {timeout: 240_000});
     const failure = page.locator('.message.assistant').last().locator('.failure');
-    assert.equal(await failure.count(), 0, await failure.count() ? await failure.textContent() : '');
+    assert.equal(await failure.count(), 0, await failure.count() ? await failure.textContent() ?? '' : '');
     return await page.locator('.message.assistant').last().innerText();
   };
   await begin('Reply exactly: Home Chat is ready. Do not use tools.');
@@ -72,20 +62,17 @@ try {
   assert.equal(await generated.count(), 1, 'Expected one generated image rendered in the chat');
   await generated.waitFor({state: 'visible'});
   const download = await page.locator('.message.assistant').last().locator('a.download').getAttribute('href');
-  const response = await context.request.get('http://127.0.0.1:8787' + download);
+  const response = await context.request.get(origin + download);
   assert.equal(response.status(), 200); assert.equal(response.headers()['content-type'], 'image/png');
   assert.ok((await response.body()).length > 1000);
   console.log('PASS live browser: image generation, private rendering and authenticated download');
   await page.screenshot({path: '.local/live-desktop.png', fullPage: true});
 
-  const mobile = await browser.newContext({viewport: {width: 390, height: 844}, isMobile: true, hasTouch: true, storageState: await context.storageState()});
-  const phone = await mobile.newPage();
-  await phone.goto('http://127.0.0.1:8787');
-  await phone.locator('#workspace').waitFor({state: 'visible'});
+  const phone = await openPhone();
   await phone.locator('.message.assistant img').last().waitFor({state: 'visible'});
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await phone.screenshot({path: '.local/live-mobile.png', fullPage: true});
   assert.deepEqual(errors, []);
   await page.locator('#logout').click();
   console.log('PASS live desktop/mobile browser checks; all five requested capabilities exercised');
-} finally { code = ''; await browser.close(); }
+} finally { await browser.close(); }
