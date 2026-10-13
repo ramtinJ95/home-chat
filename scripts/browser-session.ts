@@ -7,9 +7,9 @@ export const origin = 'http://127.0.0.1:8787';
 // Signs in as owner. The access code is read from the container and never logged or persisted.
 export async function openSignedIn() {
   await mkdir('.local', {recursive: true, mode: 0o700});
-  const code = execFileSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/show-access.mjs', 'owner'], {encoding: 'utf8'}).trim();
+  const code = execFileSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/show-access.ts', 'owner'], {encoding: 'utf8'}).trim();
   const browser = await chromium.launch({executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
-  const errors = [];
+  const errors: string[] = [];
   try {
     const context = await browser.newContext({viewport: {width: 1360, height: 950}});
     const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));

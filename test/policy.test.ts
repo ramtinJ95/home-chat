@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allowedDestination, publicAddress, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.mjs';
+import { allowedDestination, publicAddress, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.ts';
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');

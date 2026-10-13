@@ -14,7 +14,7 @@ try {
   if (!Number.isFinite(claims.exp) || typeof accountId !== 'string') throw new Error();
   credential = {type: 'oauth', access: tokens.access_token, refresh: tokens.refresh_token, expires: claims.exp * 1000, accountId};
 } catch { throw new Error('The Codex CLI profile has no readable subscription OAuth credential'); }
-const result = spawnSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/accept-auth.mjs', '--replace-codex'], {
+const result = spawnSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/accept-auth.ts', '--replace-codex'], {
   input: JSON.stringify({'openai-codex': credential}), encoding: 'utf8', timeout: 15_000,
 });
 if (result.status !== 0) {

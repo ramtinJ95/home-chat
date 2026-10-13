@@ -1,6 +1,7 @@
+/// <reference lib="dom" />
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { origin, openSignedIn } from './browser-session.mjs';
+import { origin, openSignedIn } from './browser-session.ts';
 
 if (process.argv[2] !== '--confirm-subscription-usage') throw new Error('This live test uses subscription quota, including one generated image. Pass --confirm-subscription-usage to run.');
 const {browser, context, page, errors} = await openSignedIn();
@@ -8,12 +9,12 @@ try {
   assert.equal(await page.locator('#provider-warning').isVisible(), false);
   if (await page.locator('#stop').isVisible() && (await page.locator('#chat-title').innerText()).startsWith('Reply exactly: Home Chat')) {
     await page.locator('#stop').click();
-    await page.waitForFunction(() => !document.querySelector('#send').disabled, undefined, {timeout: 15_000});
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled, undefined, {timeout: 15_000});
   }
   await page.locator('#new-chat').click();
   await page.locator('.empty').waitFor({state: 'visible'});
 
-  const begin = async text => {
+  const begin = async (text: string) => {
     await page.locator('#message').fill(text);
     const response = page.waitForResponse(response => response.url().endsWith('/messages') && response.request().method() === 'POST');
     await page.locator('#send').click();
@@ -21,9 +22,9 @@ try {
     assert.equal(accepted.status(), 202, `Message rejected: ${await accepted.text()}`);
   };
   const finish = async () => {
-    await page.waitForFunction(() => !document.querySelector('#send').disabled, undefined, {timeout: 240_000});
+    await page.waitForFunction(() => !document.querySelector<HTMLButtonElement>('#send')!.disabled, undefined, {timeout: 240_000});
     const failure = page.locator('.message.assistant').last().locator('.failure');
-    assert.equal(await failure.count(), 0, await failure.count() ? await failure.textContent() : '');
+    assert.equal(await failure.count(), 0, await failure.count() ? await failure.textContent() ?? '' : '');
     return await page.locator('.message.assistant').last().innerText();
   };
   await begin('Reply exactly: Home Chat is ready. Do not use tools.');

@@ -1,6 +1,7 @@
+/// <reference lib="dom" />
 import assert from 'node:assert/strict';
 import sharp from 'sharp';
-import { origin, openSignedIn } from './browser-session.mjs';
+import { origin, openSignedIn } from './browser-session.ts';
 
 const {browser, context, page, errors} = await openSignedIn();
 try {

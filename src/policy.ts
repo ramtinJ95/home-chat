@@ -1,32 +1,43 @@
 import { realpath, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
+import type { User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen']);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const);
+export type ToolName = typeof ALLOWED_TOOLS[number];
+export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
 export const MAX_UPLOAD = 4 * 1024 * 1024;
 export const MAX_DATA = 512 * 1024 * 1024;
 export const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const LOCAL_HOSTS = new Set(['127.0.0.1:8787', 'localhost:8787']);
 
-export function publicAddress(value) {
+export function isAllowedTool(name: string): name is ToolName {
+  return (ALLOWED_TOOLS as readonly string[]).includes(name);
+}
+
+export function isUser(value: unknown): value is User {
+  return USERS.includes(value as User);
+}
+
+export function publicAddress(value: string): boolean {
   if (!ipaddr.isValid(value)) return false;
   const parsed = ipaddr.process(value);
   return parsed.range() === 'unicast' && (parsed.kind() !== 'ipv6' || parsed.match(ipaddr.parse('2000::'), 3));
 }
 
-export function allowedDestination(authority) {
+export function allowedDestination(authority: string): string {
   if (!/^[a-z0-9.-]+:443$/.test(authority)) throw new Error('Destination denied');
   const host = authority.slice(0, -4);
   if (!PROVIDER_HOSTS.has(host)) throw new Error('Destination denied');
   return host;
 }
 
-export function requireAllowedTool(name) {
-  if (!ALLOWED_TOOLS.includes(name)) throw new Error('Tool is not available in Home Chat');
+export function requireAllowedTool(name: string): asserts name is ToolName {
+  if (!isAllowedTool(name)) throw new Error('Tool is not available in Home Chat');
 }
 
-export async function allowedImagePath(path, cwd) {
+export async function allowedImagePath(path: unknown, cwd: string): Promise<string> {
   if (typeof path !== 'string') throw new Error('Invalid image reference');
   const full = await realpath(resolve(cwd, path));
   const roots = [resolve(cwd, 'uploads'), resolve(cwd, '.pi/openai-codex-images')];
@@ -38,7 +49,15 @@ export async function allowedImagePath(path, cwd) {
   return full;
 }
 
-export async function validateToolInput(name, args, cwd) {
+interface WebRef { ref_id?: unknown }
+export interface ToolArgs {
+  referenced_image_paths?: unknown[];
+  open?: WebRef[];
+  click?: WebRef[];
+  find?: WebRef[];
+}
+
+export async function validateToolInput(name: string, args: ToolArgs, cwd: string): Promise<void> {
   requireAllowedTool(name);
   if (name === 'imagegen') {
     for (const path of args.referenced_image_paths ?? []) await allowedImagePath(path, cwd);

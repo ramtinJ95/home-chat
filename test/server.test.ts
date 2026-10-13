@@ -5,55 +5,67 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
-import { createApp } from '../src/server.mjs';
+import type { Question, User } from '../src/api.d.ts';
+import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
+import { createApp } from '../src/server.ts';
 
-class FakePi extends EventEmitter {
+class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
+  busy = false;
+  closed = false;
+  question: Question | null = null;
+  lastText?: string;
   async start() { return this; }
-  async prompt(text) {
+  async prompt(text: string) {
     this.busy = true;
     this.lastText = text;
-    this.question = {id: 'question-1', method: 'select', title: 'Choose', options: ['One', 'Two']};
-    setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', this.question); }, 10);
+    const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
+    setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
-  answer(id, value) {
-    if (id !== this.question?.id || !this.question.options.includes(value)) throw new Error('Invalid answer');
+  answer(id: string, value: unknown) {
+    if (id !== this.question?.id || !this.question.options.includes(value as string)) throw new Error('Invalid answer');
     this.question = null; this.busy = false; this.emit('settled');
   }
   async abort() { this.busy = false; this.emit('settled'); }
   stop() { this.closed = true; }
 }
 
+interface RequestOptions { method?: string; body?: unknown; cookie?: string; csrf?: string; headers?: Record<string, string> }
+interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string> }
+
 async function fixture(ready = true) {
   const data = await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
   const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready});
-  await new Promise(resolve => app.server.listen(0, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const origin = 'http://127.0.0.1:8787';
-  const base = `http://127.0.0.1:${app.server.address().port}`;
-  const request = async (path, {method = 'GET', body, cookie, csrf, headers = {}} = {}) => {
-    return new Promise((resolve, reject) => {
+  const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
+  const request = (path: string, {method = 'GET', body, cookie, csrf, headers = {}}: RequestOptions = {}) => {
+    return new Promise<TestResponse>((resolve, reject) => {
       const request = httpRequest(base + path, {method, headers: {Host: '127.0.0.1:8787', Origin: origin, ...(body !== undefined ? {'Content-Type': 'application/json'} : {}), ...(cookie ? {Cookie: cookie} : {}), ...(csrf ? {'X-CSRF-Token': csrf} : {}), ...headers}}, response => {
-        const chunks = [];
-        response.on('data', chunk => chunks.push(chunk));
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () => {
-          const bytes = Buffer.concat(chunks);
-          resolve({status: response.statusCode, headers: new Headers(Object.entries(response.headers).map(([key, value]) => [key, Array.isArray(value) ? value.join('; ') : value])), json: async () => JSON.parse(bytes), text: async () => bytes.toString('utf8')});
+          const text = Buffer.concat(chunks).toString('utf8');
+          const responseHeaders = new Headers(Object.entries(response.headers).map(([key, value]): [string, string] => [key, Array.isArray(value) ? value.join('; ') : value ?? '']));
+          resolve({status: response.statusCode ?? 0, headers: responseHeaders, json: async () => JSON.parse(text), text: async () => text});
         });
       });
       request.on('error', reject);
       request.end(body !== undefined ? JSON.stringify(body) : undefined);
     });
   };
-  const codes = JSON.parse(await readFile(join(data, 'local-access.json'), 'utf8'));
-  const login = async user => {
+  const codes: Record<User, string> = JSON.parse(await readFile(join(data, 'local-access.json'), 'utf8'));
+  const login = async (user: User) => {
     const response = await request('/api/login', {method: 'POST', body: {code: codes[user]}});
     assert.equal(response.status, 200);
-    const cookie = response.headers.get('set-cookie').split(';')[0];
-    assert.match(response.headers.get('set-cookie'), /HttpOnly; SameSite=Strict/);
+    const setCookie = response.headers.get('set-cookie') ?? '';
+    assert.match(setCookie, /HttpOnly; SameSite=Strict/);
+    const cookie = setCookie.split(';')[0];
     const identity = await (await request('/api/me', {cookie})).json();
-    return {cookie, csrf: identity.csrf};
+    return {cookie, csrf: identity.csrf as string};
   };
   return {request, login, worker, app, data, close: async () => { await app.stop(); await rm(data, {recursive: true}); }};
 }
@@ -77,7 +89,7 @@ test('HTTP authentication, CSRF, host checks and cross-user conversation/asset p
     assert.equal((await f.request(`/api/chats/${created.id}/assets/${asset.id}`, owner)).status, 200);
     assert.equal((await f.request(`/api/chats/${created.id}/assets/../../profile/auth.json`, owner)).status, 404);
     assert.equal((await f.request(`/api/chats/${created.id}/uploads`, {method: 'POST', body: {mimeType: 'image/png', data: Buffer.from('<svg/>').toString('base64')}, ...owner})).status, 400);
-    const page = await f.request('/'); assert.match(page.headers.get('content-security-policy'), /script-src 'self'/);
+    const page = await f.request('/'); assert.match(page.headers.get('content-security-policy') ?? '', /script-src 'self'/);
     await f.request('/api/logout', {method: 'POST', body: {}, ...owner});
     assert.equal((await f.request('/api/me', owner)).status, 401);
   } finally { await f.close(); }

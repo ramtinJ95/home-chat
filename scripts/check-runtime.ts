@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {mkdtemp, rm, readFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
-import {PiWorker} from '../src/rpc.mjs';
+import {PiWorker} from '../src/rpc.ts';
 const directory = await mkdtemp('/tmp/home-chat-runtime-');
 const worker = new PiWorker(directory);
 try {
@@ -9,7 +9,7 @@ try {
   assert.match(status, /CapEff:\s+0000000000000000/);
   await worker.start();
   console.log(JSON.stringify({toolPolicy: worker.policy}));
-  const state = await worker.request('get_state');
+  const state = await worker.request('get_state') as {model?: {id?: string; provider?: string}};
   console.log(JSON.stringify({model: state.model?.id, provider: state.model?.provider}));
   assert.equal(state.model?.provider, 'openai-codex');
 } finally {

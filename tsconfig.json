@@ -1,0 +1,22 @@
+{
+  // Server, Pi profile, scripts and tests. Node runs these .ts files directly (type stripping), so tsc only checks.
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["esnext"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "noUncheckedIndexedAccess": false,
+    "skipLibCheck": true,
+    "paths": {
+      // profile/extension.ts imports Pi packages by their path inside the container image.
+      "/app/node_modules/*": ["./node_modules/*"]
+    }
+  },
+  "include": ["src", "profile", "scripts", "test"]
+}
