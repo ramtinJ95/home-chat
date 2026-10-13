@@ -4,49 +4,100 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f7f3ea" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#141a17" media="(prefers-color-scheme: dark)">
   <title>Home Chat</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
-  <section id="login" class="login-card">
-    <p class="eyebrow">HANDMADE OASIS / LOCAL PREVIEW</p>
-    <h1>A little room<br>for big ideas.</h1>
-    <p>Your private everyday assistant. Ask, explore, or make something beautiful.</p>
-    <form id="login-form">
-      <label for="access-code">Local access code</label>
-      <input id="access-code" type="password" autocomplete="current-password" required maxlength="128">
-      <button type="submit">Enter Home Chat</button>
-    </form>
-    <p class="hint">Local-only prototype. Google sign-in and public access are not enabled.</p>
+  <section id="login" class="login">
+    <div class="login-art" aria-hidden="true">
+      <span class="orb orb-pine"></span>
+      <span class="orb orb-sand"></span>
+      <span class="orb orb-clay"></span>
+      <p class="login-art-caption">Handmade Oasis</p>
+    </div>
+    <div class="login-panel">
+      <div class="brand"><svg class="leaf" viewBox="0 0 24 24"><use href="#leaf"/></svg>Home Chat</div>
+      <h1>A little room <em>for big ideas.</em></h1>
+      <p class="lede">Your private everyday assistant. Ask, explore, or make something beautiful.</p>
+      <form id="login-form" class="login-form">
+        <label for="access-code">Access code</label>
+        <input id="access-code" type="password" autocomplete="current-password" required maxlength="128" placeholder="Paste your local code">
+        <button type="submit" class="primary">Enter Home Chat</button>
+      </form>
+      <p class="fineprint">Local-only preview. Google sign-in and public access are not enabled yet.</p>
+    </div>
   </section>
-  <div id="workspace" hidden>
-    <aside>
-      <a class="brand" href="/">Home Chat<span>HANDMADE OASIS</span></a>
-      <button id="new-chat" class="new-chat">＋ New conversation</button>
-      <nav id="chat-list" aria-label="Conversations"></nav>
-      <div class="sidebar-footer"><span id="identity"></span><button id="logout" class="quiet">Sign out</button></div>
+
+  <div id="workspace" class="workspace" hidden>
+    <aside id="sidebar" class="sidebar" aria-label="Conversations">
+      <div class="sidebar-head">
+        <a class="brand" href="/"><svg class="leaf" viewBox="0 0 24 24"><use href="#leaf"/></svg>Home Chat</a>
+        <button id="close-sidebar" class="icon-button mobile-only" type="button" aria-label="Close conversations">
+          <svg viewBox="0 0 24 24"><use href="#close"/></svg>
+        </button>
+      </div>
+      <button id="new-chat" class="new-chat" type="button"><svg viewBox="0 0 24 24"><use href="#plus"/></svg>New conversation</button>
+      <p class="section-label">Recent</p>
+      <nav id="chat-list" class="chat-list"></nav>
+      <div class="sidebar-foot">
+        <span id="avatar" class="avatar" aria-hidden="true"></span>
+        <span id="identity" class="identity"></span>
+        <button id="logout" class="ghost" type="button">Sign out</button>
+      </div>
     </aside>
-    <main>
-      <header><span id="chat-title">Your space to think</span><span class="badge">LOCAL ONLY</span></header>
-      <div id="provider-warning" class="notice" hidden>Codex needs a one-time sign-in to this isolated profile. The interface is ready, but AI replies are not connected yet.</div>
-      <section id="messages" aria-label="Conversation" aria-live="polite"></section>
-      <section id="question" class="question" hidden></section>
-      <div class="composer-area">
-        <div id="attachments" class="attachments"></div>
-        <form id="composer">
-          <textarea id="message" placeholder="What’s on your mind?" rows="2" maxlength="12000" aria-label="Message"></textarea>
-          <div class="composer-actions">
-            <label class="attach-button">Add picture<input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden></label>
-            <span id="activity"></span>
-            <button id="stop" type="button" class="quiet" hidden>Stop</button>
-            <button id="send" type="submit">Send ↑</button>
+    <div id="scrim" class="scrim" hidden></div>
+
+    <main class="main">
+      <header class="topbar">
+        <button id="open-sidebar" class="icon-button mobile-only" type="button" aria-label="Open conversations">
+          <svg viewBox="0 0 24 24"><use href="#menu"/></svg>
+        </button>
+        <h2 id="chat-title" class="chat-title">Your space to think</h2>
+        <span class="badge"><span class="pulse"></span>Local only</span>
+      </header>
+      <div id="provider-warning" class="notice" hidden>
+        Codex needs a one-time sign-in to this isolated profile. The interface is ready, but replies are not connected yet.
+      </div>
+      <section id="messages" class="messages" aria-label="Conversation" aria-live="polite"></section>
+
+      <div class="dock">
+        <section id="question" class="question" hidden></section>
+        <form id="composer" class="composer">
+          <div id="attachments" class="attachments"></div>
+          <textarea id="message" rows="1" maxlength="12000" placeholder="What’s on your mind?" aria-label="Message"></textarea>
+          <div class="composer-row">
+            <label class="attach" title="Add a picture">
+              <svg viewBox="0 0 24 24"><use href="#image"/></svg>
+              <span class="sr-only">Add picture</span>
+              <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+            </label>
+            <span id="activity" class="activity"></span>
+            <button id="stop" class="stop" type="button" hidden><svg viewBox="0 0 24 24"><use href="#stop-icon"/></svg>Stop</button>
+            <button id="send" class="send" type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><use href="#arrow"/></svg></button>
           </div>
         </form>
-        <p class="hint">Private local preview · Web search & images · Check important answers</p>
+        <p class="fineprint centered">Private local preview · Web search &amp; images · Check important answers</p>
       </div>
     </main>
   </div>
-  <div id="error" role="alert" hidden></div>
+
+  <div id="error" class="toast" role="alert" hidden></div>
+
+  <svg class="sprite" aria-hidden="true">
+    <symbol id="leaf" viewBox="0 0 24 24"><path d="M5 19c0-8 5-14 15-15-1 10-7 15-15 15Zm0 0c3-4 6-7 10-9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+    <symbol id="image" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.8" fill="currentColor"/><path d="m5 18 5-5 3 3 2.5-2.5L20 18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="arrow" viewBox="0 0 24 24"><path d="M12 19V5m0 0-6 6m6-6 6 6" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="stop-icon" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor"/></symbol>
+    <symbol id="download" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="spark" viewBox="0 0 24 24"><path d="M12 3c.6 4.6 3.4 7.4 8 8-4.6.6-7.4 3.4-8 8-.6-4.6-3.4-7.4-8-8 4.6-.6 7.4-3.4 8-8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m15.5 8.5-2 5-5 2 2-5 5-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+  </svg>
 </body>
 </html>

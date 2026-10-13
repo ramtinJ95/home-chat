@@ -7,3 +7,5 @@ local-access.json
 .env
 .env.*
 !.env.example
+# Compiled from public/app.ts
+public/app.js
