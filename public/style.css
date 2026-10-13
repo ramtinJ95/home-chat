@@ -60,7 +60,7 @@
 body { margin: 0; min-height: 100dvh; }
 [hidden] { display: none !important; }
 button, input, textarea { font: inherit; color: inherit; }
-button { cursor: pointer; border: 0; background: none; padding: 0; }
+button { cursor: pointer; border: 0; background: none; padding: 0; touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 button:disabled { cursor: default; }
 a { color: var(--pine); text-underline-offset: 3px; }
 svg { width: 20px; height: 20px; flex: none; }
@@ -225,7 +225,7 @@ svg { width: 20px; height: 20px; flex: none; }
 /* Conversation */
 
 .messages {
-  flex: 1; min-height: 0; overflow-y: auto; scroll-behavior: smooth;
+  flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior-y: contain;
   padding: 36px max(20px, calc((100% - 760px) / 2)) 24px;
 }
 
@@ -235,7 +235,7 @@ svg { width: 20px; height: 20px; flex: none; }
 .empty p { margin: 0 auto; max-width: 42ch; color: var(--ink-soft); }
 .suggestions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 34px; text-align: left; }
 .suggestions button {
-  display: grid; gap: 10px; align-content: start;
+  display: grid; gap: 10px; align-content: start; justify-items: start; text-align: left;
   padding: 16px; border-radius: var(--radius);
   background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-soft);
   transition: transform 180ms var(--ease), box-shadow 180ms, border-color 180ms;
@@ -398,14 +398,24 @@ svg { width: 20px; height: 20px; flex: none; }
 
   .workspace { grid-template-columns: minmax(0, 1fr); }
   .mobile-only { display: inline-grid; }
+  /* Closed: off-screen, invisible and out of the tab order; visibility flips after the slide-out. */
   .sidebar {
     position: fixed; inset: 0 auto 0 0; z-index: 20; width: min(86vw, 320px);
-    transform: translateX(-102%); transition: transform 260ms var(--ease);
-    box-shadow: var(--shadow-lift);
+    transform: translateX(-100%); visibility: hidden;
+    transition: transform 260ms var(--ease), visibility 0s 260ms;
   }
-  .workspace.drawer-open .sidebar { transform: none; }
+  .workspace.drawer-open .sidebar {
+    transform: none; visibility: visible; box-shadow: var(--shadow-lift);
+    transition: transform 260ms var(--ease);
+  }
   .scrim { display: block; position: fixed; inset: 0; z-index: 15; background: rgb(20 26 23 / 0.35); }
-  .topbar { padding: 10px 12px; gap: 8px; }
+  /* Notch/status bar in standalone or landscape mode, and 44px touch targets. */
+  .topbar { padding: max(8px, env(safe-area-inset-top)) 10px 8px; gap: 6px; }
+  .sidebar { padding-top: max(22px, env(safe-area-inset-top)); }
+  .icon-button, .attach, .send { width: 44px; height: 44px; }
+  .stop { height: 44px; }
+  .chat-list button { padding: 13px 12px; }
+  .question .option { padding: 11px 18px; }
   .badge { display: none; }
   .messages { padding: 22px 16px 16px; }
   .message { gap: 10px; }
@@ -414,6 +424,7 @@ svg { width: 20px; height: 20px; flex: none; }
   .empty { margin-top: 3vh; }
   .suggestions { grid-template-columns: 1fr; }
   .dock { padding: 0 10px max(10px, env(safe-area-inset-bottom)); }
+  .dock > .fineprint { display: none; }
   .notice { width: calc(100% - 24px); }
 }
 

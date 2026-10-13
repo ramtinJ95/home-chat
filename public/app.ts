@@ -56,6 +56,8 @@ let attachments: Attachment[] = [];
 let streaming: {node: HTMLElement; text: string; frame?: number} | undefined;
 let activeQuestionId: string | undefined;
 let errorTimer: number | undefined;
+// Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
+let following = true;
 
 function showError(error: unknown) {
   ui.error.textContent = error instanceof Error ? error.message : String(error);
@@ -159,13 +161,15 @@ function inline<T extends HTMLElement>(parent: T, text: string): T {
   return parent;
 }
 
-function link(href: string, label?: string): HTMLAnchorElement {
+function link(href: string, label?: string): Node {
+  let url: URL;
+  try { url = new URL(href); } catch { return document.createTextNode(label ?? href); }
   const anchor = element('a', undefined, label ?? href);
-  anchor.href = href;
+  anchor.href = url.href;
   anchor.target = '_blank';
   anchor.rel = 'noopener noreferrer';
   // Labelled links still show where they go.
-  if (label && label !== href) anchor.append(element('span', 'host', new URL(href).hostname));
+  if (label && label !== href) anchor.append(element('span', 'host', url.hostname));
   return anchor;
 }
 
@@ -177,7 +181,8 @@ function setBusy(busy: boolean) {
   ui.activity.textContent = busy ? 'Thinking…' : '';
 }
 
-function scrollToEnd() { ui.messages.scrollTop = ui.messages.scrollHeight; }
+function scrollToEnd() { ui.messages.scrollTop = ui.messages.scrollHeight; following = true; }
+function keepFollowing() { if (following) scrollToEnd(); }
 
 function renderEmpty(): HTMLElement {
   const empty = element('div', 'empty');
@@ -219,6 +224,8 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
     picture.src = url;
     picture.alt = message.role === 'user' ? 'Your attached picture' : 'Generated picture';
     picture.loading = 'lazy';
+    // Images grow the thread after the initial scroll; keep the latest message in view.
+    picture.addEventListener('load', keepFollowing, {once: true});
     const download = element('a', 'download');
     download.href = url + '?download=1';
     download.download = 'home-chat.png';
@@ -232,7 +239,8 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
 }
 
 function renderChat(next: ChatSnapshot) {
-  const previousCount = chat?.id === next.id ? chat.messages.length : next.messages.length;
+  const sameChat = chat?.id === next.id;
+  const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
   ui.title.textContent = next.title;
   setBusy(next.busy);
@@ -240,8 +248,9 @@ function renderChat(next: ChatSnapshot) {
   ui.messages.replaceChildren(...(next.messages.length
     ? next.messages.map((message, index) => renderMessage(next, message, index >= previousCount))
     : [renderEmpty()]));
-  scrollToEnd();
+  // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
+  if (sameChat) keepFollowing(); else scrollToEnd();
 }
 
 function appendDelta(text: string) {
@@ -251,7 +260,7 @@ function appendDelta(text: string) {
   target.frame ??= requestAnimationFrame(() => {
     target.frame = undefined;
     renderMarkdown(target.node, target.text);
-    scrollToEnd();
+    keepFollowing();
   });
 }
 
@@ -261,8 +270,9 @@ function setDrawer(open: boolean) {
 }
 
 async function refreshList(): Promise<ChatSummary[]> {
-  const list = await api<ChatSummary[]>('/api/chats');
-  ui.chatList.replaceChildren(...[...list].reverse().map(item => {
+  // The server lists oldest first; everything here wants newest first.
+  const list = (await api<ChatSummary[]>('/api/chats')).reverse();
+  ui.chatList.replaceChildren(...list.map(item => {
     const button = element('button', item.id === chat?.id ? 'active' : '', item.title);
     button.type = 'button';
     button.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
@@ -282,7 +292,7 @@ async function openChat(id: string) {
       case 'snapshot': renderChat(event.chat); refreshList().catch(showError); break;
       case 'delta': appendDelta(event.text); break;
       case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name] ?? 'Working…'; break;
-      case 'question': showQuestion(event.question); break;
+      case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
     }
   };
@@ -412,20 +422,29 @@ ui.logout.onclick = async () => {
 ui.composer.onsubmit = async event => {
   event.preventDefault();
   if (!chat) return;
+  const text = ui.message.value;
+  const sent = [...attachments];
   try {
     setBusy(true);
-    await api(`/api/chats/${chat.id}/messages`, 'POST', {text: ui.message.value, assets: attachments.map(item => item.id)});
-    ui.message.value = '';
-    resizeComposer();
-    clearAttachments();
+    await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: sent.map(item => item.id)});
+    // The composer stays editable while a message is accepted; keep anything added since.
+    if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
+    for (const attachment of sent) URL.revokeObjectURL(attachment.preview);
+    attachments = attachments.filter(item => !sent.includes(item));
+    renderAttachments();
   } catch (error) { setBusy(false); showError(error); }
 };
 ui.stop.onclick = () => {
   if (chat) api(`/api/chats/${chat.id}/abort`, 'POST', {}).catch(showError);
 };
 ui.message.oninput = resizeComposer;
+ui.messages.addEventListener('scroll', () => {
+  following = ui.messages.scrollHeight - ui.messages.scrollTop - ui.messages.clientHeight < 80;
+}, {passive: true});
+// On touch keyboards Enter inserts a newline; the send button sends.
+const touchKeyboard = matchMedia('(pointer: coarse)');
 ui.message.onkeydown = event => {
-  if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
+  if (event.key !== 'Enter' || event.shiftKey || event.isComposing || touchKeyboard.matches) return;
   event.preventDefault();
   if (!ui.send.disabled) ui.composer.requestSubmit();
 };
