@@ -53,7 +53,7 @@ export function fetchAccessKeys(team: string): AccessKeySource {
 }
 
 const KEY_MAX_AGE = 60 * 60_000;
-const UNKNOWN_KID_REFRESH = 60_000;
+const REFRESH_INTERVAL = 60_000;
 const CLOCK_SKEW = 30;
 
 function decodePart(part: string): Record<string, unknown> {
@@ -66,9 +66,11 @@ export function createAccessVerifier(config: AccessConfig, source: AccessKeySour
   const issuer = `https://${accessTeamHost(config.team)}`;
   let keys = new Map<string, KeyObject>();
   let fetchedAt = 0;
+  let attemptedAt = 0;
   let refreshing: Promise<void> | undefined;
 
   const refresh = () => refreshing ??= (async () => {
+    attemptedAt = Date.now();
     try {
       const next = new Map<string, KeyObject>();
       for (const jwk of await source()) {
@@ -78,14 +80,19 @@ export function createAccessVerifier(config: AccessConfig, source: AccessKeySour
     } finally { refreshing = undefined; }
   })();
 
-  // Keys rotate every six weeks and old ones stay valid for a week, so refresh hourly and on an unseen kid
-  // (at most once a minute, so forged kids can't turn into a request flood against Cloudflare).
+  // Keys rotate every six weeks and old ones stay valid for a week, so refresh hourly and on an unseen kid.
+  // Attempts, failed ones included, happen at most once a minute, so neither forged kids nor a Cloudflare outage
+  // turn into a request flood; during an outage the keys already held keep working.
   async function keyFor(kid: string): Promise<KeyObject> {
-    const age = Date.now() - fetchedAt;
-    if (age > KEY_MAX_AGE || (!keys.has(kid) && age > UNKNOWN_KID_REFRESH)) await refresh();
+    const due = Date.now() - fetchedAt > KEY_MAX_AGE || !keys.has(kid);
+    if (due && (refreshing || Date.now() - attemptedAt > REFRESH_INTERVAL)) {
+      try { await refresh(); }
+      catch (error) { if (!keys.has(kid)) throw error; }
+    }
     const key = keys.get(kid);
-    if (!key) throw new AccessDenied('Access token signed with an unknown key');
-    return key;
+    if (key) return key;
+    if (!fetchedAt) throw new Error('Cloudflare Access keys have not been loaded yet');
+    throw new AccessDenied('Access token signed with an unknown key');
   }
 
   return async function verifyAccess(token: string | undefined): Promise<AccessIdentity> {

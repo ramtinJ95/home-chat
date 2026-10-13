@@ -72,10 +72,14 @@ test('rotated keys are fetched by kid, but unknown kids cannot force constant re
   assert.equal(fetches, 1);
 });
 
-test('Access key outages are errors, not denials', async () => {
-  const verify = createAccessVerifier(config, async () => { throw new Error('offline'); });
+test('Access key outages are errors, not denials, and failed fetches are throttled too', async () => {
+  let fetches = 0;
+  const verify = createAccessVerifier(config, async () => { fetches++; throw new Error('offline'); });
   const current = keyPair('k1');
-  await assert.rejects(() => verify(token(current.privateKey, validClaims(), {alg: 'RS256', kid: 'k1'})), error => !(error instanceof AccessDenied));
+  for (let i = 0; i < 3; i++) {
+    await assert.rejects(() => verify(token(current.privateKey, validClaims(), {alg: 'RS256', kid: 'k1'})), error => !(error instanceof AccessDenied));
+  }
+  assert.equal(fetches, 1);
 });
 
 test('Access configuration is explicit and refuses ambiguous values', () => {
