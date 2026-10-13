@@ -54,15 +54,16 @@ export async function allowedImagePath(path: unknown, cwd: string): Promise<stri
 
 const field = (value: unknown, key: string): unknown =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
-// Absent lists are fine; anything else that is not a list is rejected rather than skipped.
+// Absent or null lists are fine (imagegen's schema allows null); anything else that is not a list is rejected, not skipped.
 function asArray(value: unknown): unknown[] {
-  if (value === undefined) return [];
+  if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) throw new Error('Invalid tool input');
   return value;
 }
 
 export async function validateToolInput(name: string, args: unknown, cwd: string): Promise<void> {
   requireAllowedTool(name);
+  if (typeof args !== 'object' || args === null) throw new Error('Invalid tool input');
   if (name === 'imagegen') {
     for (const path of asArray(field(args, 'referenced_image_paths'))) await allowedImagePath(path, cwd);
   }
