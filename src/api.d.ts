@@ -2,6 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
+export type ToolName = 'ask' | 'web_run' | 'imagegen';
 export type AssetKind = 'upload' | 'generated';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
@@ -39,13 +40,13 @@ export interface Me {
   csrf: string;
   codexConfigured: boolean;
   localOnly: true;
-  tools: readonly string[];
+  tools: readonly ToolName[];
 }
 
 export type StreamEvent =
   | {type: 'snapshot'; chat: ChatSnapshot}
   | {type: 'delta'; text: string}
-  | {type: 'tool'; name: string}
+  | {type: 'tool'; name: ToolName}
   | {type: 'question'; question: Question}
   | {type: 'error'; message: string};
 

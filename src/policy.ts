@@ -1,16 +1,19 @@
 import { realpath, stat } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
-import type { User } from './api.d.ts';
+import type { ToolName, User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const);
-export type ToolName = typeof ALLOWED_TOOLS[number];
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
 export const MAX_UPLOAD = 4 * 1024 * 1024;
 export const MAX_DATA = 512 * 1024 * 1024;
 export const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const LOCAL_HOSTS = new Set(['127.0.0.1:8787', 'localhost:8787']);
+// profile/extension.ts reports the tools Pi registered as a notify message with this prefix; src/rpc.ts checks it.
+export const POLICY_PREFIX = 'HOME_CHAT_POLICY:';
+
+export interface ToolPolicy { registered: string[]; active: string[] }
 
 export function isAllowedTool(name: string): name is ToolName {
   return (ALLOWED_TOOLS as readonly string[]).includes(name);
@@ -49,22 +52,23 @@ export async function allowedImagePath(path: unknown, cwd: string): Promise<stri
   return full;
 }
 
-interface WebRef { ref_id?: unknown }
-export interface ToolArgs {
-  referenced_image_paths?: unknown[];
-  open?: WebRef[];
-  click?: WebRef[];
-  find?: WebRef[];
+const field = (value: unknown, key: string): unknown =>
+  typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
+// Absent lists are fine; anything else that is not a list is rejected rather than skipped.
+function asArray(value: unknown): unknown[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error('Invalid tool input');
+  return value;
 }
 
-export async function validateToolInput(name: string, args: ToolArgs, cwd: string): Promise<void> {
+export async function validateToolInput(name: string, args: unknown, cwd: string): Promise<void> {
   requireAllowedTool(name);
   if (name === 'imagegen') {
-    for (const path of args.referenced_image_paths ?? []) await allowedImagePath(path, cwd);
+    for (const path of asArray(field(args, 'referenced_image_paths'))) await allowedImagePath(path, cwd);
   }
   if (name === 'web_run') {
-    for (const item of [...(args.open ?? []), ...(args.click ?? []), ...(args.find ?? [])]) {
-      const ref = item.ref_id;
+    for (const item of ['open', 'click', 'find'].flatMap(key => asArray(field(args, key)))) {
+      const ref = field(item, 'ref_id');
       if (typeof ref !== 'string') throw new Error('Invalid web reference');
       if (/^[a-z][a-z0-9+.-]*:/i.test(ref)) {
         const url = new URL(ref);

@@ -4,18 +4,17 @@ import { EventEmitter } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
-import type { Question, QuestionMethod } from './api.d.ts';
-import { ALLOWED_TOOLS, isAllowedTool } from './policy.ts';
+import type { Question, QuestionMethod, ToolName } from './api.d.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, isAllowedTool, type ToolPolicy } from './policy.ts';
 
 const QUESTION_METHODS: readonly QuestionMethod[] = ['select', 'input', 'editor', 'confirm'];
 
 export interface PromptImage { type: 'image'; mimeType: string; data: string }
-export interface ToolPolicy { registered: string[]; active: string[] }
 
 export type WorkerEvents = {
   failure: [message: string];
   delta: [text: string];
-  tool: [name: string];
+  tool: [name: ToolName];
   question: [question: Question];
   settled: [];
   policy: [policy: ToolPolicy];
@@ -27,7 +26,7 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   closed?: boolean;
   question?: Question | null;
   deadline?: NodeJS.Timeout;
-  start(): Promise<unknown>;
+  start(): Promise<void>;
   prompt(message: string, images?: PromptImage[]): Promise<void>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
@@ -81,7 +80,7 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
     this.directory = directory;
   }
 
-  async start(): Promise<this> {
+  async start(): Promise<void> {
     const cwd = join(this.directory, 'work');
     await mkdir(join(cwd, 'uploads'), {recursive: true, mode: 0o700});
     const args = ['/app/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js',
@@ -118,7 +117,6 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       this.once('policy', policy => { clearTimeout(timer); resolve(policy); });
       child.once('exit', () => { clearTimeout(timer); reject(new Error('Pi exited before tool-policy confirmation')); });
     });
-    return this;
   }
 
   handle(event: PiEvent): void {
@@ -131,8 +129,8 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       }
     }
     if (event.type === 'extension_ui_request') {
-      if (event.method === 'notify' && typeof event.message === 'string' && event.message.startsWith('HOME_CHAT_POLICY:')) {
-        const policy: ToolPolicy = JSON.parse(event.message.slice('HOME_CHAT_POLICY:'.length));
+      if (event.method === 'notify' && typeof event.message === 'string' && event.message.startsWith(POLICY_PREFIX)) {
+        const policy: ToolPolicy = JSON.parse(event.message.slice(POLICY_PREFIX.length));
         if (!sameTools(policy.registered) || !sameTools(policy.active)) {
           this.stop(); this.emit('failure', 'Pi tool policy mismatch'); return;
         }

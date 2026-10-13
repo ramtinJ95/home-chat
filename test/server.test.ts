@@ -17,7 +17,7 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   closed = false;
   question: Question | null = null;
   lastText?: string;
-  async start() { return this; }
+  async start() {}
   async prompt(text: string) {
     this.busy = true;
     this.lastText = text;

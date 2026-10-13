@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile } from 'nod
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, ChatSnapshot, ChatSummary, Me, Message, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser } from './policy.ts';
 
@@ -12,7 +12,6 @@ interface StoredAsset { id: string; kind: AssetKind; path: string }
 interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[] }
 interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string }
-type HttpError = Error & {status?: number};
 
 export interface AppOptions {
   data?: string;
@@ -22,7 +21,12 @@ export interface AppOptions {
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
 const jsonHeaders = {'Content-Type': 'application/json; charset=utf-8'};
-const fail = (status: number, message: string): HttpError => Object.assign(new Error(message), {status});
+// Thrown for client-visible failures; any other error becomes a generic 500.
+class HttpError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+const fail = (status: number, message: string) => new HttpError(status, message);
 const sse = (res: http.ServerResponse, event: StreamEvent) => res.write('data: ' + JSON.stringify(event) + '\n\n');
 const publicRoot = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 
@@ -290,7 +294,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         const path = join(workDir(chat), 'uploads', id + '.png');
         await writeFile(path, normalized, {mode: 0o600});
         chat.assets.push({id, path, kind: 'upload'}); await save(chat);
-        return send(201, {id, kind: 'upload'});
+        const asset: AssetRef = {id, kind: 'upload'};
+        return send(201, asset);
       }
       if (route === 'POST messages') {
         if (occupied(chat.id)) throw fail(409, 'A message is already running');
@@ -340,10 +345,10 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         await workers.get(chat.id)?.abort(); return send(200, {ok: true});
       }
       throw fail(404, 'Not found');
-    } catch (caught) {
-      const error = caught as HttpError;
+    } catch (error) {
       if (res.headersSent) return res.end();
-      send(error.status ?? 500, {error: error.status ? error.message : 'Request failed; no further action was taken'});
+      if (error instanceof HttpError) send(error.status, {error: error.message});
+      else send(500, {error: 'Request failed; no further action was taken'});
     }
   });
   server.requestTimeout = 45_000; server.headersTimeout = 10_000; server.keepAliveTimeout = 5000; server.maxConnections = 64;

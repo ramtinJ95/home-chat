@@ -1,10 +1,10 @@
 import conversion from '@howaboua/pi-codex-conversion';
-import web from '/app/node_modules/@howaboua/pi-codex-web-run/index.ts';
-import imagegen from '/app/node_modules/@howaboua/pi-codex-imagegen/index.ts';
-import ask from '/app/node_modules/@howaboua/pi-ask/index.ts';
+import web from '@howaboua/pi-codex-web-run';
+import imagegen from '@howaboua/pi-codex-imagegen';
+import ask from '@howaboua/pi-ask';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { readFile } from 'node:fs/promises';
-import { ALLOWED_TOOLS, isAllowedTool, validateToolInput, type ToolArgs } from '../src/policy.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, isAllowedTool, validateToolInput, type ToolPolicy } from '../src/policy.ts';
 
 export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   const instructions = await readFile('/app/profile/instructions.md', 'utf8');
@@ -17,7 +17,7 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
       pi.registerTool({
         ...tool,
         execute: async (id, args, signal, update, ctx) => {
-          await validateToolInput(tool.name, args as ToolArgs, ctx.cwd);
+          await validateToolInput(tool.name, args, ctx.cwd);
           if (++calls > 12) throw new Error('Tool-call limit reached for this message');
           if (tool.name === 'imagegen' && ++images > 2) throw new Error('Two image requests per message maximum');
           return tool.execute(id, args, signal, update, ctx);
@@ -54,7 +54,8 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   };
   pi.on('session_start', async (_event, ctx) => {
     enforce();
-    ctx.ui.notify('HOME_CHAT_POLICY:' + JSON.stringify({registered: pi.getAllTools().map(t => t.name), active: pi.getActiveTools()}), 'info');
+    const policy = {registered: pi.getAllTools().map(t => t.name), active: pi.getActiveTools()} satisfies ToolPolicy;
+    ctx.ui.notify(POLICY_PREFIX + JSON.stringify(policy), 'info');
   });
   pi.on('model_select', () => enforce());
   pi.on('before_agent_start', () => {
@@ -63,7 +64,7 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   });
   pi.on('tool_call', async (event, ctx) => {
     try {
-      await validateToolInput(event.toolName, event.input as ToolArgs, ctx.cwd);
+      await validateToolInput(event.toolName, event.input, ctx.cwd);
     } catch (error) {
       return {block: true, reason: (error as Error).message};
     }

@@ -38,4 +38,11 @@ test('web tool rejects local URLs and non-HTTP schemes', async () => {
     await assert.rejects(() => validateToolInput('web_run', {open: [{ref_id: url}]}, '/tmp'));
   }
   await validateToolInput('web_run', {open: [{ref_id: 'https://example.com/article'}]}, '/tmp');
+  await validateToolInput('web_run', {}, '/tmp');
+});
+
+test('tool input lists that are not lists are rejected, not skipped', async () => {
+  await assert.rejects(() => validateToolInput('web_run', {open: 'http://localhost'}, '/tmp'));
+  await assert.rejects(() => validateToolInput('web_run', {find: {ref_id: 'http://localhost'}}, '/tmp'));
+  await assert.rejects(() => validateToolInput('imagegen', {referenced_image_paths: '/data/profile/auth.json'}, '/tmp'));
 });
