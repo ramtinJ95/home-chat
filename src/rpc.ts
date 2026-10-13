@@ -88,7 +88,7 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       '--no-themes', '--no-context-files', '--no-approve', '--offline',
       '--extension', '/app/profile/extension.ts', '--tools', ALLOWED_TOOLS.join(','),
       '--system-prompt', '/app/profile/instructions.md', '--provider', 'openai-codex',
-      '--model', process.env.HOME_CHAT_MODEL ?? 'gpt-6-sol', '--thinking', 'high',
+      '--model', process.env.HOME_CHAT_MODEL ?? 'gpt-6.1-sol', '--thinking', 'high',
       '--session', join(this.directory, 'pi-session.jsonl')];
     // Provider errors may include headers or payloads, so raw stderr is discarded, never forwarded or logged.
     const child = this.child = spawn(process.execPath, args, {cwd, stdio: ['pipe', 'pipe', 'ignore']});
