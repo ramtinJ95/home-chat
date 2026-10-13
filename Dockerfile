@@ -7,9 +7,8 @@ RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public
 COPY profile ./profile
-COPY scripts ./scripts
+COPY --chmod=755 scripts ./scripts
 COPY test ./test
-RUN chmod 755 scripts/entrypoint.sh
 ENV HOME=/data/home PI_CODING_AGENT_DIR=/data/profile NODE_ENV=production
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["node", "src/server.mjs"]

@@ -1,6 +1,7 @@
 import {PiWorker} from '../src/rpc.mjs';
 import {mkdtemp, rm} from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import {setTimeout as delay} from 'node:timers/promises';
 const directory = await mkdtemp('/tmp/home-chat-live-');
 const worker = new PiWorker(directory);
 const deadline = setTimeout(() => { worker.stop(); console.error('Live inference exceeded 120 seconds'); process.exitCode = 1; }, 120_000);
@@ -21,6 +22,6 @@ try {
   console.log('PASS live Codex subscription inference through restricted Pi and egress proxy');
 } finally {
   clearTimeout(deadline); worker.stop();
-  await new Promise(resolve => setTimeout(resolve, 300));
+  await delay(300);
   await rm(directory, {recursive: true});
 }

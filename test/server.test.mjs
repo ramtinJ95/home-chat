@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
+import { setTimeout as delay } from 'node:timers/promises';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
 import { createApp } from '../src/server.mjs';
@@ -88,14 +89,14 @@ test('mocked Pi streaming and structured questions stay in their conversation', 
     const owner = await f.login('owner'); const guest = await f.login('guest');
     const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
     assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: '/bash rm -rf /', assets: []}, ...owner})).status, 202);
-    await new Promise(resolve => setTimeout(resolve, 40));
+    await delay(40);
     const state = await (await f.request(`/api/chats/${chat.id}`, owner)).json();
     assert.match(state.messages.at(-1).text, /<script>/);
     assert.equal(state.question.method, 'select');
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...guest})).status, 404);
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'wrong', value: 'One'}, ...owner})).status, 409);
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
-    await new Promise(resolve => setTimeout(resolve, 30));
+    await delay(30);
     assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).busy, false);
   } finally { await f.close(); }
 });

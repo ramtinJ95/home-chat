@@ -3,7 +3,7 @@ import web from '/app/node_modules/@howaboua/pi-codex-web-run/index.ts';
 import imagegen from '/app/node_modules/@howaboua/pi-codex-imagegen/index.ts';
 import ask from '/app/node_modules/@howaboua/pi-ask/index.ts';
 import { readFile } from 'node:fs/promises';
-import { ALLOWED_TOOLS, requireAllowedTool, validateToolInput } from '../src/policy.mjs';
+import { ALLOWED_TOOLS, validateToolInput } from '../src/policy.mjs';
 
 export default async function homeChat(pi) {
   const instructions = await readFile('/app/profile/instructions.md', 'utf8');
@@ -57,7 +57,6 @@ export default async function homeChat(pi) {
   });
   pi.on('tool_call', async (event, ctx) => {
     try {
-      requireAllowedTool(event.toolName);
       await validateToolInput(event.toolName, event.input, ctx.cwd);
     } catch (error) {
       return {block: true, reason: error.message};

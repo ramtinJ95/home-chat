@@ -3,6 +3,9 @@ import net from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { ProxyAgent, fetch as proxyFetch } from 'undici';
 
+// Probe the proxy this container is actually configured with (compose.yaml HTTPS_PROXY).
+const proxy = new URL(process.env.HTTPS_PROXY);
+
 async function blocked(host, port) {
   const result = await new Promise(resolve => {
     const socket = net.connect({host, port});
@@ -15,7 +18,7 @@ async function blocked(host, port) {
 }
 async function proxyStatus(target) {
   return new Promise((resolve, reject) => {
-    const socket = net.connect({host: '172.30.91.2', port: 3128}, () => socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
+    const socket = net.connect({host: proxy.hostname, port: Number(proxy.port)}, () => socket.write(`CONNECT ${target} HTTP/1.1\r\nHost: ${target}\r\n\r\n`));
     socket.once('error', reject);
     socket.setTimeout(5000, () => { socket.destroy(); reject(new Error('Proxy timed out')); });
     socket.once('data', data => { socket.destroy(); resolve(data.toString().split('\r\n')[0]); });
@@ -33,7 +36,7 @@ for (const destination of ['127.0.0.1:443', 'host.docker.internal:443', '100.64.
   assert.match(await proxyStatus(destination), /403/); console.log(`PROXY DENIED ${destination}`);
 }
 assert.match(await proxyStatus('chatgpt.com:443'), /200/);
-const dispatcher = new ProxyAgent('http://172.30.91.2:3128');
+const dispatcher = new ProxyAgent(proxy.href);
 try {
   const response = await proxyFetch('https://chatgpt.com/backend-api/codex/responses', {dispatcher, signal: AbortSignal.timeout(15000)});
   console.log(`PROVIDER TLS REACHABLE (unauthenticated HTTP ${response.status}; not an inference test)`);

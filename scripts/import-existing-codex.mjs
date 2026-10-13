@@ -17,7 +17,6 @@ try {
 const result = spawnSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/accept-auth.mjs', '--replace-codex'], {
   input: JSON.stringify({'openai-codex': credential}), encoding: 'utf8', timeout: 15_000,
 });
-credential = undefined;
 if (result.status !== 0) {
   let reason = 'Credential provisioning subprocess failed';
   try { reason = JSON.parse(result.stderr.trim()).message; } catch {}

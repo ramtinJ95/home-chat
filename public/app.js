@@ -72,7 +72,7 @@ async function openChat(id) {
     const value = JSON.parse(event.data);
     if (value.type === 'snapshot') { renderChat(value.chat); refreshList().catch(showError); }
     if (value.type === 'delta' && renderedMessage) {
-      renderedMessage.textContent += value.text; $('#messages').scrollTop = $('#messages').scrollHeight;
+      renderedMessage.append(value.text); $('#messages').scrollTop = $('#messages').scrollHeight;
     }
     if (value.type === 'tool') $('#activity').textContent = {ask: 'A quick question…', web_run: 'Searching the web…', imagegen: 'Creating an image…'}[value.name];
     if (value.type === 'question') showQuestion(value.question);

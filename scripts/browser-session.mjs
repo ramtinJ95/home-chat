@@ -1,0 +1,22 @@
+import { chromium } from 'playwright-core';
+import { execFileSync } from 'node:child_process';
+import { mkdir } from 'node:fs/promises';
+
+export const origin = 'http://127.0.0.1:8787';
+
+// Signs in as owner. The access code is read from the container and never logged or persisted.
+export async function openSignedIn() {
+  await mkdir('.local', {recursive: true, mode: 0o700});
+  const code = execFileSync('docker', ['compose', 'exec', '-T', '--user', '10001:10001', 'app', 'node', 'scripts/show-access.mjs', 'owner'], {encoding: 'utf8'}).trim();
+  const browser = await chromium.launch({executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', headless: true});
+  const errors = [];
+  try {
+    const context = await browser.newContext({viewport: {width: 1360, height: 950}});
+    const page = await context.newPage(); page.on('pageerror', error => errors.push(error.message));
+    await page.goto(origin);
+    await page.locator('#access-code').fill(code);
+    await page.locator('#login-form button').click();
+    await page.locator('#workspace').waitFor({state: 'visible'});
+    return {browser, context, page, errors};
+  } catch (error) { await browser.close(); throw error; }
+}

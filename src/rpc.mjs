@@ -5,6 +5,8 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ALLOWED_TOOLS } from './policy.mjs';
 
+const sameTools = names => JSON.stringify([...names].sort()) === JSON.stringify([...ALLOWED_TOOLS].sort());
+
 export function providerFailure(value) {
   const text = String(value ?? '');
   const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
@@ -34,10 +36,9 @@ export class PiWorker extends EventEmitter {
       '--system-prompt', '/app/profile/instructions.md', '--provider', 'openai-codex',
       '--model', process.env.HOME_CHAT_MODEL ?? 'gpt-6-sol', '--thinking', 'high',
       '--session', join(this.directory, 'pi-session.jsonl')];
-    this.child = spawn(process.execPath, args, {cwd, env: {...process.env}, stdio: ['pipe', 'pipe', 'pipe']});
+    // Provider errors may include headers or payloads, so raw stderr is discarded, never forwarded or logged.
+    this.child = spawn(process.execPath, args, {cwd, stdio: ['pipe', 'pipe', 'ignore']});
     this.child.stdin.on('error', () => {});
-    // Provider errors may include headers or payloads. Never forward/log raw stderr.
-    this.child.stderr.on('data', () => {});
     let buffer = '';
     this.child.stdout.setEncoding('utf8');
     this.child.stdout.on('data', chunk => {
@@ -74,9 +75,8 @@ export class PiWorker extends EventEmitter {
     if (event.type === 'extension_ui_request') {
       if (event.method === 'notify' && event.message?.startsWith('HOME_CHAT_POLICY:')) {
         const policy = JSON.parse(event.message.slice('HOME_CHAT_POLICY:'.length));
-        if (JSON.stringify([...policy.registered].sort()) !== JSON.stringify([...ALLOWED_TOOLS].sort()) ||
-            JSON.stringify([...policy.active].sort()) !== JSON.stringify([...ALLOWED_TOOLS].sort())) {
-          this.stop(); throw new Error('Pi tool policy mismatch');
+        if (!sameTools(policy.registered) || !sameTools(policy.active)) {
+          this.stop(); this.emit('failure', 'Pi tool policy mismatch'); return;
         }
         this.emit('policy', policy); return;
       }

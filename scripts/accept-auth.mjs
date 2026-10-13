@@ -21,7 +21,6 @@ if (existing && Object.keys(existing).length && process.argv[2] !== '--replace-c
 const temporary = '/data/profile/auth.json.new-' + randomUUID();
 await writeFile(temporary, JSON.stringify({'openai-codex': credential}), {mode: 0o600, flag: 'wx'});
 await rename(temporary, '/data/profile/auth.json');
-input = ''; parsed = null;
 console.log('Dedicated Codex credential provisioned; no other provider settings copied.');
 } catch (error) {
   console.error(JSON.stringify({code: error.code ?? 'PROVISIONING_REJECTED', message: error.message}));
