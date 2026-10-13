@@ -39,7 +39,8 @@ export interface Me {
   user: User;
   csrf: string;
   codexConfigured: boolean;
-  localOnly: true;
+  // local: access codes on localhost. access: Cloudflare Access (Google sign-in) on the public hostname.
+  mode: 'local' | 'access';
   tools: readonly ToolName[];
 }
 
