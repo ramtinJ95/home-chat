@@ -6,8 +6,14 @@ agent against a Codex subscription inside Docker. The model can only use
 three tools (`ask`, `web_run`, `imagegen`), can only reach OpenAI, and cannot
 run commands or read files.
 
-**Status: local prototype.** It listens on `127.0.0.1:8787` only. There is no
-public deployment, Google sign-in or HTTPS yet.
+It runs in one of two modes:
+
+- **Local** (`compose.yaml` alone): listens on `127.0.0.1:8787` only, with
+  access codes. For development and testing.
+- **Public** (`compose.public.yaml` on top, on `home-macmini` only): served at
+  `https://home-chat.handmadeoasis.com` through a Cloudflare Tunnel, behind
+  Cloudflare Access with Google sign-in. Nothing is published on the host. See
+  [Public deployment](#public-deployment).
 
 ## Run it
 
@@ -24,7 +30,8 @@ ssh -N -L 127.0.0.1:8787:127.0.0.1:8787 home-macmini
 ```
 
 Only `127.0.0.1:8787` and `localhost:8787` are accepted as hosts. Don't
-rebind to `0.0.0.0` or put a tunnel in front of it.
+rebind to `0.0.0.0` or put a tunnel in front of local mode; public access goes
+through [Public deployment](#public-deployment).
 
 ### Get an access code
 
@@ -63,6 +70,38 @@ docker compose stop
 Conversations, images and credentials live in the `home-chat_chat-data`
 volume. `docker compose down -v` deletes all of them.
 
+## Public deployment
+
+Runs on `home-macmini` only, never on a work machine. Cloudflare sees every
+request first; the app then verifies Cloudflare's signed token
+(`Cf-Access-Jwt-Assertion`) itself, so traffic that skips Access is refused.
+
+### Cloudflare, once
+
+1. **Login method.** Zero Trust → Settings → Authentication: add Google (needs
+   an OAuth client from Google Cloud Console with redirect URI
+   `https://<team>.cloudflareaccess.com/cdn-cgi/access/callback`).
+2. **Tunnel.** Networks → Tunnels: create a Cloudflared tunnel and copy its
+   token. Add one public hostname, `home-chat.handmadeoasis.com`, with service
+   `http://app:8080` and, under HTTP settings, **HTTP Host Header**
+   `home-chat.handmadeoasis.com`. Add no private network routes.
+3. **Access application.** Access → Applications: a self-hosted app for
+   `home-chat.handmadeoasis.com`, Google as the only login method, and one
+   Allow policy listing the two Google emails. Copy its **Application Audience
+   (AUD) tag**.
+
+### On home-macmini
+
+```sh
+cp .env.example .env && chmod 600 .env   # fill in team, AUD tag, emails and tunnel token
+docker compose up -d --build --wait      # .env's COMPOSE_FILE adds compose.public.yaml
+docker compose exec -T --user 10001:10001 app node scripts/login-codex.ts
+```
+
+The owner and guest emails in `.env` decide who is which account; anyone else
+is refused even if the Access policy were to let them through. Sign out ends
+the Cloudflare session too.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -93,7 +132,7 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/policy.test.ts test/server.test.ts
+  --test test/access.test.ts test/policy.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
@@ -130,8 +169,14 @@ screenshots to the git-ignored `.local/` folder.
   request sizes and storage (512 MiB at admission, not a filesystem quota)
   are all capped.
 - **Accounts.** Owner and guest are separated by in-app ownership checks, not
-  by OS users. Logins use HttpOnly SameSite=Strict cookies plus CSRF tokens
-  and an Origin check.
+  by OS users. Locally, logins use HttpOnly SameSite=Strict cookies. In public
+  mode, every request must carry a valid Cloudflare Access token (RS256,
+  checked against the team's rotating keys, this app's audience tag, issuer
+  and expiry) for an email listed in `.env`. Both modes require CSRF tokens
+  and an exact Origin match for changes.
+- **Tunnel.** `cloudflared` runs read-only, without capabilities, pinned by
+  digest, and only on the network that reaches the app. Its routes live in
+  the Cloudflare dashboard, so the Cloudflare account is part of the trust
+  boundary: keep it to the one hostname and no private network routes.
 
-Not done yet: public deployment (Cloudflare Access, Google allowlist, HTTPS
-cookies), backups and retention, and an independent security review.
+Not done yet: backups and retention, and an independent security review.

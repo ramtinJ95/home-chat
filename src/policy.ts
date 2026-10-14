@@ -29,10 +29,10 @@ export function publicAddress(value: string): boolean {
   return parsed.range() === 'unicast' && (parsed.kind() !== 'ipv6' || parsed.match(ipaddr.parse('2000::'), 3));
 }
 
-export function allowedDestination(authority: string): string {
+export function allowedDestination(authority: string, hosts: ReadonlySet<string> = PROVIDER_HOSTS): string {
   if (!/^[a-z0-9.-]+:443$/.test(authority)) throw new Error('Destination denied');
   const host = authority.slice(0, -4);
-  if (!PROVIDER_HOSTS.has(host)) throw new Error('Destination denied');
+  if (!hosts.has(host)) throw new Error('Destination denied');
   return host;
 }
 

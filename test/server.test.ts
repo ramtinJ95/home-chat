@@ -5,12 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
+import { generateKeyPairSync, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
 import type { Question, User } from '../src/api.d.ts';
 import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
-import { createApp } from '../src/server.ts';
+import { createApp, type AppOptions } from '../src/server.ts';
 
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   busy = false;
@@ -35,16 +36,17 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
 interface RequestOptions { method?: string; body?: unknown; cookie?: string; csrf?: string; headers?: Record<string, string> }
 interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string> }
 
-async function fixture(ready = true) {
+async function fixture(ready = true, {access, accessKeys}: Pick<AppOptions, 'access' | 'accessKeys'> = {}) {
   const data = await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
-  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready});
+  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
-  const origin = 'http://127.0.0.1:8787';
+  const host = access?.host ?? '127.0.0.1:8787';
+  const origin = (access ? 'https://' : 'http://') + host;
   const base = `http://127.0.0.1:${(app.server.address() as AddressInfo).port}`;
   const request = (path: string, {method = 'GET', body, cookie, csrf, headers = {}}: RequestOptions = {}) => {
     return new Promise<TestResponse>((resolve, reject) => {
-      const request = httpRequest(base + path, {method, headers: {Host: '127.0.0.1:8787', Origin: origin, ...(body !== undefined ? {'Content-Type': 'application/json'} : {}), ...(cookie ? {Cookie: cookie} : {}), ...(csrf ? {'X-CSRF-Token': csrf} : {}), ...headers}}, response => {
+      const request = httpRequest(base + path, {method, headers: {Host: host, Origin: origin, ...(body !== undefined ? {'Content-Type': 'application/json'} : {}), ...(cookie ? {Cookie: cookie} : {}), ...(csrf ? {'X-CSRF-Token': csrf} : {}), ...headers}}, response => {
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () => {
@@ -126,5 +128,38 @@ test('local access-code guessing is rate limited', async () => {
   try {
     for (let i = 0; i < 5; i++) assert.equal((await f.request('/api/login', {method: 'POST', body: {code: 'wrong'}})).status, 401);
     assert.equal((await f.request('/api/login', {method: 'POST', body: {code: 'wrong'}})).status, 429);
+  } finally { await f.close(); }
+});
+
+test('Cloudflare Access mode admits only verified, listed Google accounts over the public hostname', async () => {
+  const {publicKey, privateKey} = generateKeyPairSync('rsa', {modulusLength: 2048});
+  const access = {
+    host: 'home-chat.example.test', team: 'home', audience: 'aud-tag',
+    users: new Map<string, User>([['owner@example.test', 'owner'], ['guest@example.test', 'guest']]),
+  };
+  const f = await fixture(true, {access, accessKeys: async () => [{...publicKey.export({format: 'jwk'}), kid: 'k1'}]});
+  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const signedIn = (email: string) => {
+    const body = `${encode({alg: 'RS256', kid: 'k1'})}.${encode({iss: 'https://home.cloudflareaccess.com', aud: ['aud-tag'], email, exp: Math.floor(Date.now() / 1000) + 600})}`;
+    return {'Cf-Access-Jwt-Assertion': `${body}.${sign('RSA-SHA256', Buffer.from(body), privateKey).toString('base64url')}`};
+  };
+  try {
+    assert.equal((await f.request('/api/me')).status, 401);
+    assert.equal((await f.request('/api/me', {headers: {...signedIn('owner@example.test'), Host: '127.0.0.1:8787'}})).status, 421);
+    assert.equal((await f.request('/api/me', {headers: signedIn('stranger@example.test')})).status, 401);
+    // Access codes are not a way in on the public hostname.
+    const codes: Record<User, string> = JSON.parse(await readFile(join(f.data, 'local-access.json'), 'utf8'));
+    assert.equal((await f.request('/api/login', {method: 'POST', body: {code: codes.owner}})).status, 401);
+    const me = await (await f.request('/api/me', {headers: signedIn('owner@example.test')})).json();
+    assert.equal(me.mode, 'access'); assert.equal(me.user, 'owner');
+    const owner = {headers: signedIn('owner@example.test'), csrf: me.csrf as string};
+    assert.equal((await f.request('/api/chats', {method: 'POST', body: {}, headers: owner.headers})).status, 403);
+    assert.equal((await f.request('/api/chats', {method: 'POST', body: {}, ...owner, headers: {...owner.headers, Origin: 'http://home-chat.example.test'}})).status, 403);
+    const created = await f.request('/api/chats', {method: 'POST', body: {}, ...owner});
+    assert.equal(created.status, 201);
+    const {id} = await created.json();
+    assert.equal((await f.request(`/api/chats/${id}`, {headers: signedIn('guest@example.test')})).status, 404);
+    assert.equal((await f.request(`/api/chats/${id}`, {headers: signedIn('owner@example.test')})).status, 200);
+    assert.equal((await f.request('/healthz', {headers: {Host: 'anything'}})).status, 200);
   } finally { await f.close(); }
 });

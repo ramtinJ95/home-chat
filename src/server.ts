@@ -1,11 +1,12 @@
 import http from 'node:http';
-import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
+import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string }
@@ -17,6 +18,9 @@ export interface AppOptions {
   data?: string;
   workerFactory?: (directory: string) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
+  // Set for the public deployment: Cloudflare Access identities replace the local access codes.
+  access?: AccessConfig;
+  accessKeys?: AccessKeySource;
 }
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
@@ -81,12 +85,16 @@ async function loadStaticFiles() {
     [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const)));
 }
 
-export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider}: AppOptions = {}) {
+export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   await mkdir(chatsDirectory, {recursive: true, mode: 0o700});
   const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
   const staticFiles = await loadStaticFiles();
   const sessions = new Map<string, Session>();
+  const verifyAccess = access && createAccessVerifier(access, accessKeys);
+  // Access sessions are stateless: the CSRF token is derived from the verified email, so it survives page reloads.
+  const csrfSecret = randomBytes(32);
+  const origin = access ? 'https://' + access.host : undefined;
   const loginAttempts = new Map<string, number[]>();
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
@@ -185,6 +193,28 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     return worker;
   }
 
+  async function authenticate(req: http.IncomingMessage): Promise<{session: Session; sessionKey: string}> {
+    if (verifyAccess) {
+      const header = req.headers['cf-access-jwt-assertion'];
+      let identity;
+      try { identity = await verifyAccess(typeof header === 'string' ? header : undefined); }
+      catch (error) {
+        if (error instanceof AccessDenied) throw fail(401, error.message);
+        throw fail(503, 'Could not verify the Cloudflare Access sign-in');
+      }
+      const csrf = createHmac('sha256', csrfSecret).update(identity.email).digest('base64url');
+      return {sessionKey: 'access:' + identity.email, session: {user: identity.user, csrf, expires: identity.expires}};
+    }
+    const cookie = String(req.headers.cookie ?? '').split(';').map(x => x.trim()).find(x => x.startsWith('home_chat='))?.slice(10);
+    const sessionKey = digest(cookie ?? '').toString('hex');
+    const session = sessions.get(sessionKey);
+    if (!session || session.expires < Date.now()) { sessions.delete(sessionKey); throw fail(401, 'Sign in required'); }
+    return {session, sessionKey};
+  }
+  // Open streams end when their sign-in does: at logout, or at expiry (the Access token's own expiry under Access).
+  const live = (sessionKey: string, session: Session) =>
+    session.expires >= Date.now() && (verifyAccess !== undefined || sessions.get(sessionKey) === session);
+
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -194,15 +224,19 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
     try {
+      // The container health check, from inside the container only; it reveals nothing.
+      if (req.url === '/healthz' && req.method === 'GET' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
+        return send(200, {ok: true});
+      }
       const host = req.headers.host ?? '';
-      if (!LOCAL_HOSTS.has(host)) throw fail(421, 'This prototype accepts localhost only');
+      if (access ? host !== access.host : !LOCAL_HOSTS.has(host)) throw fail(421, 'Unexpected host');
       const url = new URL(req.url ?? '/', 'http://' + host);
       const path = url.pathname;
       const mutation = !['GET', 'HEAD'].includes(req.method ?? '');
-      if (mutation && req.headers.origin !== 'http://' + host) throw fail(403, 'Origin rejected');
+      if (mutation && req.headers.origin !== (origin ?? 'http://' + host)) throw fail(403, 'Origin rejected');
       const file = req.method === 'GET' ? staticFiles.get(path) : undefined;
       if (file) return send(200, file.body, {'Content-Type': file.type});
-      if (path === '/api/login' && req.method === 'POST') {
+      if (path === '/api/login' && req.method === 'POST' && !access) {
         const ip = req.socket.remoteAddress ?? '';
         const recent = (loginAttempts.get(ip) ?? []).filter(time => time > Date.now() - 15 * 60_000);
         if (recent.length >= 5) throw fail(429, 'Too many attempts; wait 15 minutes');
@@ -220,19 +254,17 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         res.setHeader('Set-Cookie', `home_chat=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`);
         return send(200, {ok: true});
       }
-      const cookie = String(req.headers.cookie ?? '').split(';').map(x => x.trim()).find(x => x.startsWith('home_chat='))?.slice(10);
-      const sessionKey = digest(cookie ?? '').toString('hex');
-      const session = sessions.get(sessionKey);
-      if (!session || session.expires < Date.now()) { sessions.delete(sessionKey); throw fail(401, 'Sign in required'); }
+      const {session, sessionKey} = await authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
-        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), localOnly: true, tools: ALLOWED_TOOLS};
+        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local', tools: ALLOWED_TOOLS};
         return send(200, me);
       }
       if (path === '/api/logout' && req.method === 'POST') {
+        // Under Access the browser then leaves through Cloudflare's own logout, which ends the real session.
         sessions.delete(sessionKey);
         for (const clients of streams.values()) for (const client of clients) if (client.sessionKey === sessionKey) client.res.end();
-        res.setHeader('Set-Cookie', 'home_chat=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+        if (!access) res.setHeader('Set-Cookie', 'home_chat=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
@@ -260,7 +292,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         const client = {res, sessionKey}; clients.add(client); streams.set(chat.id, clients);
         sse(res, {type: 'snapshot', chat: snapshot(chat)});
         const heartbeat = setInterval(() => {
-          if (sessions.get(sessionKey) !== session || session.expires < Date.now()) return res.end();
+          if (!live(sessionKey, session)) return res.end();
           res.write(': keepalive\n\n');
         }, 15_000);
         heartbeat.unref();
@@ -351,7 +383,9 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       else send(500, {error: 'Request failed; no further action was taken'});
     }
   });
-  server.requestTimeout = 45_000; server.headersTimeout = 10_000; server.keepAliveTimeout = 5000; server.maxConnections = 64;
+  server.requestTimeout = 45_000; server.headersTimeout = 10_000; server.maxConnections = 64;
+  // cloudflared reuses idle origin connections for up to 90s; closing them sooner races its reuse and surfaces as 502s.
+  server.keepAliveTimeout = access ? 100_000 : 5000;
   const stop = async () => {
     for (const worker of workers.values()) worker.stop();
     for (const clients of streams.values()) for (const client of clients) client.res.end();
@@ -362,9 +396,10 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
 }
 
 if (import.meta.main) {
-  if (process.env.HOME_CHAT_LOCAL_ONLY !== '1') throw new Error('Only explicitly local deployments are supported');
+  const mode = process.env.HOME_CHAT_MODE;
+  if (mode !== 'local' && mode !== 'access') throw new Error('Set HOME_CHAT_MODE to local or access');
   await copyFile('/app/profile/pi-codex-conversion.json', '/data/profile/pi-codex-conversion.json');
-  const app = await createApp();
-  app.server.listen(8080, '0.0.0.0', () => console.log('Home Chat local prototype ready; provider login is checked separately'));
+  const app = await createApp(mode === 'access' ? {access: accessConfigFromEnv(process.env)} : {});
+  app.server.listen(8080, '0.0.0.0', () => console.log(`Home Chat ready in ${mode} mode; provider login is checked separately`));
   process.once('SIGTERM', () => { void app.stop(); });
 }

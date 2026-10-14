@@ -19,6 +19,7 @@ const ui = {
   avatar: $('#avatar'),
   identity: $('#identity'),
   logout: $<HTMLButtonElement>('#logout'),
+  modeBadge: $('#mode-badge'),
   title: $('#chat-title'),
   providerWarning: $('#provider-warning'),
   messages: $('#messages'),
@@ -69,14 +70,21 @@ function showError(error: unknown) {
 }
 
 async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
-  const response = await fetch(path, {
-    method,
-    credentials: 'same-origin',
-    headers: method === 'GET' ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': me?.csrf ?? ''},
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const result: unknown = await response.json();
-  if (!response.ok) throw new Error((result as ApiError).error ?? 'Request failed');
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      method,
+      credentials: 'same-origin',
+      headers: method === 'GET' ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': me?.csrf ?? ''},
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  } catch {
+    // Behind Cloudflare Access an expired sign-in redirects to its login page, which fetch cannot follow.
+    throw new Error('Could not reach Home Chat. Reload the page; you may need to sign in again.');
+  }
+  // Errors from Cloudflare itself (e.g. the home machine is offline) are HTML pages, not our JSON.
+  const result: unknown = await response.json().catch(() => undefined);
+  if (!response.ok) throw new Error((result as ApiError | undefined)?.error ?? `Home Chat is unavailable right now (HTTP ${response.status})`);
   return result as T;
 }
 
@@ -317,6 +325,7 @@ async function enter() {
   ui.login.hidden = true;
   ui.workspace.hidden = false;
   ui.identity.textContent = me.user === 'owner' ? 'Your space' : 'Guest space';
+  ui.modeBadge.textContent = me.mode === 'access' ? 'Private' : 'Local only';
   ui.avatar.textContent = me.user === 'owner' ? 'Y' : 'G';
   ui.providerWarning.hidden = me.codexConfigured;
   const list = await refreshList();
@@ -418,7 +427,8 @@ ui.logout.onclick = async () => {
   try {
     await api('/api/logout', 'POST', {});
     stream?.close();
-    location.reload();
+    // Under Cloudflare Access the real session is Cloudflare's; end it there.
+    if (me?.mode === 'access') location.assign('/cdn-cgi/access/logout'); else location.reload();
   } catch (error) { showError(error); }
 };
 ui.composer.onsubmit = async event => {
@@ -462,4 +472,8 @@ ui.imageInput.onchange = async () => {
   } catch (error) { showError(error); }
 };
 
-enter().catch(error => { if ((error as Error).message !== 'Sign in required') showError(error); });
+// The access-code form is only for local mode; under Cloudflare Access the user is already signed in.
+enter().catch(error => {
+  if ((error as Error).message === 'Sign in required') ui.login.hidden = false;
+  else showError(error);
+});
