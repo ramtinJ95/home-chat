@@ -184,18 +184,29 @@ svg { width: 20px; height: 20px; flex: none; }
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
 }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
-.chat-list button {
-  position: relative; width: 100%; padding: 10px 12px; border-radius: 12px;
-  text-align: left; font-size: 0.9rem; color: var(--ink-soft);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  transition: background 140ms, color 140ms;
+.chat-item {
+  position: relative; display: flex; align-items: center; border-radius: 12px;
+  color: var(--ink-soft); transition: background 140ms, color 140ms;
 }
-.chat-list button:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--ink); }
-.chat-list button.active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-soft); }
-.chat-list button.active::before {
+.chat-item:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--ink); }
+.chat-item.active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-soft); }
+.chat-item.active::before {
   content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
   width: 3px; border-radius: 3px; background: var(--oak);
 }
+.chat-open {
+  flex: 1; min-width: 0; padding: 10px 12px;
+  text-align: left; font-size: 0.9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-delete {
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-right: 2px;
+  border-radius: 10px; color: var(--muted); opacity: 0; transition: opacity 140ms, color 140ms, background 140ms;
+}
+.chat-delete svg { width: 17px; height: 17px; }
+.chat-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* A mouse reveals delete on the hovered or current row; touch and keyboard users always reach it. */
+.chat-item:hover .chat-delete, .chat-item.active .chat-delete, .chat-delete:focus-visible { opacity: 1; }
 .sidebar-foot {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 6px 0; border-top: 1px solid var(--line);
@@ -437,7 +448,8 @@ svg { width: 20px; height: 20px; flex: none; }
 @media (pointer: coarse) {
   .icon-button, .attach, .send { width: 44px; height: 44px; }
   .stop { height: 44px; }
-  .chat-list button { padding: 13px 12px; }
+  .chat-delete { width: 44px; height: 44px; opacity: 1; }
+  .chat-open { padding: 13px 12px; }
   .question .option { padding: 11px 18px; }
 }
 

@@ -68,7 +68,9 @@ docker compose stop
 ```
 
 Conversations, images and credentials live in the `home-chat_chat-data`
-volume. `docker compose down -v` deletes all of them.
+volume. `docker compose down -v` deletes all of them. Deleting a conversation
+in the sidebar removes its messages, pictures and Pi session for good; it is
+refused while a reply is still running.
 
 ## Public deployment
 

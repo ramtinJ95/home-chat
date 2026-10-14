@@ -287,12 +287,26 @@ async function refreshList(): Promise<ChatSummary[]> {
   // The server lists oldest first; everything here wants newest first.
   const list = (await api<ChatSummary[]>('/api/chats')).reverse();
   ui.chatList.replaceChildren(...list.map(item => {
-    const button = element('button', item.id === chat?.id ? 'active' : '', item.title);
-    button.type = 'button';
-    button.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
-    return button;
+    const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
+    const open = element('button', 'chat-open', item.title);
+    open.type = 'button';
+    open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
+    const remove = element('button', 'chat-delete');
+    remove.type = 'button';
+    remove.title = 'Delete conversation';
+    remove.setAttribute('aria-label', `Delete “${item.title}”`);
+    remove.append(icon('trash'));
+    remove.onclick = () => deleteChat(item).catch(showError);
+    row.append(open, remove);
+    return row;
   }));
   return list;
+}
+
+async function deleteChat(item: ChatSummary) {
+  if (!confirm(`Delete “${item.title}”? Its messages and pictures will be gone for good.`)) return;
+  await api(`/api/chats/${item.id}`, 'DELETE');
+  if (item.id === chat?.id) await openLatest(); else await refreshList();
 }
 
 async function openChat(id: string) {
@@ -320,6 +334,11 @@ async function newChat() {
   await openChat(created.id);
 }
 
+async function openLatest() {
+  const list = await refreshList();
+  if (list.length) await openChat(list[0].id); else await newChat();
+}
+
 async function enter() {
   me = await api<Me>('/api/me');
   ui.login.hidden = true;
@@ -328,8 +347,7 @@ async function enter() {
   ui.modeBadge.textContent = me.mode === 'access' ? 'Private' : 'Local only';
   ui.avatar.textContent = me.user === 'owner' ? 'Y' : 'G';
   ui.providerWarning.hidden = me.codexConfigured;
-  const list = await refreshList();
-  if (list.length) await openChat(list[0].id); else await newChat();
+  await openLatest();
 }
 
 function dropAttachments(dropped: readonly Attachment[]) {
