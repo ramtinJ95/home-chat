@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -112,6 +112,25 @@ test('mocked Pi streaming and structured questions stay in their conversation', 
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
     await delay(30);
     assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).busy, false);
+  } finally { await f.close(); }
+});
+test('owners delete their idle conversations and everything stored with them', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', ...guest})).status, 404);
+    assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', cookie: owner.cookie})).status, 403);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hello', assets: []}, ...owner})).status, 202);
+    assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', ...owner})).status, 409);
+    await f.request(`/api/chats/${chat.id}/abort`, {method: 'POST', body: {}, ...owner});
+    await delay(30);
+    assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', ...owner})).status, 200);
+    assert.equal(f.worker.closed, true);
+    assert.equal((await f.request(`/api/chats/${chat.id}`, owner)).status, 404);
+    assert.deepEqual(await (await f.request('/api/chats', owner)).json(), []);
+    await assert.rejects(access(join(f.data, 'chats', chat.id)));
+    assert.deepEqual(await readdir(join(f.data, 'deleted')), []);
   } finally { await f.close(); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {

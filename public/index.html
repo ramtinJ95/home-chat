@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="light dark">
-  <meta name="theme-color" content="#faf7f2" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#17151b" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#faf7f2">
   <title>Home Chat</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/theme.js"></script>
   <script type="module" src="/app.js"></script>
 </head>
 <body>
@@ -45,6 +45,7 @@
       <div class="sidebar-foot">
         <span id="avatar" class="avatar" aria-hidden="true"></span>
         <span id="identity" class="identity"></span>
+        <button id="theme-toggle" class="icon-button" type="button"><svg viewBox="0 0 24 24"><use href="#moon"/></svg></button>
         <button id="logout" class="ghost" type="button">Sign out</button>
       </div>
     </aside>
@@ -74,6 +75,9 @@
               <span class="sr-only">Add picture</span>
               <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
             </label>
+            <button id="dictate" class="attach" type="button" aria-label="Dictate" aria-pressed="false" title="Dictate" hidden>
+              <svg viewBox="0 0 24 24"><use href="#mic"/></svg>
+            </button>
             <span id="activity" class="activity"></span>
             <button id="stop" class="stop" type="button" hidden><svg viewBox="0 0 24 24"><use href="#stop-icon"/></svg>Stop</button>
             <button id="send" class="send" type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><use href="#arrow"/></svg></button>
@@ -97,6 +101,10 @@
     <symbol id="download" viewBox="0 0 24 24"><path d="M12 4v11m0 0-4.5-4.5M12 15l4.5-4.5M5 19h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="spark" viewBox="0 0 24 24"><path d="M12 3c.6 4.6 3.4 7.4 8 8-4.6.6-7.4 3.4-8 8-.6-4.6-3.4-7.4-8-8 4.6-.6 7.4-3.4 8-8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
     <symbol id="compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m15.5 8.5-2 5-5 2 2-5 5-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+    <symbol id="trash" viewBox="0 0 24 24"><path d="M5 7h14M10 7V5h4v2m-7 0 .8 12h8.4L17 7m-6.5 4v5m3-5v5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="mic" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+    <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
   </svg>
 </body>

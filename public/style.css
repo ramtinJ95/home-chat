@@ -6,25 +6,26 @@
   --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  --paper: #faf7f2;
-  --paper-deep: #f3eee6;
-  --card: #fffdfa;
-  --ink: #2b2633;
-  --ink-soft: #5e5869;
-  --muted: #6f6877;
-  --line: #e9e2d8;
-  --accent: #6f5fa8;
-  --accent-deep: #5d4f94;
-  --on-accent: #fdfbff;
-  --tint: #eeeaf6;
-  --oak: #b88d5c;
-  --linen: #ebe2d3;
-  --danger: #b0413e;
-  --code-bg: #f3efe8;
+  /* Light, then dark. The system setting chooses unless the sidebar toggle has saved a theme (public/theme.ts). */
+  --paper: light-dark(#faf7f2, #17151b);
+  --paper-deep: light-dark(#f3eee6, #1c1a21);
+  --card: light-dark(#fffdfa, #232029);
+  --ink: light-dark(#2b2633, #eeeaf2);
+  --ink-soft: light-dark(#5e5869, #bdb6c6);
+  --muted: light-dark(#6f6877, #8f889a);
+  --line: light-dark(#e9e2d8, #312d38);
+  --accent: light-dark(#6f5fa8, #b9acec);
+  --accent-deep: light-dark(#5d4f94, #cbc1f2);
+  --on-accent: light-dark(#fdfbff, #1e1830);
+  --tint: light-dark(#eeeaf6, #2c2738);
+  --oak: light-dark(#b88d5c, #d4b088);
+  --linen: light-dark(#ebe2d3, #3a3430);
+  --danger: light-dark(#b0413e, #f0958a);
+  --code-bg: light-dark(#f3efe8, #1d1b22);
 
   --radius: 18px;
-  --shadow-soft: 0 1px 2px rgb(43 38 51 / 0.04), 0 8px 24px rgb(43 38 51 / 0.06);
-  --shadow-lift: 0 2px 4px rgb(43 38 51 / 0.05), 0 18px 48px rgb(43 38 51 / 0.11);
+  --shadow-soft: 0 1px 2px light-dark(rgb(43 38 51 / 0.04), rgb(0 0 0 / 0.3)), 0 8px 24px light-dark(rgb(43 38 51 / 0.06), rgb(0 0 0 / 0.25));
+  --shadow-lift: 0 2px 4px light-dark(rgb(43 38 51 / 0.05), rgb(0 0 0 / 0.3)), 0 18px 48px light-dark(rgb(43 38 51 / 0.11), rgb(0 0 0 / 0.4));
   --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
 
   color-scheme: light dark;
@@ -34,28 +35,8 @@
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --paper: #17151b;
-    --paper-deep: #1c1a21;
-    --card: #232029;
-    --ink: #eeeaf2;
-    --ink-soft: #bdb6c6;
-    --muted: #8f889a;
-    --line: #312d38;
-    --accent: #b9acec;
-    --accent-deep: #cbc1f2;
-    --on-accent: #1e1830;
-    --tint: #2c2738;
-    --oak: #d4b088;
-    --linen: #3a3430;
-    --danger: #f0958a;
-    --code-bg: #1d1b22;
-    --shadow-soft: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 24px rgb(0 0 0 / 0.25);
-    --shadow-lift: 0 2px 4px rgb(0 0 0 / 0.3), 0 18px 48px rgb(0 0 0 / 0.4);
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 *, *::before, *::after { box-sizing: border-box; }
 body { margin: 0; min-height: 100dvh; }
@@ -184,18 +165,29 @@ svg { width: 20px; height: 20px; flex: none; }
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
 }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
-.chat-list button {
-  position: relative; width: 100%; padding: 10px 12px; border-radius: 12px;
-  text-align: left; font-size: 0.9rem; color: var(--ink-soft);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  transition: background 140ms, color 140ms;
+.chat-item {
+  position: relative; display: flex; align-items: center; border-radius: 12px;
+  color: var(--ink-soft); transition: background 140ms, color 140ms;
 }
-.chat-list button:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--ink); }
-.chat-list button.active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-soft); }
-.chat-list button.active::before {
+.chat-item:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); color: var(--ink); }
+.chat-item.active { background: var(--card); color: var(--ink); font-weight: 600; box-shadow: var(--shadow-soft); }
+.chat-item.active::before {
   content: ""; position: absolute; left: 0; top: 10px; bottom: 10px;
   width: 3px; border-radius: 3px; background: var(--oak);
 }
+.chat-open {
+  flex: 1; min-width: 0; padding: 10px 12px;
+  text-align: left; font-size: 0.9rem;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.chat-delete {
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-right: 2px;
+  border-radius: 10px; color: var(--muted); opacity: 0; transition: opacity 140ms, color 140ms, background 140ms;
+}
+.chat-delete svg { width: 17px; height: 17px; }
+.chat-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* A mouse reveals delete on the hovered or current row; touch and keyboard users always reach it. */
+.chat-item:hover .chat-delete, .chat-item.active .chat-delete, .chat-delete:focus-visible { opacity: 1; }
 .sidebar-foot {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 6px 0; border-top: 1px solid var(--line);
@@ -206,6 +198,7 @@ svg { width: 20px; height: 20px; flex: none; }
   font: 600 0.9rem var(--sans);
 }
 .identity { flex: 1; font-size: 0.88rem; font-weight: 600; }
+.sidebar-foot .icon-button { width: 36px; height: 36px; }
 .scrim { display: none; }
 
 .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100dvh; }
@@ -362,6 +355,7 @@ svg { width: 20px; height: 20px; flex: none; }
   color: var(--ink-soft); cursor: pointer; transition: background 140ms, color 140ms;
 }
 .attach:hover { background: var(--tint); color: var(--accent); }
+.attach[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); animation: breathe 1.6s ease-in-out infinite; }
 .activity { flex: 1; min-width: 0; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .send {
   display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px;
@@ -437,7 +431,9 @@ svg { width: 20px; height: 20px; flex: none; }
 @media (pointer: coarse) {
   .icon-button, .attach, .send { width: 44px; height: 44px; }
   .stop { height: 44px; }
-  .chat-list button { padding: 13px 12px; }
+  .sidebar-foot .icon-button, .chat-delete { width: 44px; height: 44px; }
+  .chat-delete { opacity: 1; }
+  .chat-open { padding: 13px 12px; }
   .question .option { padding: 11px 18px; }
 }
 

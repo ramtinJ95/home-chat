@@ -1,6 +1,6 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
@@ -80,14 +80,18 @@ async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
 }
 
 async function loadStaticFiles() {
-  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/style.css', 'style.css', 'text/css']];
+  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'], ['/style.css', 'style.css', 'text/css']];
   return new Map(await Promise.all(files.map(async ([path, file, type]) =>
     [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const)));
 }
 
 export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
+  // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
+  const deletedDirectory = join(data, 'deleted');
+  await rm(deletedDirectory, {recursive: true, force: true});
   await mkdir(chatsDirectory, {recursive: true, mode: 0o700});
+  await mkdir(deletedDirectory, {mode: 0o700});
   const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
   const staticFiles = await loadStaticFiles();
   const sessions = new Map<string, Session>();
@@ -100,7 +104,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   const chats = new Map<string, Chat>();
   const workers = new Map<string, ChatWorker>();
   const streams = new Map<string, Set<StreamClient>>();
-  // `running`: a turn is visible to clients, until settle/failure. `inflight`: a message request is being admitted.
+  // `running`: a turn is visible to clients, until settle/failure. `inflight`: files are changing outside a visible turn
+  // (a message being admitted, a turn's final save, a delete).
   const running = new Set<string>();
   const inflight = new Set<string>();
   const occupied = (id: string) => running.has(id) || inflight.has(id);
@@ -135,8 +140,10 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     clearTimeout(worker.deadline);
     const last = chat.messages.at(-1);
     if (error && last?.role === 'assistant') last.error = error;
+    // Clients see the turn end now, but the conversation stays in flight until it is saved, so a delete cannot remove the files under the save.
+    inflight.add(chat.id);
     running.delete(chat.id); worker.busy = false;
-    await publish(chat);
+    try { await publish(chat); } finally { inflight.delete(chat.id); }
   }
 
   async function collectGenerated(chat: Chat) {
@@ -285,6 +292,22 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       // Method plus the path below the chat, e.g. 'GET', 'GET events', 'POST messages'.
       const route = [req.method, ...parts.slice(3)].join(' ');
       if (route === 'GET') return send(200, snapshot(chat));
+      if (route === 'DELETE') {
+        if (occupied(chat.id)) throw fail(409, 'Stop the current reply before deleting this conversation');
+        // Held as in flight so no message, upload or second delete starts while the files move.
+        inflight.add(chat.id);
+        try {
+          workers.get(chat.id)?.stop(); workers.delete(chat.id);
+          // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
+          const removed = join(deletedDirectory, chat.id);
+          await rename(join(chatsDirectory, chat.id), removed);
+          chats.delete(chat.id);
+          for (const client of streams.get(chat.id) ?? []) client.res.end();
+          streams.delete(chat.id);
+          await rm(removed, {recursive: true, force: true});
+        } finally { inflight.delete(chat.id); }
+        return send(200, {ok: true});
+      }
       if (route === 'GET events') {
         const clients = streams.get(chat.id) ?? new Set();
         if (clients.size >= 4) throw fail(429, 'Too many open chat streams');

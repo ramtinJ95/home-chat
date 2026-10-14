@@ -8,3 +8,4 @@ local-access.json
 .env
 .env.*
 public/app.js
+public/theme.js

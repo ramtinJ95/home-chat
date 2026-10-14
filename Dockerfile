@@ -1,6 +1,6 @@
 FROM node:26.9.0-bookworm-slim@sha256:582460f614631b59b824ac6020533b9bf339c7fdf3a6d7db31abb6b4065f0212 AS node
 
-# Type-check everything and compile the browser script; only public/app.js leaves this stage.
+# Type-check everything and compile the browser scripts; only their .js output leaves this stage.
 FROM node AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
@@ -16,7 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public
-COPY --from=build /app/public/app.js ./public/app.js
+COPY --from=build /app/public/app.js /app/public/theme.js ./public/
 COPY profile ./profile
 COPY --chmod=755 scripts ./scripts
 COPY test ./test
