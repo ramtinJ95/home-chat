@@ -373,6 +373,7 @@ svg { width: 20px; height: 20px; flex: none; }
   color: var(--ink-soft); cursor: pointer; transition: background 140ms, color 140ms;
 }
 .attach:hover { background: var(--tint); color: var(--accent); }
+.attach[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); animation: breathe 1.6s ease-in-out infinite; }
 .activity { flex: 1; min-width: 0; font-size: 0.8rem; color: var(--ink-soft); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .send {
   display: grid; place-items: center; width: 40px; height: 40px; border-radius: 14px;

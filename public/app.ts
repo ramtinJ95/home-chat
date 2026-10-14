@@ -28,6 +28,7 @@ const ui = {
   message: $<HTMLTextAreaElement>('#message'),
   attachments: $('#attachments'),
   imageInput: $<HTMLInputElement>('#image-input'),
+  dictate: $<HTMLButtonElement>('#dictate'),
   activity: $('#activity'),
   stop: $<HTMLButtonElement>('#stop'),
   send: $<HTMLButtonElement>('#send'),
@@ -51,6 +52,22 @@ const STREAM_RENDER_MS = 120;
 
 interface Attachment { id: string; preview: string }
 
+// The Web Speech API is not in TypeScript's DOM library; only the members used here.
+interface Recognition {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((event: {results: ArrayLike<ArrayLike<{transcript: string}>>}) => void) | null;
+  onerror: ((event: {error: string}) => void) | null;
+  onend: (() => void) | null;
+  start(): void;
+  stop(): void;
+  abort(): void;
+}
+// Safari and Chrome only (Firefox has none), and the speech is transcribed by the browser's own service, not Home Chat.
+const speech = window as unknown as {SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition};
+const Recognizer = speech.SpeechRecognition ?? speech.webkitSpeechRecognition;
+
 let me: Me | undefined;
 let chat: ChatSnapshot | undefined;
 let stream: EventSource | undefined;
@@ -59,6 +76,7 @@ let attachments: Attachment[] = [];
 let streaming: {node: HTMLElement; text: string; timer?: number} | undefined;
 let activeQuestionId: string | undefined;
 let errorTimer: number | undefined;
+let dictation: Recognition | undefined;
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
 let following = true;
 
@@ -206,7 +224,7 @@ function renderEmpty(): HTMLElement {
     const button = element('button');
     button.type = 'button';
     button.append(icon(name), element('strong', undefined, title), element('span', undefined, prompt));
-    button.onclick = () => { ui.message.value = prompt; resizeComposer(); ui.message.focus(); };
+    button.onclick = () => { cancelDictation(); ui.message.value = prompt; resizeComposer(); ui.message.focus(); };
     suggestions.append(button);
   }
   empty.append(
@@ -420,6 +438,41 @@ function resizeComposer() {
   ui.message.style.height = Math.min(ui.message.scrollHeight, 220) + 'px';
 }
 
+function setDictation(next: Recognition | undefined) {
+  dictation = next;
+  ui.dictate.setAttribute('aria-pressed', String(Boolean(next)));
+  ui.dictate.title = next ? 'Stop dictating' : 'Dictate';
+}
+
+// Stops listening and drops any speech still being recognised; what is already in the composer stays.
+function cancelDictation() {
+  const active = dictation;
+  setDictation(undefined);
+  active?.abort();
+}
+
+function startDictation(Speech: new () => Recognition) {
+  const recognition = new Speech();
+  recognition.lang = navigator.language;
+  recognition.continuous = true;
+  recognition.interimResults = true;
+  // Speech continues whatever was already typed.
+  const typed = ui.message.value.trimEnd();
+  recognition.onresult = event => {
+    if (dictation !== recognition) return;
+    const spoken = Array.from(event.results, result => result[0].transcript.trim()).filter(Boolean).join(' ');
+    ui.message.value = [typed, spoken].filter(Boolean).join(' ');
+    resizeComposer();
+  };
+  recognition.onerror = event => {
+    if (event.error === 'not-allowed' || event.error === 'service-not-allowed') showError('Allow microphone access for this site to dictate');
+    else if (event.error !== 'no-speech' && event.error !== 'aborted') showError(`Dictation stopped (${event.error})`);
+  };
+  recognition.onend = () => { if (dictation === recognition) setDictation(undefined); };
+  recognition.start();
+  setDictation(recognition);
+}
+
 function readBase64(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -452,6 +505,8 @@ ui.logout.onclick = async () => {
 ui.composer.onsubmit = async event => {
   event.preventDefault();
   if (!chat) return;
+  // Whatever is shown is what gets sent; late recognition results must not refill the cleared composer.
+  cancelDictation();
   const text = ui.message.value;
   const sent = [...attachments];
   try {
@@ -465,7 +520,13 @@ ui.composer.onsubmit = async event => {
 ui.stop.onclick = () => {
   if (chat) api(`/api/chats/${chat.id}/abort`, 'POST', {}).catch(showError);
 };
-ui.message.oninput = resizeComposer;
+// Typing takes over from dictation, which would otherwise overwrite the edit with its next result.
+ui.message.oninput = () => { cancelDictation(); resizeComposer(); };
+ui.dictate.hidden = !Recognizer;
+ui.dictate.onclick = () => {
+  if (dictation) { dictation.stop(); return; }
+  try { if (Recognizer) startDictation(Recognizer); } catch (error) { showError(error); }
+};
 ui.messages.addEventListener('scroll', () => {
   following = ui.messages.scrollHeight - ui.messages.scrollTop - ui.messages.clientHeight < 80;
 }, {passive: true});
