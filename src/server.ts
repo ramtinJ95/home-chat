@@ -80,7 +80,7 @@ async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
 }
 
 async function loadStaticFiles() {
-  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/style.css', 'style.css', 'text/css']];
+  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'], ['/style.css', 'style.css', 'text/css']];
   return new Map(await Promise.all(files.map(async ([path, file, type]) =>
     [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const)));
 }

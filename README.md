@@ -107,13 +107,13 @@ the Cloudflare session too.
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
-directly with no build step. Only the browser script is compiled
-(`public/app.ts` to `public/app.js`).
+directly with no build step. Only the browser scripts are compiled
+(`public/app.ts` and `public/theme.ts` to `.js`).
 
 ```sh
 npm ci
 npm run typecheck   # server + browser
-npm run build       # public/app.js
+npm run build       # public/app.js, public/theme.js
 npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 ```
 
@@ -125,7 +125,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI on port 443 |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/` | Pi extension that filters tool registration, plus the system prompt |
-| `public/` | Single-page UI (HTML, CSS, `app.ts`) |
+| `public/` | Single-page UI (HTML, CSS, `app.ts`, and `theme.ts` for the light/dark choice) |
 | `scripts/` | Container entrypoint, login helpers and environment checks |
 
 The image builds and type-checks everything. Run the test suite inside it
