@@ -46,7 +46,8 @@ const SUGGESTIONS = [
   {icon: 'brush', title: 'Make a picture', prompt: 'Let’s create an image together'},
 ];
 const MAX_ATTACHMENTS = 4;
-const MAX_PICTURE_BYTES = 4 * 1024 * 1024;
+// Matches the server's resize; anything bigger is shrunk before upload instead of rejected.
+const MAX_PICTURE_SIDE = 2048;
 // Re-parsing markdown on every delta is wasted work; the final snapshot renders the complete reply.
 const STREAM_RENDER_MS = 120;
 
@@ -473,7 +474,27 @@ function startDictation(Speech: new () => Recognition) {
   setDictation(recognition);
 }
 
-function readBase64(file: File): Promise<string> {
+// Phone photos are far larger than anything the model sees, so shrink them here; the server still validates and re-encodes.
+async function shrinkPicture(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file).catch(() => { throw new Error('Could not read this picture'); });
+  try {
+    const scale = MAX_PICTURE_SIDE / Math.max(bitmap.width, bitmap.height);
+    if (scale >= 1) return file;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('Could not shrink this picture');
+    context.imageSmoothingQuality = 'high';
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    // JPEG keeps photos small; PNG keeps transparency and crisp screenshot text.
+    const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error('Could not shrink this picture')), type, 0.9));
+  } finally { bitmap.close(); }
+}
+
+function readBase64(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result).split(',')[1] ?? '');
@@ -543,10 +564,10 @@ ui.imageInput.onchange = async () => {
   if (!file || !chat) return;
   try {
     if (attachments.length >= MAX_ATTACHMENTS) throw new Error('Attach up to four pictures per message');
-    if (file.size > MAX_PICTURE_BYTES) throw new Error('Pictures must be 4 MB or smaller');
-    const data = await readBase64(file);
-    const asset = await api<AssetRef>(`/api/chats/${chat.id}/uploads`, 'POST', {mimeType: file.type, data});
-    attachments.push({id: asset.id, preview: URL.createObjectURL(file)});
+    const picture = await shrinkPicture(file);
+    const data = await readBase64(picture);
+    const asset = await api<AssetRef>(`/api/chats/${chat.id}/uploads`, 'POST', {mimeType: picture.type, data});
+    attachments.push({id: asset.id, preview: URL.createObjectURL(picture)});
     renderAttachments();
   } catch (error) { showError(error); }
 };

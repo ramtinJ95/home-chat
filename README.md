@@ -159,8 +159,9 @@ screenshots to the git-ignored `.local/` folder.
   12 tool calls and 2 image generations.
 - **Input.** Browser text is always prefixed before reaching Pi, so it can
   never act as a slash command. Model output is rendered with DOM text nodes
-  only, under a strict CSP. Uploads are decoded, stripped of metadata,
-  limited to 2048 px and re-encoded as PNG.
+  only, under a strict CSP. The browser shrinks pictures to 2048 px before
+  upload; the server then decodes them, strips metadata, limits them to
+  2048 px and re-encodes them as PNG.
 - **Network.** The app container's firewall allows only the egress proxy.
   The proxy allows CONNECT to `chatgpt.com`, `api.openai.com` and
   `auth.openai.com` on port 443. It rejects non-public addresses and connects

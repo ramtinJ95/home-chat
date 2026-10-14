@@ -335,7 +335,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         const body = await jsonBody(req, Math.ceil(MAX_UPLOAD * 1.4));
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(body.mimeType as string) || typeof body.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.data)) throw fail(400, 'Use a PNG, JPEG or WebP picture');
         const bytes = Buffer.from(body.data, 'base64');
-        if (!bytes.length || bytes.length > MAX_UPLOAD) throw fail(413, 'Pictures must be at most 4 MB');
+        if (!bytes.length || bytes.length > MAX_UPLOAD) throw fail(413, `Pictures must be at most ${MAX_UPLOAD / 1024 / 1024} MB`);
         let normalized;
         try {
           const image = sharp(bytes, {limitInputPixels: 16_777_216, failOn: 'error'});
@@ -344,7 +344,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           normalized = await image.rotate().resize({width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true}).png().toBuffer();
         }
         catch { throw fail(400, 'Invalid or oversized picture'); }
-        if (normalized.length > 16 * 1024 * 1024) throw fail(413, 'Decoded picture is too large');
+        if (normalized.length > MAX_UPLOAD) throw fail(413, 'Decoded picture is too large');
         const id = randomUUID();
         const path = join(workDir(chat), 'uploads', id + '.png');
         await writeFile(path, normalized, {mode: 0o600});

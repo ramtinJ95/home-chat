@@ -6,7 +6,9 @@ import type { ToolName, User } from './api.d.ts';
 export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
-export const MAX_UPLOAD = 4 * 1024 * 1024;
+// A memory backstop, not a user-facing limit: the browser shrinks pictures to 2048 px first, and even an
+// incompressible 2048 px PNG, uploaded or re-encoded, stays under this.
+export const MAX_UPLOAD = 20 * 1024 * 1024;
 export const MAX_DATA = 512 * 1024 * 1024;
 export const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const LOCAL_HOSTS = new Set(['127.0.0.1:8787', 'localhost:8787']);
