@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { generateKeyPairSync, sign } from 'node:crypto';
+import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
@@ -36,8 +36,9 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
 interface RequestOptions { method?: string; body?: unknown; cookie?: string; csrf?: string; headers?: Record<string, string> }
 interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string> }
 
-async function fixture(ready = true, {access, accessKeys}: Pick<AppOptions, 'access' | 'accessKeys'> = {}) {
-  const data = await mkdtemp(join(tmpdir(), 'home-chat-server-'));
+// Passing `data` from an earlier fixture starts a second app on the same volume, as a container restart would.
+async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<AppOptions, 'access' | 'accessKeys' | 'data'> = {}) {
+  const data = existing ?? await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
   const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
@@ -131,6 +132,48 @@ test('owners delete their idle conversations and everything stored with them', a
     assert.deepEqual(await (await f.request('/api/chats', owner)).json(), []);
     await assert.rejects(access(join(f.data, 'chats', chat.id)));
     assert.deepEqual(await readdir(join(f.data, 'deleted')), []);
+  } finally { await f.close(); }
+});
+test('a restart keeps conversations and the streamed part of an unfinished reply', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hello', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    await f.app.stop();
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      const again = await restarted.login('owner');
+      const state = await (await restarted.request(`/api/chats/${chat.id}`, again)).json();
+      assert.equal(state.title, 'hello'); assert.equal(state.busy, false); assert.equal(state.question, null);
+      assert.equal(state.messages[0].text, 'hello');
+      assert.match(state.messages[1].text, /^Hello/);
+      assert.match(state.messages[1].error, /restarted before this reply finished/);
+      assert.equal((await restarted.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'again', assets: []}, ...again})).status, 202);
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
+test('a crash mid-reply or mid-creation is recovered when the app comes back', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hello', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    const unfinished = join(f.data, 'chats', randomUUID());
+    await mkdir(join(unfinished, 'work/uploads'), {recursive: true});
+    // The first app is never stopped, so the second sees only what was saved when the message was admitted.
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      const again = await restarted.login('owner');
+      const state = await (await restarted.request(`/api/chats/${chat.id}`, again)).json();
+      assert.equal(state.busy, false);
+      assert.equal(state.messages[1].text, '');
+      assert.match(state.messages[1].error, /restarted before this reply finished/);
+      await assert.rejects(access(unfinished));
+      assert.equal((await (await restarted.request('/api/chats', again)).json()).length, 1);
+    } finally { await restarted.app.stop(); }
   } finally { await f.close(); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {
