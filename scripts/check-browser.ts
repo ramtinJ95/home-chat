@@ -7,8 +7,9 @@ const {browser, page, errors, openPhone} = await openSignedIn();
 try {
   assert.equal(await page.locator('#access-code').inputValue(), '');
   await page.screenshot({path: '.local/desktop.png', fullPage: true});
-  const picture = await sharp({create: {width: 32, height: 32, channels: 3, background: '#365c4a'}}).png().toBuffer();
-  await page.locator('#image-input').setInputFiles({name: 'smoke-test.png', mimeType: 'image/png', buffer: picture});
+  // Above the server's 16.7 MP decode limit, so the upload only succeeds if the browser shrank it first.
+  const picture = await sharp({create: {width: 6000, height: 4000, channels: 3, background: '#365c4a'}}).jpeg().toBuffer();
+  await page.locator('#image-input').setInputFiles({name: 'smoke-test.jpg', mimeType: 'image/jpeg', buffer: picture});
   await page.locator('#attachments button').waitFor({state: 'visible'});
   await page.locator('#attachments button').click();
   assert.equal(await page.locator('#attachments button').count(), 0);
