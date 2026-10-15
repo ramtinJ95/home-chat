@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, open } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, StreamEvent, User } from './api.d.ts';
@@ -10,7 +10,8 @@ import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessCon
 import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string }
-interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[] }
+// `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
+interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true }
 interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
@@ -49,10 +50,16 @@ async function jsonBody(req: http.IncomingMessage, maximum = 64_000): Promise<Re
   return body as Record<string, unknown>;
 }
 
+// Synced around the rename, so a power cut leaves either the old record or the new one, never an empty file.
 async function atomicJson(path: string, value: unknown): Promise<void> {
   const temporary = path + '.' + randomUUID() + '.tmp';
-  await writeFile(temporary, JSON.stringify(value), {mode: 0o600});
-  await rename(temporary, path);
+  try {
+    const file = await open(temporary, 'wx', 0o600);
+    try { await file.writeFile(JSON.stringify(value)); await file.sync(); } finally { await file.close(); }
+    await rename(temporary, path);
+  } catch (error) { await rm(temporary, {force: true}); throw error; }
+  const directory = await open(dirname(path), 'r');
+  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 async function diskUsage(directory: string): Promise<number> {
@@ -109,14 +116,38 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   const running = new Set<string>();
   const inflight = new Set<string>();
   const occupied = (id: string) => running.has(id) || inflight.has(id);
+  const workDir = (chat: Chat) => join(chatsDirectory, chat.id, 'work');
+  // Writes to one conversation run in order, so a slow earlier write never replaces a newer one. Each caller handles its
+  // own write's failure, so the next write only waits for it.
+  const writes = new Map<string, Promise<void>>();
+  const save = (chat: Chat) => {
+    const write = (writes.get(chat.id) ?? Promise.resolve()).catch(() => {}).then(() => atomicJson(join(chatsDirectory, chat.id, 'chat.json'), chat));
+    writes.set(chat.id, write);
+    return write;
+  };
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
-    const chat: Chat = JSON.parse(await readFile(join(chatsDirectory, id, 'chat.json'), 'utf8'));
+    let record;
+    try { record = await readFile(join(chatsDirectory, id, 'chat.json'), 'utf8'); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      // A conversation's directory is made before its first save, and it is only shown to anyone after that save, so a
+      // directory without a record is a creation the app stopped in the middle of.
+      await rm(join(chatsDirectory, id), {recursive: true}); continue;
+    }
+    const chat: Chat = JSON.parse(record);
     if (chat.id !== id || !isUser(chat.owner)) throw new Error('Invalid conversation record');
+    if (chat.replying) {
+      delete chat.replying;
+      const last = chat.messages.at(-1);
+      if (last?.role === 'assistant') last.error = 'Home Chat restarted before this reply finished';
+      await save(chat);
+    }
     chats.set(id, chat);
   }
-  const workDir = (chat: Chat) => join(chatsDirectory, chat.id, 'work');
-  const save = (chat: Chat) => atomicJson(join(chatsDirectory, chat.id, 'chat.json'), chat);
+  // Set by stop(). From then on no turn ends: stop() saves running replies and the next start marks them interrupted,
+  // so Pi exiting or rejecting a prompt under a shutdown is never recorded as the turn's outcome.
+  let stopping = false;
   const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind}) => ({id, kind})), busy: running.has(chat.id),
     question: workers.get(chat.id)?.question ?? null});
   const emit = (id: string, event: StreamEvent) => {
@@ -137,9 +168,11 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   });
 
   async function endTurn(chat: Chat, worker: ChatWorker, error?: string) {
+    if (stopping) return;
     clearTimeout(worker.deadline);
     const last = chat.messages.at(-1);
     if (error && last?.role === 'assistant') last.error = error;
+    delete chat.replying;
     // Clients see the turn end now, but the conversation stays in flight until it is saved, so a delete cannot remove the files under the save.
     inflight.add(chat.id);
     running.delete(chat.id); worker.busy = false;
@@ -179,11 +212,19 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       return endTurn(chat, worker, message);
     };
     worker.on('failure', message => { void failTurn(message).catch(() => worker.stop()); });
+    let saveTimer: NodeJS.Timeout | undefined;
     worker.on('delta', text => {
       const last = chat.messages.at(-1);
       if (last?.role !== 'assistant') return;
       if (last.text.length + text.length > 100_000) { worker.stop(); void failTurn('Response size limit reached'); return; }
       last.text += text; emit(chat.id, {type: 'delta', text});
+      // Streamed text is saved every few seconds so a crash loses only the last moments of a reply. A failed save here is
+      // left to the turn's final save, which reports it.
+      saveTimer ??= setTimeout(() => {
+        saveTimer = undefined;
+        if (running.has(chat.id)) save(chat).catch(() => {});
+      }, 2000);
+      saveTimer.unref();
     });
     worker.on('tool', name => emit(chat.id, {type: 'tool', name}));
     worker.on('question', question => emit(chat.id, {type: 'question', question}));
@@ -301,7 +342,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
-          chats.delete(chat.id);
+          chats.delete(chat.id); writes.delete(chat.id);
           for (const client of streams.get(chat.id) ?? []) client.res.end();
           streams.delete(chat.id);
           await rm(removed, {recursive: true, force: true});
@@ -373,10 +414,12 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
             images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); selected.push(asset);
           }
           const worker = await workerFor(chat);
+          // A worker started while stop() ran would outlive it, so it is stopped here before the message is admitted.
+          if (stopping) { worker.stop(); throw fail(503, 'Home Chat is restarting; send the message again in a moment'); }
           recent.push(Date.now()); rates.set(session.user, recent);
           chat.messages.push({role: 'user', text: body.text, assets: selected.map(item => item.id)}, {role: 'assistant', text: '', assets: []});
           if (chat.title === 'New conversation') chat.title = body.text.slice(0, 55) || 'Picture conversation';
-          running.add(chat.id); await publish(chat);
+          chat.replying = true; running.add(chat.id); await publish(chat);
           worker.deadline = setTimeout(() => worker.stop(), 5 * 60_000); worker.deadline.unref();
           try {
             await worker.prompt(body.text + (selected.length ? '\nAttached image paths (this conversation only):\n' + selected.map(item => item.path).join('\n') : ''), images);
@@ -410,6 +453,9 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // cloudflared reuses idle origin connections for up to 90s; closing them sooner races its reuse and surfaces as 502s.
   server.keepAliveTimeout = access ? 100_000 : 5000;
   const stop = async () => {
+    stopping = true;
+    // Keep what has streamed so far; if this save fails, the `replying` flag saved with the message still marks it.
+    await Promise.allSettled([...running].flatMap(id => chats.get(id) ?? []).map(save));
     for (const worker of workers.values()) worker.stop();
     for (const clients of streams.values()) for (const client of clients) client.res.end();
     server.closeAllConnections();

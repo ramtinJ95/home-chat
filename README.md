@@ -68,7 +68,10 @@ docker compose stop
 ```
 
 Conversations, images and credentials live in the `home-chat_chat-data`
-volume. `docker compose down -v` deletes all of them. Deleting a conversation
+volume, so they survive restarts, rebuilds and `docker compose down`;
+`docker compose down -v` deletes all of them. A reply that is still
+streaming when the app stops keeps the text saved so far (within about two
+seconds after a crash) and is marked as interrupted. Deleting a conversation
 in the sidebar removes its messages, pictures and Pi session for good; it is
 refused while a reply is still running.
 
