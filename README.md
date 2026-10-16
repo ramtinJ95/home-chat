@@ -116,6 +116,14 @@ iPhone or iPad, tap Share in the browser (in Safari it can be under ···), the
 installed app can keep its own cookies apart from the browser, so it may ask
 for Google sign-in again the first time it opens.
 
+Next the welcome screen offers notifications (the sidebar keeps a switch for
+them). Each device then hears when a reply is ready or the model asks a
+question while the app is closed or in the background, never while that
+conversation is on screen. On an iPhone or iPad this only works in the
+installed app, not in a Safari tab. Tapping a notification opens its
+conversation. The server makes its push key pair on first start and keeps it,
+with the list of devices, in `push/` on the data volume.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -134,10 +142,12 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/server.ts` | HTTP API, sessions, uploads, SSE streaming, turn state |
 | `src/rpc.ts` | `PiWorker`: one Pi process per conversation over JSON RPC |
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
-| `src/egress.ts` | CONNECT proxy that only reaches OpenAI on port 443 |
+| `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
+| `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
+| `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/` | Pi extension that filters tool registration, plus the system prompt |
-| `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), Home Screen manifest and `icon.svg`, which the server renders into the app icons |
+| `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), the `sw.ts` service worker that shows notifications, the Home Screen manifest, and `icon.svg`, which the server renders into the app icons |
 | `scripts/` | Container entrypoint, login helpers and environment checks |
 
 The image builds and type-checks everything. Run the test suite inside it
@@ -176,7 +186,11 @@ screenshots to the git-ignored `.local/` folder.
   2048 px and re-encodes them as PNG.
 - **Network.** The app container's firewall allows only the egress proxy.
   The proxy allows CONNECT to `chatgpt.com`, `api.openai.com` and
-  `auth.openai.com` on port 443. It rejects non-public addresses and connects
+  `auth.openai.com` on port 443, and to the browser push services (Apple,
+  Google, Mozilla and Microsoft's `*.notify.windows.com`). Only the server
+  sends to the push services, never the model, and it accepts a device's push
+  address only on those hosts. Notifications carry the conversation title and
+  a short status, encrypted to the device, never the reply. It rejects non-public addresses and connects
   to the IP it already checked, so DNS can't be rebound. LAN, Tailscale,
   metadata endpoints and Docker DNS are all unreachable.
 - **Process.** The root filesystem is read-only and the app runs as UID

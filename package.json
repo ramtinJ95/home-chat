@@ -8,8 +8,8 @@
   },
   "scripts": {
     "start": "node src/server.ts",
-    "build": "tsc -p public",
-    "typecheck": "tsc -p . && tsc -p public --noEmit",
+    "build": "tsc -p public && tsc -p public/tsconfig.sw.json",
+    "typecheck": "tsc -p . && tsc -p public --noEmit && tsc -p public/tsconfig.sw.json --noEmit",
     "test": "npm run build && node --test test/*.test.ts"
   },
   "dependencies": {
@@ -20,10 +20,12 @@
     "@howaboua/pi-codex-web-run": "0.0.7",
     "ipaddr.js": "2.2.0",
     "sharp": "0.35.5",
-    "undici": "8.10.2"
+    "undici": "8.10.2",
+    "web-push": "3.6.7"
   },
   "devDependencies": {
     "@types/node": "26.6.5",
+    "@types/web-push": "3.6.4",
     "playwright-core": "1.64.0",
     "typescript": "7.0.2"
   }

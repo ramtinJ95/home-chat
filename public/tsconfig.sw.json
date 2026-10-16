@@ -1,0 +1,9 @@
+{
+  // The service worker runs in its own global scope, so it builds against the worker library instead of the DOM.
+  "compilerOptions": {
+    "target": "es2023",
+    "lib": ["es2023", "webworker"],
+    "strict": true
+  },
+  "files": ["sw.ts"]
+}

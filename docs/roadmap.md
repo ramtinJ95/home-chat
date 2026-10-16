@@ -4,7 +4,7 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PR 1 (Home Screen app) in review.
+Status: PR 1 (Home Screen app) merged and deployed. PR 2 (push notifications) in review.
 
 ## Decisions
 
@@ -23,13 +23,13 @@ Status: PR 1 (Home Screen app) in review.
 
 ## 2. Push notifications
 
-- Service worker plus Web Push with VAPID keys (private key in `.env`); one subscription per device, for owner and guest separately; an "Enable notifications" button, since browsers only prompt after a tap.
+- Service worker plus Web Push with VAPID keys (made on first start and kept in `push/` on the data volume); one subscription per device, for owner and guest separately; an "Enable notifications" button, since browsers only prompt after a tap.
 - Notify when a reply finishes while nobody is watching (deep research, long web searches), when a routine has run, and when the model is waiting on a question. Payloads are encrypted and short ("Your research is ready"), never the reply itself.
 - Replies already keep running on the server after the app is closed; only the notification is new.
 - Works in a normal tab on desktop Edge/Chrome and Android Chrome; iPhone needs the Home Screen app from item 1. iOS requires every push to show a notification.
 - Expired or revoked subscriptions are deleted, and the app shows "Notifications are off on this device".
 - Egress: add the push hosts, with suffix matching for Microsoft's numbered hosts (`src/egress.ts`, `PROVIDER_HOSTS` in `src/policy.ts`). Subscription endpoints come from the browser, so the server rejects any endpoint outside those hosts.
-- Needs the `web-push` npm package (installed by the user).
+- Uses the `web-push` npm package to build the encrypted, signed request; `fetch` sends it through the egress proxy.
 
 ## 3. Artifacts and reader view
 

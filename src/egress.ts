@@ -1,13 +1,14 @@
 import http from 'node:http';
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
-import { PROVIDER_HOSTS, allowedDestination, publicAddress } from './policy.ts';
+import { PROVIDER_HOSTS, allowedDestination, publicAddress, pushServiceHost } from './policy.ts';
 import { accessTeamHost } from './access.ts';
 
-// The public deployment also fetches Cloudflare Access signing keys from the team's own host, and nothing else.
+// OpenAI, the browser push services, and in the public deployment the Cloudflare Access team host for its signing keys.
 const team = process.env.HOME_CHAT_ACCESS_TEAM?.trim().toLowerCase();
 if (team && !/^[a-z0-9-]+$/.test(team)) throw new Error('HOME_CHAT_ACCESS_TEAM must be the team name only');
-const allowedHosts: ReadonlySet<string> = team ? new Set([...PROVIDER_HOSTS, accessTeamHost(team)]) : PROVIDER_HOSTS;
+const accessHost = team && accessTeamHost(team);
+const allowed = (host: string) => PROVIDER_HOSTS.has(host) || pushServiceHost(host) || host === accessHost;
 
 const server = http.createServer((_req, res) => res.writeHead(405).end());
 let connections = 0;
@@ -18,7 +19,7 @@ server.on('connect', async (req: http.IncomingMessage, client: net.Socket, head:
   client.once('close', () => { connections--; upstream?.destroy(); });
   client.setTimeout(180_000, () => client.destroy());
   try {
-    const host = allowedDestination(req.url ?? '', allowedHosts);
+    const host = allowedDestination(req.url ?? '', allowed);
     const addresses = await Promise.race([
       lookup(host, {all: true}),
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('DNS timeout')), 5_000).unref()),

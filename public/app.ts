@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, Me, Message, Question, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, Me, Message, PushInfo, Question, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -33,6 +33,7 @@ const ui = {
   stop: $<HTMLButtonElement>('#stop'),
   send: $<HTMLButtonElement>('#send'),
   install: $('#install'),
+  notifications: $('#notifications'),
   error: $('#error'),
 };
 
@@ -78,6 +79,12 @@ const appleDevice = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/
 const installed = () => matchMedia('(display-mode: standalone)').matches || (navigator as {standalone?: boolean}).standalone === true;
 let installPrompt: InstallPrompt | undefined;
 const installable = () => !installed() && (appleDevice || installPrompt !== undefined);
+
+// Push notifications. iPhone and iPad only offer them inside the installed app, so a Safari tab reports no support.
+type PushState = 'unsupported' | 'blocked' | 'off' | 'on';
+const NOTIFY_DISMISSED = 'home-chat-notify-dismissed';
+const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+let pushState: PushState = 'unsupported';
 
 let me: Me | undefined;
 let chat: ChatSnapshot | undefined;
@@ -243,7 +250,7 @@ function renderEmpty(): HTMLElement {
     element('h2', undefined, 'What shall we explore?'),
     element('p', undefined, 'A question, a picture, a half-formed idea. This is your space to make sense of things.'),
     // Above the suggestions, so a phone shows it without scrolling.
-    ...[installCard()].filter(card => card !== undefined),
+    ...[setupCard()].filter(card => card !== undefined),
     suggestions,
   );
   return empty;
@@ -251,45 +258,65 @@ function renderEmpty(): HTMLElement {
 
 const APPLE_INSTALL_STEPS = 'Tap Share in your browser (in Safari it can be under ···), then Add to Home Screen.';
 
-// The welcome screen's card, until someone installs or chooses "Not now"; the sidebar keeps a quieter way back.
-function installCard(): HTMLElement | undefined {
-  if (!installable() || localStorage.getItem(INSTALL_DISMISSED)) return;
-  const card = element('div', 'install-card');
-  const text = element('div', 'install-text');
-  text.append(element('strong', undefined, 'Keep Home Chat on your Home Screen'),
-    element('span', undefined, installPrompt ? 'It opens like an app, full screen and one tap away.' : APPLE_INSTALL_STEPS));
-  const actions = element('div', 'install-actions');
-  if (installPrompt) {
-    const add = element('button', 'primary', 'Install');
-    add.type = 'button'; add.onclick = () => install().catch(showError);
-    actions.append(add);
+// The welcome screen shows one setup step at a time: install, then notifications. "Not now" hides a step for good;
+// the sidebar keeps a quieter way to each.
+function setupCard(): HTMLElement | undefined {
+  if (installable() && !localStorage.getItem(INSTALL_DISMISSED)) {
+    return stepCard('home', 'Keep Home Chat on your Home Screen',
+      installPrompt ? 'It opens like an app, full screen and one tap away.' : APPLE_INSTALL_STEPS,
+      INSTALL_DISMISSED, installPrompt ? ['Install', install] : undefined);
+  }
+  if (pushState === 'off' && !localStorage.getItem(NOTIFY_DISMISSED)) {
+    return stepCard('bell', 'Know when a reply is ready', 'Get a notification when Home Chat has finished, even with the app closed.',
+      NOTIFY_DISMISSED, ['Turn on', enableNotifications]);
+  }
+}
+
+function stepCard(name: string, title: string, text: string, dismissKey: string, action?: [string, () => Promise<void>]): HTMLElement {
+  const card = element('div', 'setup-card');
+  const copy = element('div', 'setup-text');
+  copy.append(element('strong', undefined, title), element('span', undefined, text));
+  const actions = element('div', 'setup-actions');
+  if (action) {
+    const run = element('button', 'primary', action[0]);
+    run.type = 'button'; run.onclick = () => action[1]().catch(showError);
+    actions.append(run);
   }
   const later = element('button', 'ghost', 'Not now');
   later.type = 'button';
-  later.onclick = () => { localStorage.setItem(INSTALL_DISMISSED, '1'); card.remove(); };
+  later.onclick = () => { localStorage.setItem(dismissKey, '1'); renderSetup(); };
   actions.append(later);
-  card.append(icon('home'), text, actions);
+  card.append(icon(name), copy, actions);
   return card;
 }
 
-function renderInstall() {
-  ui.install.replaceChildren();
+function sidebarButton(name: string, label: string, run: () => Promise<void>): HTMLButtonElement {
+  const button = element('button');
+  button.type = 'button'; button.append(icon(name), label);
+  button.onclick = () => run().catch(showError);
+  return button;
+}
+
+function renderSetup() {
   ui.install.hidden = !installable();
-  if (ui.install.hidden) { document.querySelector('.install-card')?.remove(); return; }
-  if (installPrompt) {
-    const add = element('button');
-    add.type = 'button'; add.append(icon('home'), 'Install Home Chat');
-    add.onclick = () => install().catch(showError);
-    ui.install.append(add);
-  } else {
+  if (installPrompt) ui.install.replaceChildren(sidebarButton('home', 'Install Home Chat', install));
+  else {
     const help = element('details');
     const summary = element('summary');
     summary.append(icon('home'), 'Add to Home Screen');
     help.append(summary, element('p', undefined, APPLE_INSTALL_STEPS));
-    ui.install.append(help);
+    ui.install.replaceChildren(help);
   }
+  ui.notifications.hidden = pushState === 'unsupported';
+  ui.notifications.replaceChildren(
+    pushState === 'on' ? sidebarButton('bell', 'Notifications on · Turn off', disableNotifications)
+    : pushState === 'off' ? sidebarButton('bell', 'Turn on notifications', enableNotifications)
+    : element('p', undefined, 'Notifications are blocked. Allow them for this site in your browser settings.'));
   const empty = document.querySelector('.empty');
-  if (empty && !empty.querySelector('.install-card')) { const card = installCard(); if (card) empty.querySelector('.suggestions')?.before(card); }
+  if (!empty) return;
+  empty.querySelector('.setup-card')?.remove();
+  const card = setupCard();
+  if (card) empty.querySelector('.suggestions')?.before(card);
 }
 
 async function install() {
@@ -298,7 +325,46 @@ async function install() {
   // A prompt can be shown once; Chromium offers a new one later if it was declined.
   installPrompt = undefined;
   await prompt.prompt();
-  renderInstall();
+  renderSetup();
+}
+
+const base64UrlBytes = (text: string) => Uint8Array.from(atob(text.replaceAll('-', '+').replaceAll('_', '/')), char => char.charCodeAt(0));
+const sameBytes = (a: ArrayBuffer | null, b: Uint8Array) => a !== null && a.byteLength === b.length && new Uint8Array(a).every((byte, i) => byte === b[i]);
+
+// Brings the server in line with this device on every load: it may have dropped the subscription, or made new keys.
+async function syncPush() {
+  if (!pushSupported) return;
+  if (Notification.permission === 'denied') { pushState = 'blocked'; return renderSetup(); }
+  const [{publicKey}, registration] = await Promise.all([api<PushInfo>('/api/push'), navigator.serviceWorker.ready]);
+  const subscription = await registration.pushManager.getSubscription();
+  if (subscription && !sameBytes(subscription.options.applicationServerKey, base64UrlBytes(publicKey))) {
+    await api('/api/push/subscriptions', 'DELETE', subscription.toJSON());
+    await subscription.unsubscribe();
+  }
+  else if (subscription && Notification.permission === 'granted') {
+    await api('/api/push/subscriptions', 'POST', subscription.toJSON());
+    pushState = 'on'; return renderSetup();
+  }
+  pushState = 'off'; renderSetup();
+}
+
+async function enableNotifications() {
+  // Asked first, while the tap still counts as a user gesture: Safari only prompts from one.
+  const permission = await Notification.requestPermission();
+  if (permission !== 'granted') { pushState = permission === 'denied' ? 'blocked' : 'off'; return renderSetup(); }
+  const [{publicKey}, registration] = await Promise.all([api<PushInfo>('/api/push'), navigator.serviceWorker.ready]);
+  const subscription = await registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: base64UrlBytes(publicKey)});
+  await api('/api/push/subscriptions', 'POST', subscription.toJSON());
+  pushState = 'on'; renderSetup();
+}
+
+async function disableNotifications() {
+  const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (subscription) {
+    await api('/api/push/subscriptions', 'DELETE', subscription.toJSON());
+    await subscription.unsubscribe();
+  }
+  pushState = 'off'; renderSetup();
 }
 
 function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean): HTMLElement {
@@ -393,9 +459,24 @@ async function deleteChat(item: ChatSummary) {
 }
 
 async function openChat(id: string) {
-  stream?.close();
   dropAttachments(attachments);
-  renderChat(await api<ChatSnapshot>(`/api/chats/${id}`));
+  await connect(id);
+  await refreshList();
+}
+
+// Bumped by every connect and by hiding the page, so a connect still waiting for its snapshot never opens a stream
+// for a page that has moved on: an open stream tells the server someone is looking. `onScreen` is the conversation
+// being shown, or about to be, so coming back to the page can finish a connect that hiding cancelled.
+let connection = 0;
+let onScreen: string | undefined;
+async function connect(id: string) {
+  const attempt = ++connection;
+  onScreen = id;
+  stream?.close(); stream = undefined;
+  const snapshot = await api<ChatSnapshot>(`/api/chats/${id}`);
+  if (attempt !== connection) return;
+  renderChat(snapshot);
+  if (document.hidden) return;
   stream = new EventSource(`/api/chats/${id}/events`);
   stream.onmessage = message => {
     const event = JSON.parse(message.data) as StreamEvent;
@@ -408,7 +489,6 @@ async function openChat(id: string) {
     }
   };
   stream.onerror = () => { ui.activity.textContent = 'Connection interrupted; reconnecting…'; };
-  await refreshList();
 }
 
 async function newChat() {
@@ -417,9 +497,10 @@ async function newChat() {
   await openChat(created.id);
 }
 
-async function openLatest() {
+async function openLatest(preferred?: string | null) {
   const list = await refreshList();
-  if (list.length) await openChat(list[0].id); else await newChat();
+  const target = list.find(item => item.id === preferred) ?? list[0];
+  if (target) await openChat(target.id); else await newChat();
 }
 
 async function enter() {
@@ -430,7 +511,14 @@ async function enter() {
   ui.modeBadge.textContent = me.mode === 'access' ? 'Private' : 'Local only';
   ui.avatar.textContent = me.user === 'owner' ? 'Y' : 'G';
   ui.providerWarning.hidden = me.codexConfigured;
-  await openLatest();
+  // A tapped notification opens /?chat=<id>; the address goes back to / so a reload starts as usual.
+  const requested = new URLSearchParams(location.search).get('chat');
+  if (requested) history.replaceState(null, '', '/');
+  await openLatest(requested);
+  if (pushSupported) {
+    // If the worker cannot be registered (an expired sign-in, for one), notifications stay hidden until the next load.
+    navigator.serviceWorker.register('/sw.js').then(() => syncPush().catch(showError), () => {});
+  }
 }
 
 function dropAttachments(dropped: readonly Attachment[]) {
@@ -576,15 +664,31 @@ ui.loginForm.onsubmit = async event => {
   } catch (error) { showError(error); }
 };
 ui.newChat.onclick = () => newChat().catch(showError);
-addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event as InstallPrompt; renderInstall(); });
-addEventListener('appinstalled', () => { installPrompt = undefined; renderInstall(); });
-renderInstall();
+addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event as InstallPrompt; renderSetup(); });
+addEventListener('appinstalled', () => { installPrompt = undefined; renderSetup(); });
+renderSetup();
+// A notification tapped while the app is open: the service worker asks this window to show that conversation.
+navigator.serviceWorker?.addEventListener('message', event => {
+  const data = event.data as {type?: unknown; chat?: unknown} | null;
+  if (data?.type !== 'open-chat' || typeof data.chat !== 'string' || data.chat === chat?.id) return;
+  setDrawer(false);
+  openChat(data.chat).catch(showError);
+});
+// The server only notifies when nobody is looking, which it judges by open streams; so the stream closes while the
+// page is hidden and reopens, with a fresh snapshot, when it is back.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { connection++; stream?.close(); stream = undefined; }
+  else if (onScreen && !stream) connect(onScreen).catch(showError);
+});
 ui.openSidebar.onclick = () => setDrawer(true);
 ui.closeSidebar.onclick = () => setDrawer(false);
 ui.scrim.onclick = () => setDrawer(false);
 ui.logout.onclick = async () => {
   try {
-    await api('/api/logout', 'POST', {});
+    // Asked of the browser, not pushState, which is only known once the load's sync has finished.
+    const subscription = pushSupported ? await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription() ?? null : null;
+    await api('/api/logout', 'POST', {pushEndpoint: subscription?.endpoint});
+    await subscription?.unsubscribe();
     stream?.close();
     // Under Cloudflare Access the real session is Cloudflare's; end it there.
     if (me?.mode === 'access') location.assign('/cdn-cgi/access/logout'); else location.reload();
