@@ -16,7 +16,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
 COPY src ./src
 COPY public ./public
-COPY --from=build /app/public/app.js /app/public/theme.js ./public/
+COPY --from=build /app/public/app.js /app/public/theme.js /app/public/sw.js ./public/
 COPY profile ./profile
 COPY --chmod=755 scripts ./scripts
 COPY test ./test

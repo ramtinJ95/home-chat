@@ -9,3 +9,4 @@ local-access.json
 .env.*
 public/app.js
 public/theme.js
+public/sw.js

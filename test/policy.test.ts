@@ -3,13 +3,31 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { allowedDestination, publicAddress, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.ts';
+import { createECDH, randomBytes } from 'node:crypto';
+import { allowedDestination, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.ts';
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');
   for (const host of ['127.0.0.1:443', '100.64.0.1:443', '[::1]:443', 'host.docker.internal:443', 'chatgpt.com.evil.test:443', 'chatgpt.com:80', 'chatgpt.com.:443', 'CHATGPT.COM:443', 'user@chatgpt.com:443']) {
     assert.throws(() => allowedDestination(host));
   }
+});
+test('push goes only to the known browser push services', () => {
+  for (const host of ['web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com', 'wns2-par02p.notify.windows.com']) {
+    assert.equal(pushServiceHost(host), true, host);
+  }
+  for (const host of ['notify.windows.com', 'a.b.notify.windows.com', 'evil.test', 'web.push.apple.com.evil.test', 'xnotify.windows.com']) {
+    assert.equal(pushServiceHost(host), false, host);
+  }
+  assert.equal(allowedDestination('web.push.apple.com:443', pushServiceHost), 'web.push.apple.com');
+  assert.throws(() => allowedDestination('web.push.apple.com:443'));
+  const keys = {p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url')};
+  assert.equal(pushSubscription({endpoint: 'https://web.push.apple.com/QH4', keys}).endpoint, 'https://web.push.apple.com/QH4');
+  for (const endpoint of ['http://web.push.apple.com/x', 'https://web.push.apple.com:8443/x', 'https://user@web.push.apple.com/x', 'https://evil.test/x', 'https://127.0.0.1/x', 'not a url']) {
+    assert.throws(() => pushSubscription({endpoint, keys}), endpoint);
+  }
+  assert.throws(() => pushSubscription({endpoint: 'https://fcm.googleapis.com/x', keys: {...keys, auth: 'short'}}));
+  assert.throws(() => pushSubscription({endpoint: 'https://fcm.googleapis.com/x'}));
 });
 test('all private, mapped, reserved, metadata and tailnet addresses are denied', () => {
   for (const address of ['127.0.0.1', '0.0.0.0', '10.0.0.1', '172.30.91.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '100.127.255.254', '192.0.2.1', '198.18.0.1', '224.0.0.1', '255.255.255.255', '::1', '::', 'fc00::1', 'fe80::1', '2001:db8::1', '::ffff:127.0.0.1', '::ffff:100.100.100.100']) {

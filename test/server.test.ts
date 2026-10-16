@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { generateKeyPairSync, randomUUID, sign } from 'node:crypto';
+import { createECDH, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
@@ -37,10 +37,18 @@ interface RequestOptions { method?: string; body?: unknown; cookie?: string; csr
 interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string>; bytes(): Promise<Buffer> }
 
 // Passing `data` from an earlier fixture starts a second app on the same volume, as a container restart would.
+// Push requests the app sends, answered as a push service would (201) unless a test says otherwise.
+interface Delivery { endpoint: string; headers: Record<string, string> }
 async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<AppOptions, 'access' | 'accessKeys' | 'data'> = {}) {
   const data = existing ?? await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
-  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys});
+  const deliveries: Delivery[] = [];
+  let pushStatus = 201;
+  const pushFetch = (async (endpoint: string, init: RequestInit) => {
+    deliveries.push({endpoint, headers: init.headers as Record<string, string>});
+    return new Response(null, {status: pushStatus});
+  }) as typeof fetch;
+  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys, pushFetch});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const host = access?.host ?? '127.0.0.1:8787';
   const origin = (access ? 'https://' : 'http://') + host;
@@ -70,7 +78,16 @@ async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<
     const identity = await (await request('/api/me', {cookie})).json();
     return {cookie, csrf: identity.csrf as string};
   };
-  return {request, login, worker, app, data, close: async () => { await app.stop(); await rm(data, {recursive: true}); }};
+  // An open event stream, as a page in view keeps; resolves once the first snapshot has arrived.
+  const watch = (path: string, cookie: string) => new Promise<() => void>((resolve, reject) => {
+    const request = httpRequest(base + path, {headers: {Host: host, Cookie: cookie}}, response => {
+      response.once('data', () => resolve(() => request.destroy()));
+    });
+    request.on('error', reject);
+    request.end();
+  });
+  return {request, login, watch, worker, app, data, deliveries, setPushStatus: (status: number) => { pushStatus = status; },
+    close: async () => { await app.stop(); await rm(data, {recursive: true}); }};
 }
 
 test('HTTP authentication, CSRF, host checks and cross-user conversation/asset protection', async () => {
@@ -193,6 +210,61 @@ test('the Home Screen manifest and every icon it names are served', async () => 
       assert.equal(`${width}x${height}`, sizes); assert.equal(format, 'png');
     }
     assert.match((await f.request('/')).headers.get('content-security-policy') ?? '', /manifest-src 'self'/);
+  } finally { await f.close(); }
+});
+test('push notifications reach a device only while nobody is looking', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const {publicKey} = await (await f.request('/api/push', owner)).json();
+    assert.equal(Buffer.from(publicKey, 'base64url').length, 65);
+    const keys = {p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url')};
+    const device = {endpoint: 'https://web.push.apple.com/device-1', keys};
+    assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: {...device, endpoint: 'https://evil.test/x'}, ...owner})).status, 400);
+    assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: device, ...owner})).status, 200);
+    // Sending the same subscription again, as every page load does, adds no second confirmation.
+    assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: device, ...owner})).status, 200);
+    await delay(20);
+    assert.equal(f.deliveries.length, 1);
+    assert.equal(f.deliveries[0].endpoint, device.endpoint);
+    assert.equal(f.deliveries[0].headers['Content-Encoding'], 'aes128gcm');
+    assert.match(f.deliveries[0].headers.Authorization, /^vapid t=.+, k=/);
+
+    // Nobody watching: the question and the finished reply both notify.
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hello', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    assert.equal(f.deliveries.length, 2);
+    assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
+    await delay(30);
+    assert.equal(f.deliveries.length, 3);
+
+    // Watching: an open stream means the page is in view, so nothing is sent.
+    const stop = await f.watch(`/api/chats/${chat.id}/events`, owner.cookie);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'again', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'Two'}, ...owner});
+    await delay(30);
+    assert.equal(f.deliveries.length, 3);
+    stop();
+
+    // A push service that says the subscription is gone (410) removes it; later turns send nothing.
+    f.setPushStatus(410);
+    await delay(20);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'third', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    assert.equal(f.deliveries.length, 4);
+    await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner});
+    await delay(30);
+    assert.equal(f.deliveries.length, 4);
+    assert.deepEqual(JSON.parse(await readFile(join(f.data, 'push/subscriptions.json'), 'utf8')), []);
+
+    // Signing out takes the device's subscription with it.
+    f.setPushStatus(201);
+    const second = {endpoint: 'https://fcm.googleapis.com/fcm/send/device-2', keys};
+    assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: second, ...owner})).status, 200);
+    assert.equal((await f.request('/api/logout', {method: 'POST', body: {pushEndpoint: second.endpoint}, ...owner})).status, 200);
+    assert.deepEqual(JSON.parse(await readFile(join(f.data, 'push/subscriptions.json'), 'utf8')), []);
   } finally { await f.close(); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {

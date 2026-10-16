@@ -52,3 +52,9 @@ export type StreamEvent =
   | {type: 'error'; message: string};
 
 export interface ApiError { error: string }
+
+// GET /api/push: the key the browser subscribes with.
+export interface PushInfo { publicKey: string }
+
+// A notification's payload, encrypted to one device; public/sw.ts shows it and opens `chat` when tapped.
+export interface PushMessage { title: string; body: string; chat?: string }

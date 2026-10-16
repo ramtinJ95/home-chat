@@ -6,6 +6,10 @@ import type { ToolName, User } from './api.d.ts';
 export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
+// Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
+// endpoints are numbered hosts such as wns2-par02p.notify.windows.com. Only the server sends to them, never the model.
+export const PUSH_HOSTS = new Set(['web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com']);
+export const pushServiceHost = (host: string) => PUSH_HOSTS.has(host) || /^[a-z0-9-]+\.notify\.windows\.com$/.test(host);
 // A memory backstop, not a user-facing limit: the browser shrinks pictures to 2048 px first, and even an
 // incompressible 2048 px PNG, uploaded or re-encoded, stays under this.
 export const MAX_UPLOAD = 20 * 1024 * 1024;
@@ -31,11 +35,28 @@ export function publicAddress(value: string): boolean {
   return parsed.range() === 'unicast' && (parsed.kind() !== 'ipv6' || parsed.match(ipaddr.parse('2000::'), 3));
 }
 
-export function allowedDestination(authority: string, hosts: ReadonlySet<string> = PROVIDER_HOSTS): string {
+export function allowedDestination(authority: string, allowed: (host: string) => boolean = host => PROVIDER_HOSTS.has(host)): string {
   if (!/^[a-z0-9.-]+:443$/.test(authority)) throw new Error('Destination denied');
   const host = authority.slice(0, -4);
-  if (!hosts.has(host)) throw new Error('Destination denied');
+  if (!allowed(host)) throw new Error('Destination denied');
   return host;
+}
+
+// A browser's push subscription. The endpoint comes from the browser, so it must point at a known push service: the
+// server would otherwise send requests wherever a tampered client told it to.
+export interface PushSubscriptionInput { endpoint: string; keys: {p256dh: string; auth: string} }
+export function pushSubscription(value: unknown): PushSubscriptionInput {
+  const input = value as {endpoint?: unknown; keys?: {p256dh?: unknown; auth?: unknown}} | null;
+  const key = (text: unknown, bytes: number) =>
+    typeof text === 'string' && /^[A-Za-z0-9_-]+={0,2}$/.test(text) && Buffer.from(text, 'base64url').length === bytes;
+  if (typeof input?.endpoint !== 'string' || input.endpoint.length > 2048) throw new Error('Invalid push subscription');
+  let url: URL;
+  try { url = new URL(input.endpoint); } catch { throw new Error('Invalid push subscription'); }
+  if (url.protocol !== 'https:' || url.port || url.username || url.password || !pushServiceHost(url.hostname)) {
+    throw new Error('Unknown push service');
+  }
+  if (!key(input.keys?.p256dh, 65) || !key(input.keys?.auth, 16)) throw new Error('Invalid push subscription');
+  return {endpoint: url.href, keys: {p256dh: input.keys!.p256dh as string, auth: input.keys!.auth as string}};
 }
 
 export function requireAllowedTool(name: string): asserts name is ToolName {

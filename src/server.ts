@@ -1,13 +1,15 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, open } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, PushInfo, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
-import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser } from './policy.ts';
+import { atomicJson } from './files.ts';
+import { createPush } from './push.ts';
+import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser, pushSubscription } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -22,6 +24,8 @@ export interface AppOptions {
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
   access?: AccessConfig;
   accessKeys?: AccessKeySource;
+  // Sends push requests; tests replace it so nothing reaches a real push service.
+  pushFetch?: typeof fetch;
 }
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
@@ -48,18 +52,6 @@ async function jsonBody(req: http.IncomingMessage, maximum = 64_000): Promise<Re
   catch { throw fail(400, 'Invalid JSON'); }
   if (typeof body !== 'object' || body === null) throw fail(400, 'Invalid JSON');
   return body as Record<string, unknown>;
-}
-
-// Synced around the rename, so a power cut leaves either the old record or the new one, never an empty file.
-async function atomicJson(path: string, value: unknown): Promise<void> {
-  const temporary = path + '.' + randomUUID() + '.tmp';
-  try {
-    const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(JSON.stringify(value)); await file.sync(); } finally { await file.close(); }
-    await rename(temporary, path);
-  } catch (error) { await rm(temporary, {force: true}); throw error; }
-  const directory = await open(dirname(path), 'r');
-  try { await directory.sync(); } finally { await directory.close(); }
 }
 
 async function diskUsage(directory: string): Promise<number> {
@@ -89,7 +81,7 @@ async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
 async function loadStaticFiles() {
   const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'],
     ['/style.css', 'style.css', 'text/css'], ['/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json'],
-    ['/icon.svg', 'icon.svg', 'image/svg+xml']];
+    ['/icon.svg', 'icon.svg', 'image/svg+xml'], ['/sw.js', 'sw.js', 'text/javascript']];
   const text = await Promise.all(files.map(async ([path, file, type]) =>
     [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const));
   // Home Screen icons are drawn from the one SVG at startup. Apple and maskable icons stay full-bleed because the
@@ -105,7 +97,7 @@ async function loadStaticFiles() {
   return new Map([...text, ...images]);
 }
 
-export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys}: AppOptions = {}) {
+export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys, pushFetch}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
   const deletedDirectory = join(data, 'deleted');
@@ -119,6 +111,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // Access sessions are stateless: the CSRF token is derived from the verified email, so it survives page reloads.
   const csrfSecret = randomBytes(32);
   const origin = access ? 'https://' + access.host : undefined;
+  // Push services want a contact for the sender: the public site, or a placeholder in local mode.
+  const push = await createPush(join(data, 'push'), origin ?? 'mailto:home-chat@localhost.invalid', pushFetch);
   const loginAttempts = new Map<string, number[]>();
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
@@ -163,6 +157,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   let stopping = false;
   const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind}) => ({id, kind})), busy: running.has(chat.id),
     question: workers.get(chat.id)?.question ?? null});
+  // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
+  const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
   const emit = (id: string, event: StreamEvent) => {
     for (const client of streams.get(id) ?? []) {
       if (client.res.writableLength > 1024 * 1024) { client.res.destroy(); continue; }
@@ -190,6 +186,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     inflight.add(chat.id);
     running.delete(chat.id); worker.busy = false;
     try { await publish(chat); } finally { inflight.delete(chat.id); }
+    if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
   }
 
   async function collectGenerated(chat: Chat) {
@@ -240,7 +237,10 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       saveTimer.unref();
     });
     worker.on('tool', name => emit(chat.id, {type: 'tool', name}));
-    worker.on('question', question => emit(chat.id, {type: 'question', question}));
+    worker.on('question', question => {
+      emit(chat.id, {type: 'question', question});
+      if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: 'Home Chat has a question for you.', chat: chat.id});
+    });
     worker.on('settled', () => {
       clearTimeout(worker.deadline);
       void (async () => {
@@ -281,7 +281,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
     try {
@@ -321,7 +321,22 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local', tools: ALLOWED_TOOLS};
         return send(200, me);
       }
+      if (path === '/api/push' && req.method === 'GET') {
+        const info: PushInfo = {publicKey: push.publicKey};
+        return send(200, info);
+      }
+      if (path === '/api/push/subscriptions' && (req.method === 'POST' || req.method === 'DELETE')) {
+        const body = await jsonBody(req, 8_000);
+        let subscription;
+        try { subscription = pushSubscription(body); } catch (error) { throw fail(400, (error as Error).message); }
+        if (req.method === 'POST') await push.subscribe(session.user, subscription);
+        else await push.unsubscribe(session.user, subscription.endpoint);
+        return send(200, {ok: true});
+      }
       if (path === '/api/logout' && req.method === 'POST') {
+        // The device stops receiving this user's notifications in the same step, so a shared phone shows nothing after.
+        const body = await jsonBody(req, 4_000);
+        if (typeof body.pushEndpoint === 'string') await push.unsubscribe(session.user, body.pushEndpoint);
         // Under Access the browser then leaves through Cloudflare's own logout, which ends the real session.
         sessions.delete(sessionKey);
         for (const clients of streams.values()) for (const client of clients) if (client.sessionKey === sessionKey) client.res.end();
