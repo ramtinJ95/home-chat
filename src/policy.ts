@@ -3,7 +3,7 @@ import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (profile/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
@@ -38,7 +38,7 @@ export interface TurnMode { deepResearch?: boolean; routineRun?: string }
 export function composePrompt(message: string, {deepResearch, routineRun}: TurnMode = {}): string {
   const notes = [
     routineRun && `${ROUTINE_NOTE} It was due ${routineRun} (Stockholm time). The message is the routine's standing task: do it and
-reply with the result. You cannot ask questions or change routines during this run.`,
+reply with the result. You cannot ask questions, change routines or change the household notes during this run.`,
     deepResearch && DEEP_RESEARCH_INSTRUCTIONS,
   ].filter(note => typeof note === 'string');
   return notes.map(note => note + '\n').join('') + USER_PREFIX + message;
@@ -51,10 +51,12 @@ export function promptMode(prompt: string): {deepResearch: boolean; routineRun: 
 }
 
 // Research costs money per call, so it needs the conversation's switch; an unattended run has nobody to answer a
-// question, and routines never make routines.
+// question or confirm a note, and routines never make routines.
 export function refusedInTurn(tool: string, mode: {deepResearch: boolean; routineRun: boolean}): string | undefined {
   if (tool === 'deep_research' && !mode.deepResearch) return 'Deep research is off for this conversation; the user can switch it on';
-  if (mode.routineRun && (tool === 'ask' || tool === 'routine')) return 'Nobody is watching this routine run, so it cannot ask questions or change routines';
+  if (mode.routineRun && (tool === 'ask' || tool === 'routine' || tool === 'memory')) {
+    return 'Nobody is watching this routine run, so it cannot ask questions, change routines or change the household notes';
+  }
 }
 export const TURN_LIMITS = Object.freeze({
   normal: {toolCalls: 12, minutes: 5},

@@ -14,6 +14,8 @@ import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
 import type { TurnMode } from '../src/policy.ts';
 import { createApp, type AppOptions } from '../src/server.ts';
 import { documentTool } from '../profile/document.ts';
+import { callServer } from '../profile/internal.ts';
+import { memoryTool } from '../profile/memory.ts';
 import { routineTool } from '../profile/routine.ts';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 
@@ -358,13 +360,20 @@ test('deep research is a per-conversation switch that is kept and reaches every 
     } finally { await keyless.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
 });
-// The routine tool as Pi would run it, with the socket and token the server gave the worker.
-async function callRoutine(env: Record<string, string>, params: Record<string, unknown>): Promise<string> {
+// Runs as Pi's side of the internal socket would, with the socket and token the server gave the worker.
+async function withEnv<T>(env: Record<string, string>, run: () => Promise<T>): Promise<T> {
   const saved = {...process.env};
   Object.assign(process.env, env);
-  try { return ((await routineTool.execute('call', params as never, undefined, undefined, {} as ExtensionToolContext)).content[0] as {text: string}).text; }
+  try { return await run(); }
   finally { for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
 }
+const resultText = (result: {content: unknown[]}) => (result.content[0] as {text: string}).text;
+const callRoutine = (env: Record<string, string>, params: Record<string, unknown>) =>
+  withEnv(env, async () => resultText(await routineTool.execute('call', params as never, undefined, undefined, {} as ExtensionToolContext)));
+// The memory tool, with the user answering its confirmation with `answer`; what it asked is added to `asked`.
+const callMemory = (env: Record<string, string>, params: Record<string, unknown>, answer: boolean, asked: string[] = []) =>
+  withEnv(env, async () => resultText(await memoryTool.execute('call', params as never, undefined, undefined,
+    {ui: {confirm: async (title: string, message: string) => { asked.push(`${title} ${message}`); return answer; }}} as unknown as ExtensionToolContext)));
 test('routines are set up by the model, listed and switched in the app, and kept apart per person', async () => {
   const f = await fixture();
   try {
@@ -375,7 +384,7 @@ test('routines are set up by the model, listed and switched in the app, and kept
     const created = await callRoutine(f.worker.env, {action: 'create', title: 'Morning briefing', prompt: 'Weather and news for Stockholm',
       schedule: {kind: 'daily', time: '07:30'}});
     assert.match(created, /^Saved “Morning briefing”: Every day at 07:30\. Next run: (Today|Tomorrow) 07:30\./);
-    await assert.rejects(() => callRoutine({...f.worker.env, HOME_CHAT_ROUTINE_TOKEN: 'forged'}, {action: 'list'}), /cannot change routines/);
+    await assert.rejects(() => callRoutine({...f.worker.env, HOME_CHAT_INTERNAL_TOKEN: 'forged'}, {action: 'list'}), /cannot reach Home Chat/);
     await assert.rejects(() => callRoutine(f.worker.env, {action: 'create', title: 'Hourly', prompt: 'x', schedule: {kind: 'hourly', time: '07:00'}}), /schedule.kind/);
     const [routine] = await (await f.request('/api/routines', owner)).json();
     assert.equal(routine.title, 'Morning briefing'); assert.equal(routine.schedule, 'Every day at 07:30'); assert.equal(routine.unread, false);
@@ -418,6 +427,9 @@ test('a due routine runs unattended in its own conversation, is marked unread, a
       assert.equal(restarted.worker.lastText, 'Weather and news');
       assert.match(restarted.worker.lastMode?.routineRun ?? '', /^\w+day \d+ \w+, \d{2}:\d{2}$/);
       await assert.rejects(() => callRoutine(restarted.worker.env, {action: 'list'}), /during a routine run/);
+      // Nobody can confirm a note during the run, but the run is still told the notes.
+      await assert.rejects(() => callMemory(restarted.worker.env, {action: 'remember', text: 'Early riser'}, true), /during a routine run/);
+      assert.equal(await withEnv(restarted.worker.env, () => callServer('/memory')), '');
       restarted.worker.answer('question-1', 'One');
       await delay(40);
       const again = await restarted.login('owner');
@@ -472,6 +484,35 @@ test('a routine paused while its run waits in line does not run', async () => {
       assert.equal(after.find((routine: {id: string}) => routine.id === second.id).lastRun.outcome, 'skipped');
     } finally { await restarted.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
+});
+test('the model suggests household notes, saved only after a yes, and About us shows and edits them per person', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'I am vegetarian, and we live in Stockholm', assets: []}, ...owner});
+    await delay(40);
+    const asked: string[] = [];
+    assert.match(await callMemory(f.worker.env, {action: 'remember', text: 'Vegetarian'}, false, asked), /said no/);
+    assert.deepEqual((await (await f.request('/api/memory', owner)).json()).mine, []);
+    // A change that cannot be made fails before the user is asked.
+    await assert.rejects(() => callMemory(f.worker.env, {action: 'forget', text: 'Never said'}, true, asked), /no such note/);
+    assert.match(await callMemory(f.worker.env, {action: 'remember', text: 'Vegetarian'}, true, asked), /Saved under About us/);
+    await callMemory(f.worker.env, {action: 'remember', text: 'We live in Stockholm', shared: true}, true, asked);
+    assert.deepEqual(asked, ['Remember this about you? Vegetarian', 'Remember this about you? Vegetarian', 'Remember this for the whole household? We live in Stockholm']);
+    assert.match(await withEnv(f.worker.env, () => callServer('/memory')), /talking to:\n- Vegetarian\nShared by the household:\n- We live in Stockholm\n$/);
+    assert.deepEqual(await (await f.request('/api/memory', guest)).json(), {version: 2, mine: [], shared: ['We live in Stockholm']});
+    // The settings page replaces both lists, unless they changed since it loaded them.
+    const view = await (await f.request('/api/memory', owner)).json();
+    const edited = await f.request('/api/memory', {method: 'PUT', body: {version: view.version, mine: ['Vegan'], shared: view.shared}, ...owner});
+    assert.equal(edited.status, 200);
+    assert.deepEqual((await edited.json()).mine, ['Vegan']);
+    assert.equal((await f.request('/api/memory', {method: 'PUT', body: {version: view.version, mine: [], shared: []}, ...owner})).status, 409);
+    assert.equal((await f.request('/api/memory', {method: 'PUT', body: {version: view.version + 1, mine: ['x'.repeat(301)], shared: []}, ...owner})).status, 400);
+    assert.equal((await f.request('/api/memory', {method: 'PUT', body: {version: view.version + 1, mine: [], shared: []}, cookie: owner.cookie})).status, 403);
+    assert.equal((await f.request('/api/memory', {method: 'PUT', body: {version: view.version + 1, mine: [], shared: []}})).status, 401);
+    assert.deepEqual((await (await f.request('/api/memory', guest)).json()).mine, []);
+  } finally { await f.close(); }
 });
 // A routine whose run waits at the next start. The run's Codex sign-in check, the restarted app's first, is held so a
 // test can act while the run is being admitted; later checks, such as a log-in's, are not.

@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -48,6 +48,12 @@ const ui = {
   readerTitle: $('#reader-title'),
   readerContents: $<HTMLDetailsElement>('#reader-contents'),
   readerBody: $('#reader-body'),
+  aboutEntry: $('#about-entry'),
+  about: $('#about'),
+  aboutClose: $<HTMLButtonElement>('#about-close'),
+  aboutForm: $<HTMLFormElement>('#about-form'),
+  aboutMine: $<HTMLTextAreaElement>('#about-mine'),
+  aboutShared: $<HTMLTextAreaElement>('#about-shared'),
 };
 
 const TOOL_ACTIVITY: Record<ToolName, string> = {
@@ -57,6 +63,7 @@ const TOOL_ACTIVITY: Record<ToolName, string> = {
   document: 'Writing a document…',
   deep_research: 'Researching… this can take a few minutes',
   routine: 'Updating your routines…',
+  memory: 'Updating About us…',
 };
 const SUGGESTIONS = [
   {icon: 'compass', title: 'Plan something lovely', prompt: 'Help me plan something lovely for the weekend'},
@@ -502,12 +509,37 @@ function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
 }
 
 // The reader covers the conversation and takes one history entry, so a phone's back gesture closes it.
-let readerOpener: HTMLElement | undefined;
+// Full-screen pages over the conversation: the reader and About us. One shows at a time, and Back closes it like a page.
+let sheet: {node: HTMLElement; opener?: HTMLElement} | undefined;
+const sheetInHistory = () => (history.state as {sheet?: boolean} | null)?.sheet === true;
+function showSheet(node: HTMLElement, focus: HTMLElement) {
+  const opener = sheet?.opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
+  if (sheet && sheet.node !== node) sheet.node.hidden = true;
+  sheet = {node, opener};
+  node.hidden = false;
+  // The conversation underneath is out of reach until the page closes, for the keyboard and screen readers too.
+  ui.workspace.inert = true;
+  node.scrollTop = 0;
+  if (!sheetInHistory()) history.pushState({sheet: true}, '');
+  focus.focus();
+}
+
+function hideSheet() {
+  if (!sheet) return;
+  sheet.node.hidden = true;
+  ui.workspace.inert = false;
+  if (sheet.opener?.isConnected) sheet.opener.focus();
+  sheet = undefined;
+}
+
+function closeSheet() {
+  if (sheetInHistory()) history.back(); else hideSheet();
+}
+
 let readerText = '';
 async function openReader(chatId: string, asset: AssetRef & {document: DocumentInfo}) {
   const url = `/api/chats/${chatId}/assets/${asset.id}`;
   const content = await api<DocumentContent>(url);
-  readerOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   readerText = `# ${content.title}\n\n${content.markdown}`;
   ui.readerTitle.textContent = content.title;
   ui.readerMeta.textContent = content.version > 1 ? `Document · version ${content.version}` : 'Document';
@@ -527,29 +559,34 @@ async function openReader(chatId: string, asset: AssetRef & {document: DocumentI
   ui.readerContents.hidden = headings.length < 2;
   ui.readerDownload.href = url + '?download=1';
   ui.readerCopy.textContent = 'Copy';
-  ui.reader.hidden = false;
-  // The conversation underneath is out of reach until the reader closes, for the keyboard and screen readers too.
-  ui.workspace.inert = true;
-  ui.reader.scrollTop = 0;
-  if (!(history.state as {reader?: boolean} | null)?.reader) history.pushState({reader: true}, '');
-  ui.readerClose.focus();
+  showSheet(ui.reader, ui.readerClose);
 }
 
-function hideReader() {
-  if (ui.reader.hidden) return;
-  ui.reader.hidden = true;
-  ui.workspace.inert = false;
-  if (readerOpener?.isConnected) readerOpener.focus();
-  readerOpener = undefined;
+// About us: the household notes, one per line, as the server last saved them (`aboutSaved`).
+let aboutVersion = 0;
+let aboutSaved = '';
+let aboutSaving = false;
+const aboutText = () => JSON.stringify([ui.aboutMine.value, ui.aboutShared.value]);
+const aboutEdited = () => sheet?.node === ui.about && aboutText() !== aboutSaved;
+const noteLines = (text: string) => text.split('\n').map(line => line.trim()).filter(Boolean);
+// `keepEdits`: the notes were edited again while a save was on its way, so they stay as typed, and unsaved.
+function fillAbout(view: MemoryView, keepEdits = false) {
+  aboutVersion = view.version;
+  aboutSaved = JSON.stringify([view.mine.join('\n'), view.shared.join('\n')]);
+  if (keepEdits) return;
+  ui.aboutMine.value = view.mine.join('\n');
+  ui.aboutShared.value = view.shared.join('\n');
 }
 
-function closeReader() {
-  if ((history.state as {reader?: boolean} | null)?.reader) history.back(); else hideReader();
+async function openAbout() {
+  fillAbout(await api<MemoryView>('/api/memory'));
+  setDrawer(false);
+  showSheet(ui.about, ui.aboutClose);
 }
 
 function renderChat(next: ChatSnapshot) {
-  // Another conversation replaces the page, reader included.
-  if (chat?.id !== next.id) closeReader();
+  // Another conversation replaces the page, and any page over it.
+  if (chat?.id !== next.id) closeSheet();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
@@ -984,9 +1021,29 @@ ui.imageInput.onchange = async () => {
   } catch (error) { showError(error); }
 };
 
-ui.readerClose.onclick = closeReader;
-addEventListener('popstate', () => { if (!(history.state as {reader?: boolean} | null)?.reader) hideReader(); });
-addEventListener('keydown', event => { if (event.key === 'Escape' && !ui.reader.hidden) closeReader(); });
+ui.readerClose.onclick = closeSheet;
+ui.aboutClose.onclick = closeSheet;
+addEventListener('popstate', () => {
+  if (sheetInHistory()) return;
+  // Back with unsaved notes asks first; staying puts the page back in the history.
+  if (aboutEdited() && !confirm('Leave without saving your changes to About us?')) { history.pushState({sheet: true}, ''); return; }
+  hideSheet();
+});
+addEventListener('keydown', event => { if (event.key === 'Escape' && sheet) closeSheet(); });
+ui.aboutEntry.replaceChildren(sidebarButton('people', 'About us', openAbout));
+ui.aboutForm.onsubmit = async event => {
+  event.preventDefault();
+  // A second tap would send the same version again and be refused as a conflict.
+  if (aboutSaving) return;
+  aboutSaving = true;
+  const sent = aboutText();
+  try {
+    const view = await api<MemoryView>('/api/memory', 'PUT', {version: aboutVersion, mine: noteLines(ui.aboutMine.value), shared: noteLines(ui.aboutShared.value)});
+    fillAbout(view, aboutText() !== sent);
+    showNotice('Saved. Home Chat keeps this in mind from your next message.');
+  } catch (error) { showError(error); }
+  finally { aboutSaving = false; }
+};
 ui.readerCopy.onclick = async () => {
   try {
     await navigator.clipboard.writeText(readerText);

@@ -41,6 +41,7 @@ test('the server note marks unattended runs, which may not ask or change routine
   assert.deepEqual(promptMode(run), {deepResearch: true, routineRun: true});
   assert.match(refusedInTurn('ask', promptMode(run)) ?? '', /Nobody is watching/);
   assert.match(refusedInTurn('routine', promptMode(run)) ?? '', /Nobody is watching/);
+  assert.match(refusedInTurn('memory', promptMode(run)) ?? '', /Nobody is watching/);
   assert.equal(refusedInTurn('web_run', promptMode(run)), undefined);
   assert.equal(refusedInTurn('routine', promptMode(composePrompt('pause my briefing'))), undefined);
 });

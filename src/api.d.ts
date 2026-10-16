@@ -2,7 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory';
 export type AssetKind = 'upload' | 'generated' | 'document';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
@@ -67,6 +67,10 @@ export interface RoutineSummary {
   next: string;
   unread: boolean;
 }
+
+// GET /api/memory: the "About us" notes, one line each. PUT /api/memory {version, mine, shared} replaces both lists, and
+// answers 409 if they changed since `version` was read. `shared` is the same for everyone.
+export interface MemoryView { version: number; mine: string[]; shared: string[] }
 
 export interface Me {
   user: User;

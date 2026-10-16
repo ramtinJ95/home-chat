@@ -52,6 +52,7 @@
       <p class="section-label">Recent</p>
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
+        <div id="about-entry" class="sidebar-action"></div>
         <div id="install" class="sidebar-action" hidden></div>
         <div id="notifications" class="sidebar-action" hidden></div>
       </div>
@@ -128,6 +129,29 @@
     </article>
   </section>
 
+  <section id="about" class="reader" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
+    <header class="reader-bar">
+      <button id="about-close" class="icon-button" type="button" aria-label="Back to the conversation">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+      <div class="reader-actions">
+        <button class="ghost" type="submit" form="about-form">Save</button>
+      </div>
+    </header>
+    <form id="about-form" class="reader-page about-page">
+      <p class="reader-meta">Kept in mind in every conversation</p>
+      <h1 id="about-title" class="reader-title">About us</h1>
+      <p class="about-lede">Home Chat remembers these notes when it answers. You can also just tell it something; it asks
+        before it remembers anything. One note per line.</p>
+      <label for="about-mine">About you</label>
+      <p class="about-hint">Only you see these.</p>
+      <textarea id="about-mine" rows="6" maxlength="10000" placeholder="Vegetarian, but eats fish&#10;Learning Spanish"></textarea>
+      <label for="about-shared">Shared with the household</label>
+      <p class="about-hint">Everyone who uses Home Chat sees these and can change them.</p>
+      <textarea id="about-shared" rows="6" maxlength="10000" placeholder="We live in Stockholm&#10;Two kids, Alva (7) and Leo (4)"></textarea>
+    </form>
+  </section>
+
   <div id="error" class="toast" role="alert" hidden></div>
 
   <svg class="sprite" aria-hidden="true">
@@ -152,6 +176,7 @@
     <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></symbol>
     <symbol id="back" viewBox="0 0 24 24"><path d="M15 5.5 8.5 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19.5c.5-3.3 2.6-5.3 5.5-5.3s5 2 5.5 5.3M15.5 5.6a3.2 3.2 0 0 1 0 5.8M17.2 14.5c2 .6 3 2.3 3.3 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
   </svg>
 </body>

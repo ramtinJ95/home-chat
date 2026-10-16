@@ -510,6 +510,19 @@ svg { width: 20px; height: 20px; flex: none; }
 .reader-body h3, .reader-body h4 { scroll-margin-top: 80px; }
 .reader-body h3 { font-size: 1.4rem; margin-top: 1.6em; }
 
+/* About us: the household notes, on the same full-screen page as the reader. */
+.about-page { display: grid; gap: 6px; }
+.about-page .reader-title { margin-bottom: 4px; }
+.about-lede { margin: 0 0 14px; color: var(--ink-soft); line-height: 1.55; }
+.about-page label { margin-top: 16px; font-weight: 600; }
+.about-hint { margin: 0; font-size: 0.85rem; color: var(--ink-soft); }
+/* 16px text, so iOS does not zoom in when a note is tapped. */
+.about-page textarea {
+  width: 100%; min-height: 150px; margin-top: 4px; padding: 12px 14px; resize: vertical;
+  border-radius: 12px; border: 1px solid var(--line); background: var(--card); font-size: 1rem; line-height: 1.55;
+}
+.about-page textarea:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+
 .toast.info { background: var(--ink); color: var(--paper); }
 .toast {
   position: fixed; left: 50%; bottom: 28px; z-index: 30; transform: translateX(-50%);
