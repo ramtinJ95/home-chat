@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -15,6 +15,10 @@ const ui = {
   openSidebar: $<HTMLButtonElement>('#open-sidebar'),
   closeSidebar: $<HTMLButtonElement>('#close-sidebar'),
   newChat: $<HTMLButtonElement>('#new-chat'),
+  sidebar: $('.sidebar'),
+  searchForm: $<HTMLFormElement>('#search-form'),
+  search: $<HTMLInputElement>('#search'),
+  searchResults: $('#search-results'),
   chatList: $('#chat-list'),
   routines: $('#routines'),
   routineList: $('#routine-list'),
@@ -138,11 +142,12 @@ function showNotice(text: string) {
   errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
 }
 
-async function api<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {
       method,
+      signal,
       credentials: 'same-origin',
       headers: method === 'GET' ? {} : {'Content-Type': 'application/json', 'X-CSRF-Token': me?.csrf ?? ''},
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -485,7 +490,7 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
   if (message.error) bubble.append(element('p', 'failure', message.error));
   article.append(bubble);
   // A skipped run is a note on its own, with no task message before it.
-  if (message.run) { const wrap = element('div'); wrap.append(runMark(message.run), article); return wrap; }
+  if (message.run) { const wrap = element('div', 'run-note'); wrap.append(runMark(message.run), article); return wrap; }
   return article;
 }
 
@@ -600,6 +605,7 @@ function renderChat(next: ChatSnapshot) {
   ui.messages.replaceChildren(...(next.messages.length
     ? next.messages.map((message, index) => renderMessage(next, message, index >= previousCount))
     : [renderEmpty()]));
+  markFound();
   // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
   if (sameChat) keepFollowing(); else scrollToEnd();
@@ -710,6 +716,71 @@ async function refreshList(): Promise<ChatSummary[]> {
     return row;
   }));
   return list;
+}
+
+// Search: while the box has words in it, the sidebar shows results instead of its lists. `searchRun` drops the answer
+// to a search that newer typing has replaced, and `searching` cancels its request, so the server stops working on it.
+let searchRun = 0;
+let searchTimer: number | undefined;
+let searching: AbortController | undefined;
+function runSearch(delay = 250) {
+  clearTimeout(searchTimer);
+  searching?.abort();
+  const query = ui.search.value.trim();
+  const run = ++searchRun;
+  ui.sidebar.classList.toggle('searching', query !== '');
+  ui.searchResults.hidden = query === '';
+  if (!query) { ui.searchResults.replaceChildren(); return; }
+  searchTimer = window.setTimeout(() => {
+    searching = new AbortController();
+    api<SearchResult[]>('/api/search?q=' + encodeURIComponent(query), 'GET', undefined, searching.signal).then(results => {
+      if (run !== searchRun) return;
+      ui.searchResults.replaceChildren(...(results.length
+        ? [element('p', 'section-label', 'Results'), ...results.map(searchRow)]
+        : [element('p', 'search-empty', `No conversation mentions “${query}”.`)]));
+    }, error => { if (run === searchRun) showError(error); });
+  }, delay);
+}
+
+function searchRow(result: SearchResult): HTMLButtonElement {
+  const row = element('button', 'search-result');
+  row.type = 'button';
+  row.append(element('strong', undefined, result.title));
+  if (result.snippet) {
+    const snippet = element('span', 'search-snippet');
+    let at = 0;
+    for (const [start, end] of result.marks) { snippet.append(result.snippet.slice(at, start), element('mark', undefined, result.snippet.slice(start, end))); at = end; }
+    snippet.append(result.snippet.slice(at));
+    row.append(snippet);
+  }
+  row.onclick = () => { setDrawer(false); openAt(result.chat, result.message).catch(showError); };
+  return row;
+}
+
+// The message a search result opened, lit up for a moment. The thread is drawn again on every snapshot (one node per
+// message), so renderChat lights it up again until the moment is over.
+let found: {chat: string; message: number; timer: number} | undefined;
+function markFound() {
+  ui.messages.querySelector('.found')?.classList.remove('found');
+  if (found && found.chat === chat?.id) ui.messages.children[found.message]?.classList.add('found');
+}
+
+// Bumped by every result opened, so only the latest one scrolls and lights up.
+let jump = 0;
+async function openAt(id: string, message: number | null) {
+  const attempt = ++jump;
+  // Opening it again also replaces any other conversation still loading, even when this one is on screen.
+  if (chat?.id !== id || onScreen !== id) await openChat(id);
+  // Another result, or another conversation, was chosen while this one loaded.
+  if (attempt !== jump || chat?.id !== id || onScreen !== id) return;
+  const node = message === null ? undefined : ui.messages.children[message];
+  if (message === null || !(node instanceof HTMLElement)) return;
+  clearTimeout(found?.timer);
+  found = {chat: id, message, timer: window.setTimeout(() => { found = undefined; markFound(); }, 1800)};
+  markFound();
+  node.scrollIntoView({block: 'center'});
+  // Not following the end any more, so a snapshot arriving before the scroll event does not jump back down.
+  following = false;
 }
 
 async function deleteChat(item: ChatSummary) {
@@ -935,6 +1006,10 @@ ui.loginForm.onsubmit = async event => {
   } catch (error) { showError(error); }
 };
 ui.newChat.onclick = () => newChat().catch(showError);
+ui.search.oninput = () => runSearch();
+ui.search.onkeydown = event => { if (event.key === 'Escape' && ui.search.value) { event.stopPropagation(); ui.search.value = ''; runSearch(); } };
+// Enter searches at once and puts the phone keyboard away, so the results can be seen.
+ui.searchForm.onsubmit = event => { event.preventDefault(); runSearch(0); ui.search.blur(); };
 addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event as InstallPrompt; renderSetup(); });
 addEventListener('appinstalled', () => { installPrompt = undefined; renderSetup(); });
 renderSetup();

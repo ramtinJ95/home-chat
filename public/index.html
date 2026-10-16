@@ -45,11 +45,17 @@
         </button>
       </div>
       <button id="new-chat" class="new-chat" type="button"><svg viewBox="0 0 24 24"><use href="#plus"/></svg>New conversation</button>
+      <form id="search-form" class="search" role="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#search-icon"/></svg>
+        <input id="search" type="search" maxlength="200" placeholder="Search conversations" aria-label="Search conversations"
+          autocomplete="off" enterkeyhint="search">
+      </form>
+      <section id="search-results" class="search-results" aria-label="Search results" aria-live="polite" hidden></section>
       <section id="routines" class="routines" aria-labelledby="routines-label" hidden>
         <p id="routines-label" class="section-label">Routines</p>
         <nav id="routine-list" class="chat-list routine-list"></nav>
       </section>
-      <p class="section-label">Recent</p>
+      <p id="recent-label" class="section-label">Recent</p>
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
         <div id="about-entry" class="sidebar-action"></div>
@@ -176,6 +182,7 @@
     <symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="more" viewBox="0 0 24 24"><circle cx="6" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18" cy="12" r="1.6" fill="currentColor"/></symbol>
     <symbol id="back" viewBox="0 0 24 24"><path d="M15 5.5 8.5 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="search-icon" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m15 15 5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19.5c.5-3.3 2.6-5.3 5.5-5.3s5 2 5.5 5.3M15.5 5.6a3.2 3.2 0 0 1 0 5.8M17.2 14.5c2 .6 3 2.3 3.3 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
   </svg>
