@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, Me, Message, PushInfo, Question, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, Question, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -35,12 +35,22 @@ const ui = {
   install: $('#install'),
   notifications: $('#notifications'),
   error: $('#error'),
+  reader: $('#reader'),
+  readerClose: $<HTMLButtonElement>('#reader-close'),
+  readerCopy: $<HTMLButtonElement>('#reader-copy'),
+  readerShare: $<HTMLButtonElement>('#reader-share'),
+  readerDownload: $<HTMLAnchorElement>('#reader-download'),
+  readerMeta: $('#reader-meta'),
+  readerTitle: $('#reader-title'),
+  readerContents: $<HTMLDetailsElement>('#reader-contents'),
+  readerBody: $('#reader-body'),
 };
 
 const TOOL_ACTIVITY: Record<ToolName, string> = {
   ask: 'Asking you a quick question…',
   web_run: 'Searching the web…',
   imagegen: 'Creating an image…',
+  document: 'Writing a document…',
 };
 const SUGGESTIONS = [
   {icon: 'compass', title: 'Plan something lovely', prompt: 'Help me plan something lovely for the weekend'},
@@ -148,7 +158,12 @@ const HEADING = /^(#{1,4})\s+(.*)/;
 const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])\s+/;
 const QUOTE = /^>\s?/;
 const RULE = /^(?:-{3,}|\*{3,})\s*$/;
-const startsBlock = (line: string) => line.startsWith(FENCE) || [HEADING, LIST_ITEM, QUOTE, RULE].some(pattern => pattern.test(line));
+// A table is a row of cells over a line such as |---|:---:| (the pipes tell it from a rule); it may follow a paragraph
+// without a blank line.
+const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$/;
+const tableAt = (lines: string[], i: number) => lines[i].includes('|') && lines[i + 1]?.includes('|') === true && TABLE_RULE.test(lines[i + 1]);
+const startsBlock = (lines: string[], i: number) =>
+  lines[i].startsWith(FENCE) || [HEADING, LIST_ITEM, QUOTE, RULE].some(pattern => pattern.test(lines[i])) || tableAt(lines, i);
 const INLINE = /`([^`\n]+)`|\*\*([^*\n]+)\*\*|\*([^*\s][^*\n]*?)\*|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>()]+[^\s<>().,;:!?'"])/g;
 
 function renderMarkdown(target: HTMLElement, source: string) {
@@ -165,6 +180,11 @@ function renderMarkdown(target: HTMLElement, source: string) {
       const pre = element('pre');
       pre.append(element('code', undefined, code.join('\n')));
       blocks.push(pre);
+    } else if (tableAt(lines, i)) {
+      const rows: string[][] = [];
+      const align = cells(lines[i + 1]).map(cell => cell.endsWith(':') ? (cell.startsWith(':') ? 'center' : 'right') : '');
+      for (rows.push(cells(line)), i += 2; i < lines.length && lines[i].includes('|') && lines[i].trim(); i++) rows.push(cells(lines[i]));
+      blocks.push(table(rows, align));
     } else if (heading) {
       const [, hashes, text] = heading;
       blocks.push(inline(element(hashes.length <= 2 ? 'h3' : 'h4'), text));
@@ -184,11 +204,34 @@ function renderMarkdown(target: HTMLElement, source: string) {
       i++;
     } else {
       const paragraph: string[] = [];
-      for (; i < lines.length && lines[i].trim() && (paragraph.length === 0 || !startsBlock(lines[i])); i++) paragraph.push(lines[i]);
+      for (; i < lines.length && lines[i].trim() && (paragraph.length === 0 || !startsBlock(lines, i)); i++) paragraph.push(lines[i]);
       blocks.push(inline(element('p'), paragraph.join('\n')));
     }
   }
   target.replaceChildren(...blocks);
+}
+
+// Splits a table row on pipes, keeping escaped \| as text.
+function cells(row: string): string[] {
+  return row.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map(cell => cell.trim().replaceAll('\\|', '|'));
+}
+
+// Every row gets the header's number of cells. Wide tables scroll sideways inside their own box on a phone.
+function table([header, ...body]: string[][], align: string[]): HTMLElement {
+  const row = (values: string[], tag: 'th' | 'td') => {
+    const tr = element('tr');
+    header.forEach((_, index) => {
+      const cell = inline(element(tag), values[index] ?? '');
+      if (align[index]) cell.style.textAlign = align[index];
+      tr.append(cell);
+    });
+    return tr;
+  };
+  const head = element('thead'); head.append(row(header, 'th'));
+  const rows = element('tbody'); rows.append(...body.map(values => row(values, 'td')));
+  const grid = element('table'); grid.append(head, rows);
+  const scroller = element('div', 'table-scroll'); scroller.append(grid);
+  return scroller;
 }
 
 function inline<T extends HTMLElement>(parent: T, text: string): T {
@@ -381,8 +424,16 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
   } else {
     content.textContent = message.text;
   }
+  const shown = new Set<string>();
   for (const id of message.assets) {
     const url = `/api/chats/${snapshot.id}/assets/${id}`;
+    const info = snapshot.assets.find(asset => asset.id === id)?.document;
+    if (info) {
+      // A document revised within one reply gets one card.
+      if (!shown.has(info.doc)) bubble.append(documentCard(snapshot, info));
+      shown.add(info.doc);
+      continue;
+    }
     const figure = element('figure', 'picture');
     const picture = element('img');
     picture.src = url;
@@ -402,7 +453,74 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
   return article;
 }
 
+// The newest version of a document, which every card of that document opens.
+function latestVersion(snapshot: ChatSnapshot, doc: string): AssetRef & {document: DocumentInfo} {
+  return snapshot.assets.filter((asset): asset is AssetRef & {document: DocumentInfo} => asset.document?.doc === doc)
+    .reduce((latest, asset) => asset.document.version > latest.document.version ? asset : latest);
+}
+
+function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
+  const latest = latestVersion(snapshot, info.doc);
+  const card = element('button', 'document-card');
+  card.type = 'button';
+  const text = element('span', 'document-text');
+  const meta = latest.document.version === 1 ? 'Document'
+    : latest.document.version === info.version ? `Version ${info.version}` : `Updated later · version ${latest.document.version}`;
+  text.append(element('strong', undefined, latest.document.title), element('span', undefined, meta));
+  card.append(icon('document'), text, element('span', 'document-open', 'Open'));
+  card.onclick = () => openReader(snapshot.id, latest).catch(showError);
+  return card;
+}
+
+// The reader covers the conversation and takes one history entry, so a phone's back gesture closes it.
+let readerOpener: HTMLElement | undefined;
+let readerText = '';
+async function openReader(chatId: string, asset: AssetRef & {document: DocumentInfo}) {
+  const url = `/api/chats/${chatId}/assets/${asset.id}`;
+  const content = await api<DocumentContent>(url);
+  readerOpener = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  readerText = `# ${content.title}\n\n${content.markdown}`;
+  ui.readerTitle.textContent = content.title;
+  ui.readerMeta.textContent = content.version > 1 ? `Document · version ${content.version}` : 'Document';
+  renderMarkdown(ui.readerBody, content.markdown);
+  const headings = [...ui.readerBody.querySelectorAll<HTMLElement>('h3, h4')];
+  const list = element('ol');
+  list.append(...headings.map(heading => {
+    const item = element('li', heading.tagName === 'H4' ? 'sub' : undefined);
+    const jump = element('button', undefined, heading.textContent ?? '');
+    jump.type = 'button';
+    jump.onclick = () => { ui.readerContents.open = false; heading.scrollIntoView({behavior: 'smooth', block: 'start'}); };
+    item.append(jump);
+    return item;
+  }));
+  ui.readerContents.querySelector('ol')?.replaceWith(list);
+  ui.readerContents.open = false;
+  ui.readerContents.hidden = headings.length < 2;
+  ui.readerDownload.href = url + '?download=1';
+  ui.readerCopy.textContent = 'Copy';
+  ui.reader.hidden = false;
+  // The conversation underneath is out of reach until the reader closes, for the keyboard and screen readers too.
+  ui.workspace.inert = true;
+  ui.reader.scrollTop = 0;
+  if (!(history.state as {reader?: boolean} | null)?.reader) history.pushState({reader: true}, '');
+  ui.readerClose.focus();
+}
+
+function hideReader() {
+  if (ui.reader.hidden) return;
+  ui.reader.hidden = true;
+  ui.workspace.inert = false;
+  if (readerOpener?.isConnected) readerOpener.focus();
+  readerOpener = undefined;
+}
+
+function closeReader() {
+  if ((history.state as {reader?: boolean} | null)?.reader) history.back(); else hideReader();
+}
+
 function renderChat(next: ChatSnapshot) {
+  // Another conversation replaces the page, reader included.
+  if (chat?.id !== next.id) closeReader();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
@@ -741,6 +859,23 @@ ui.imageInput.onchange = async () => {
     attachments.push({id: asset.id, preview: URL.createObjectURL(picture)});
     renderAttachments();
   } catch (error) { showError(error); }
+};
+
+ui.readerClose.onclick = closeReader;
+addEventListener('popstate', () => { if (!(history.state as {reader?: boolean} | null)?.reader) hideReader(); });
+addEventListener('keydown', event => { if (event.key === 'Escape' && !ui.reader.hidden) closeReader(); });
+ui.readerCopy.onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(readerText);
+    ui.readerCopy.textContent = 'Copied';
+  } catch { showError('Could not copy; select the text instead'); }
+};
+// Shared as text, which every share target takes (Messages, Mail, Notes); download gives the .md file.
+ui.readerShare.hidden = !navigator.share;
+ui.readerShare.onclick = () => {
+  navigator.share({title: ui.readerTitle.textContent ?? '', text: readerText}).catch(error => {
+    if ((error as DOMException).name !== 'AbortError') showError('Could not share this document');
+  });
 };
 
 // The access-code form is only for local mode; under Cloudflare Access the user is already signed in.

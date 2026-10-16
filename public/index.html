@@ -92,10 +92,32 @@
             <button id="send" class="send" type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><use href="#arrow"/></svg></button>
           </div>
         </form>
-        <p class="fineprint centered">Private · Web search &amp; images · Check important answers</p>
+        <p class="fineprint centered">Private · Web search, images &amp; documents · Check important answers</p>
       </div>
     </main>
   </div>
+
+  <section id="reader" class="reader" role="dialog" aria-modal="true" aria-labelledby="reader-title" hidden>
+    <header class="reader-bar">
+      <button id="reader-close" class="icon-button" type="button" aria-label="Back to the conversation">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+      <div class="reader-actions">
+        <button id="reader-copy" class="ghost" type="button">Copy</button>
+        <button id="reader-share" class="ghost" type="button">Share</button>
+        <a id="reader-download" class="ghost" download>Download</a>
+      </div>
+    </header>
+    <article class="reader-page">
+      <p id="reader-meta" class="reader-meta"></p>
+      <h1 id="reader-title" class="reader-title"></h1>
+      <details id="reader-contents" class="reader-contents">
+        <summary>Contents</summary>
+        <ol></ol>
+      </details>
+      <div id="reader-body" class="content reader-body"></div>
+    </article>
+  </section>
 
   <div id="error" class="toast" role="alert" hidden></div>
 
@@ -116,6 +138,8 @@
     <symbol id="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.4 1.4m10.6 10.6 1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
     <symbol id="bell" viewBox="0 0 24 24"><path d="M6.5 16.5V11a5.5 5.5 0 0 1 11 0v5.5l1.5 1.5H5l1.5-1.5ZM10 20.5h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="home" viewBox="0 0 24 24"><path d="M4 11.5 12 5l8 6.5M6.5 10v9h11v-9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="document" viewBox="0 0 24 24"><path d="M7 3.5h7l4.5 4.5v12.5h-11.5V3.5Zm7 0V8h4.5M9.5 12.5h6m-6 3.5h6" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="back" viewBox="0 0 24 24"><path d="M15 5.5 8.5 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
   </svg>
 </body>

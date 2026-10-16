@@ -1,9 +1,9 @@
 import { realpath, stat } from 'node:fs/promises';
-import { resolve, sep } from 'node:path';
+import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
 // Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
@@ -16,6 +16,12 @@ export const MAX_UPLOAD = 20 * 1024 * 1024;
 export const MAX_DATA = 512 * 1024 * 1024;
 export const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const LOCAL_HOSTS = new Set(['127.0.0.1:8787', 'localhost:8787']);
+// Documents the `document` tool saves (profile/document.ts): one file per version in the conversation's `documents/`.
+export const DOCUMENT_ID = /^doc_[0-9a-f]{32}$/;
+export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
+export const MAX_DOCUMENT_TITLE = 200;
+export const MAX_DOCUMENT_TEXT = 256 * 1024;
+export const MAX_DOCUMENT_FILES = 100;
 // profile/extension.ts reports the tools Pi registered as a notify message with this prefix; src/rpc.ts checks it.
 export const POLICY_PREFIX = 'HOME_CHAT_POLICY:';
 
@@ -75,6 +81,32 @@ export async function allowedImagePath(path: unknown, cwd: string): Promise<stri
   return full;
 }
 
+// A stored file holds {title, markdown}; JSON escaping can grow the text, so the file may be larger than the text limit.
+export async function allowedDocumentPath(path: string, cwd: string): Promise<string> {
+  const full = await realpath(resolve(cwd, path));
+  if (!full.startsWith(resolve(cwd, 'documents') + sep) || !DOCUMENT_FILE.test(basename(full))) {
+    throw new Error('Document must belong to this conversation');
+  }
+  const info = await stat(full);
+  if (!info.isFile() || info.size > 8 * MAX_DOCUMENT_TEXT) throw new Error('Invalid document file');
+  return full;
+}
+
+export interface DocumentInput { title: string; markdown: string; revises?: string }
+// Checks the tool's input and, without `revises`, a stored document read back by the server.
+export function documentInput(value: unknown): DocumentInput {
+  const title = field(value, 'title'); const markdown = field(value, 'markdown'); const revises = field(value, 'revises');
+  if (typeof title !== 'string' || !title.trim() || title.length > MAX_DOCUMENT_TITLE) {
+    throw new Error(`A document needs a title of at most ${MAX_DOCUMENT_TITLE} characters`);
+  }
+  if (typeof markdown !== 'string' || !markdown.trim() || markdown.length > MAX_DOCUMENT_TEXT) {
+    throw new Error(`A document needs Markdown text of at most ${MAX_DOCUMENT_TEXT / 1024} K characters`);
+  }
+  if (revises !== undefined && (typeof revises !== 'string' || !DOCUMENT_ID.test(revises))) throw new Error('Invalid document reference');
+  // The title is one line: it labels a card, a reader page and a file name.
+  return {title: title.replace(/\s+/g, ' ').trim(), markdown, ...(revises === undefined ? {} : {revises})};
+}
+
 const field = (value: unknown, key: string): unknown =>
   typeof value === 'object' && value !== null ? (value as Record<string, unknown>)[key] : undefined;
 // Absent or null lists are fine (imagegen's schema allows null); anything else that is not a list is rejected, not skipped.
@@ -87,6 +119,7 @@ function asArray(value: unknown): unknown[] {
 export async function validateToolInput(name: string, args: unknown, cwd: string): Promise<void> {
   requireAllowedTool(name);
   if (typeof args !== 'object' || args === null) throw new Error('Invalid tool input');
+  if (name === 'document') documentInput(args);
   if (name === 'imagegen') {
     for (const path of asArray(field(args, 'referenced_image_paths'))) await allowedImagePath(path, cwd);
   }

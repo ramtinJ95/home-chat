@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
-import { allowedDestination, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedImagePath, validateToolInput } from '../src/policy.ts';
+import { allowedDestination, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');
@@ -38,7 +38,7 @@ test('all private, mapped, reserved, metadata and tailnet addresses are denied',
 });
 test('execution tools are never allowlisted', () => {
   for (const name of ['exec', 'exec_command', 'write_stdin', 'bash', 'read', 'write', 'edit', 'apply_patch', 'view_image', 'browser', 'spawn_agent', 'notebook', 'ask; bash']) assert.throws(() => requireAllowedTool(name));
-  for (const name of ['ask', 'web_run', 'imagegen']) assert.doesNotThrow(() => requireAllowedTool(name));
+  for (const name of ['ask', 'web_run', 'imagegen', 'document']) assert.doesNotThrow(() => requireAllowedTool(name));
 });
 test('image references reject traversal, secrets, sibling conversations and symlinks', async () => {
   const root = await mkdtemp(join(tmpdir(), 'home-chat-policy-'));
@@ -66,4 +66,28 @@ test('tool input lists that are not lists are rejected, not skipped', async () =
   await assert.rejects(() => validateToolInput('web_run', null, '/tmp'));
   // imagegen's schema allows null for "no reference images".
   await validateToolInput('imagegen', {prompt: 'A landscape', referenced_image_paths: null}, '/tmp');
+});
+
+test('documents need a one-line title, bounded text and a well-formed revision id', async () => {
+  assert.deepEqual(documentInput({title: '  Trip\n plan ', markdown: '## Day 1'}), {title: 'Trip plan', markdown: '## Day 1'});
+  const revises = 'doc_' + 'a'.repeat(32);
+  assert.equal(documentInput({title: 'Plan', markdown: 'x', revises}).revises, revises);
+  for (const input of [{title: ' ', markdown: 'x'}, {title: 'x'.repeat(201), markdown: 'x'}, {title: 'Plan', markdown: ''},
+    {title: 'Plan', markdown: 'x'.repeat(256 * 1024 + 1)}, {title: 'Plan', markdown: 'x', revises: '../doc'}, {title: 'Plan', markdown: 'x', revises: null}]) {
+    await assert.rejects(() => validateToolInput('document', input, '/tmp'), JSON.stringify(input).slice(0, 80));
+  }
+});
+test('document reads stay inside the conversation documents directory', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'home-chat-policy-'));
+  try {
+    const cwd = join(root, 'work'); await mkdir(join(cwd, 'documents'), {recursive: true});
+    const name = `doc_${'b'.repeat(32)}_v1.json`;
+    await writeFile(join(cwd, 'documents', name), '{}'); await writeFile(join(cwd, 'documents/notes.json'), '{}');
+    await writeFile(join(root, name), '{}');
+    await symlink(join(root, name), join(cwd, 'documents', `doc_${'c'.repeat(32)}_v1.json`));
+    assert.equal(await allowedDocumentPath('documents/' + name, cwd), join(cwd, 'documents', name));
+    for (const path of ['documents/notes.json', '../' + name, `documents/doc_${'c'.repeat(32)}_v1.json`, 'uploads/x.png']) {
+      await assert.rejects(() => allowedDocumentPath(path, cwd), path);
+    }
+  } finally { await rm(root, {recursive: true}); }
 });

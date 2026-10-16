@@ -4,6 +4,7 @@ import imagegen from '@howaboua/pi-codex-imagegen';
 import ask from '@howaboua/pi-ask';
 import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-agent';
 import { readFile } from 'node:fs/promises';
+import { documentTool } from './document.ts';
 import { ALLOWED_TOOLS, POLICY_PREFIX, isAllowedTool, validateToolInput, type ToolPolicy } from '../src/policy.ts';
 
 export default async function homeChat(pi: ExtensionAPI): Promise<void> {
@@ -45,6 +46,8 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   await web(restricted);
   await imagegen(restricted);
   await ask(restricted);
+  // Home Chat's own tool goes through the same wrapper, so it shares the call limit and input checks.
+  restricted.registerTool(documentTool);
 
   const enforce = () => {
     const registered = pi.getAllTools().map(tool => tool.name);

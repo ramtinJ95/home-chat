@@ -4,14 +4,14 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm } from 
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, Me, Message, PushInfo, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
 import { createPush } from './push.ts';
-import { ALLOWED_TOOLS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedImagePath, isUser, pushSubscription } from './policy.ts';
+import { ALLOWED_TOOLS, DOCUMENT_FILE, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
-interface StoredAsset { id: string; kind: AssetKind; path: string }
+interface StoredAsset { id: string; kind: AssetKind; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
 interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true }
 interface Session { user: User; csrf: string; expires: number }
@@ -52,6 +52,22 @@ async function jsonBody(req: http.IncomingMessage, maximum = 64_000): Promise<Re
   catch { throw fail(400, 'Invalid JSON'); }
   if (typeof body !== 'object' || body === null) throw fail(400, 'Invalid JSON');
   return body as Record<string, unknown>;
+}
+
+async function filesIn(directory: string): Promise<string[]> {
+  try { return await readdir(directory); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+}
+
+async function readDocument(path: string, cwd: string) {
+  return documentInput(JSON.parse(await readFile(await allowedDocumentPath(path, cwd), 'utf8')));
+}
+
+// Download names keep to plain characters for older browsers; filename* carries the full title.
+function markdownDisposition(title: string): string {
+  const plain = title.replace(/[^A-Za-z0-9 _-]+/g, '').trim().replace(/\s+/g, '-').slice(0, 80) || 'document';
+  const full = encodeURIComponent(title + '.md').replace(/['()*]/g, char => '%' + char.charCodeAt(0).toString(16).toUpperCase());
+  return `attachment; filename="${plain}.md"; filename*=UTF-8''${full}`;
 }
 
 async function diskUsage(directory: string): Promise<number> {
@@ -155,7 +171,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // Set by stop(). From then on no turn ends: stop() saves running replies and the next start marks them interrupted,
   // so Pi exiting or rejecting a prompt under a shutdown is never recorded as the turn's outcome.
   let stopping = false;
-  const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind}) => ({id, kind})), busy: running.has(chat.id),
+  const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind, document}) => document ? {id, kind, document} : {id, kind}), busy: running.has(chat.id),
     question: workers.get(chat.id)?.question ?? null});
   // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
   const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
@@ -189,22 +205,29 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
   }
 
+  // Pictures and documents the tools wrote during the turn become assets of its reply.
   async function collectGenerated(chat: Chat) {
     const cwd = workDir(chat);
-    const directory = join(cwd, '.pi/openai-codex-images');
-    let files;
-    try { files = await readdir(directory); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return; throw error; }
-    for (const file of files) {
-      if (!/^ig_[0-9a-f]{32}(?:_\d+)?\.png$/.test(file)) continue;
-      const path = join(directory, file);
-      if (chat.assets.some(asset => asset.path === path)) continue;
+    const found: StoredAsset[] = [];
+    const known = (path: string) => chat.assets.some(asset => asset.path === path);
+    const images = join(cwd, '.pi/openai-codex-images');
+    for (const file of await filesIn(images)) {
+      const path = join(images, file);
+      if (!/^ig_[0-9a-f]{32}(?:_\d+)?\.png$/.test(file) || known(path)) continue;
       await allowedImagePath(path, cwd);
-      const id = randomUUID();
-      chat.assets.push({id, kind: 'generated', path});
-      const last = chat.messages.at(-1);
-      if (last?.role === 'assistant') last.assets.push(id);
+      found.push({id: randomUUID(), kind: 'generated', path});
     }
+    const documents = join(cwd, 'documents');
+    for (const file of await filesIn(documents)) {
+      const match = DOCUMENT_FILE.exec(file);
+      const path = join(documents, file);
+      if (!match || known(path)) continue;
+      const {title} = await readDocument(path, cwd);
+      found.push({id: randomUUID(), kind: 'document', path, document: {doc: match[1], title, version: Number(match[2])}});
+    }
+    chat.assets.push(...found);
+    const last = chat.messages.at(-1);
+    if (last?.role === 'assistant') last.assets.push(...found.map(asset => asset.id));
   }
 
   async function workerFor(chat: Chat): Promise<ChatWorker> {
@@ -394,13 +417,23 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       if (parts[3] === 'assets' && parts.length === 5 && req.method === 'GET') {
         const asset = chat.assets.find(item => item.id === parts[4]);
         if (!asset) throw fail(404, 'Not found');
+        if (asset.document) {
+          const {title, markdown} = await readDocument(asset.path, workDir(chat));
+          if (url.searchParams.has('download')) {
+            res.setHeader('Content-Disposition', markdownDisposition(title));
+            return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
+          }
+          const content: DocumentContent = {title, markdown, version: asset.document.version};
+          return send(200, content);
+        }
         const path = await allowedImagePath(asset.path, workDir(chat));
         if (url.searchParams.has('download')) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${asset.id}.png"`);
         return send(200, await readFile(path), {'Content-Type': 'image/png'});
       }
       if (route === 'POST uploads') {
         if (occupied(chat.id)) throw fail(409, 'Wait for the current message');
-        if (chat.assets.length >= 40 || await diskUsage(data) > MAX_DATA - 20 * 1024 * 1024) throw fail(413, 'Prototype storage limit reached');
+        // Documents have their own limit (MAX_DOCUMENT_FILES), so they never use up a conversation's pictures.
+        if (chat.assets.filter(asset => !asset.document).length >= 40 || await diskUsage(data) > MAX_DATA - 20 * 1024 * 1024) throw fail(413, 'Prototype storage limit reached');
         const body = await jsonBody(req, Math.ceil(MAX_UPLOAD * 1.4));
         if (!['image/png', 'image/jpeg', 'image/webp'].includes(body.mimeType as string) || typeof body.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(body.data)) throw fail(400, 'Use a PNG, JPEG or WebP picture');
         const bytes = Buffer.from(body.data, 'base64');
@@ -437,7 +470,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           const images: PromptImage[] = []; const selected: StoredAsset[] = [];
           for (const id of assetIds) {
             const asset = chat.assets.find(item => item.id === id);
-            if (!asset) throw fail(400, 'Invalid attachment');
+            if (!asset || asset.document) throw fail(400, 'Invalid attachment');
             const path = await allowedImagePath(asset.path, workDir(chat));
             images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); selected.push(asset);
           }

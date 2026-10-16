@@ -1,10 +1,10 @@
 # Home Chat
 
-A private, mobile-friendly chat app for everyday questions, web search and
-image generation. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+A private, mobile-friendly chat app for everyday questions, web search,
+image generation and documents. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 agent against a Codex subscription inside Docker. The model can only use
-three tools (`ask`, `web_run`, `imagegen`), can only reach OpenAI, and cannot
-run commands or read files.
+four tools (`ask`, `web_run`, `imagegen`, `document`), can only reach OpenAI,
+and cannot run commands or read files.
 
 It runs in one of two modes:
 
@@ -124,6 +124,12 @@ installed app, not in a Safari tab. Tapping a notification opens its
 conversation. The server makes its push key pair on first start and keeps it,
 with the list of devices, in `push/` on the data volume.
 
+Longer results (reports, plans, itineraries) arrive as a document card in the
+reply. **Open** shows the document full screen with a contents list, and
+Copy, Share and Download (a Markdown file); the back button or gesture
+returns to the conversation. When the model revises a document, every card
+of it opens the newest version.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -146,7 +152,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
-| `profile/` | Pi extension that filters tool registration, plus the system prompt |
+| `profile/` | Pi extension that filters tool registration, the `document` tool, and the system prompt |
 | `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), the `sw.ts` service worker that shows notifications, the Home Screen manifest, and `icon.svg`, which the server renders into the app icons |
 | `scripts/` | Container entrypoint, login helpers and environment checks |
 
@@ -156,13 +162,13 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/policy.test.ts test/server.test.ts
+  --test test/access.test.ts test/document.test.ts test/policy.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the three tools
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the four tools
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
@@ -175,10 +181,12 @@ screenshots to the git-ignored `.local/` folder.
 
 - **Tools.** Pi starts with no built-in tools, extensions, skills or context
   files. `profile/extension.ts` drops every tool registration except `ask`,
-  `web_run` and `imagegen`, and validates tool input twice: at Pi's
+  `web_run`, `imagegen` and its own `document`, and validates tool input twice: at Pi's
   `tool_call` hook and in the execute wrapper. The server refuses a worker
   whose registered and active tools don't match exactly. Each message allows
-  12 tool calls and 2 image generations.
+  12 tool calls and 2 image generations. `document` only writes new files
+  under the conversation's `documents/` folder (at most 100, 256 K characters
+  each), and the server reads them back through the same path check.
 - **Input.** Browser text is always prefixed before reaching Pi, so it can
   never act as a slash command. Model output is rendered with DOM text nodes
   only, under a strict CSP. The browser shrinks pictures to 2048 px before
