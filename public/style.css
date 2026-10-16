@@ -165,6 +165,29 @@ svg { width: 20px; height: 20px; flex: none; }
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
 }
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
+
+/* Search: while the box has words in it, results take the place of the lists under it. 16px text, so iOS does not zoom. */
+.search { position: relative; }
+.search svg { position: absolute; left: 12px; top: 50%; width: 17px; height: 17px; transform: translateY(-50%); color: var(--muted); pointer-events: none; }
+.search input {
+  width: 100%; padding: 9px 12px 9px 36px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); font-size: 1rem;
+}
+.search input:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.sidebar.searching #routines, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
+.search-results { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
+.search-result { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background 140ms; }
+.search-result:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
+.search-result strong { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-snippet {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  font-size: 0.83rem; line-height: 1.4; color: var(--ink-soft); overflow-wrap: anywhere;
+}
+.search-snippet mark { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--ink); }
+.search-empty { margin: 4px 12px; font-size: 0.88rem; color: var(--ink-soft); }
+/* The message a search result opened, lit up for a moment, then fading back. */
+.message, .run-mark, .run-note { border-radius: 16px; transition: background 700ms var(--ease); }
+.found { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .chat-item {
   position: relative; display: flex; align-items: center; border-radius: 12px;
   color: var(--ink-soft); transition: background 140ms, color 140ms;
@@ -581,7 +604,8 @@ svg { width: 20px; height: 20px; flex: none; }
   .chat-delete { opacity: 1; }
   .row-menu summary, .switch { width: 44px; height: 44px; }
   .row-menu .menu button { padding: 13px 16px; }
-  .chat-open, .sidebar-action button, .sidebar-action summary { padding: 13px 12px; }
+  .chat-open, .sidebar-action button, .sidebar-action summary, .search-result { padding: 13px 12px; }
+  .search input { padding-top: 11px; padding-bottom: 11px; }
   .question .option { padding: 11px 18px; }
   .reader-actions .ghost { padding: 12px 10px; }
   .reader-contents button { padding: 12px 8px; }

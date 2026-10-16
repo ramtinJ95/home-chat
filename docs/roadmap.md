@@ -4,7 +4,7 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PRs 1–5 (Home Screen app, push notifications, artifacts and reader view, deep research, routines) merged and deployed. PR 6 ("About us" memory) in review.
+Status: PRs 1–6 (Home Screen app, push notifications, artifacts and reader view, deep research, routines, "About us" memory) merged and deployed. PR 7 (search) in review.
 
 ## Decisions
 

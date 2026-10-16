@@ -485,6 +485,23 @@ test('a routine paused while its run waits in line does not run', async () => {
     } finally { await restarted.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
 });
+test('search covers only the signed-in person\'s own conversations', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Find the lasagne recipe', assets: []}, ...owner});
+    await delay(40);
+    const results = await (await f.request('/api/search?q=' + encodeURIComponent('LASAGNE'), owner)).json();
+    assert.deepEqual(results, [{chat: chat.id, title: 'Find the lasagne recipe', message: 0, snippet: 'Find the lasagne recipe', marks: [[9, 16]]}]);
+    // The reply streamed so far is searchable too, as plain text.
+    assert.deepEqual((await (await f.request('/api/search?q=hello', owner)).json()).map((item: {message: number}) => item.message), [1]);
+    assert.deepEqual(await (await f.request('/api/search?q=lasagne', guest)).json(), []);
+    assert.deepEqual(await (await f.request('/api/search?q=', owner)).json(), []);
+    assert.equal((await f.request('/api/search?q=' + 'x'.repeat(201), owner)).status, 400);
+    assert.equal((await f.request('/api/search?q=lasagne')).status, 401);
+  } finally { await f.close(); }
+});
 test('the model suggests household notes, saved only after a yes, and About us shows and edits them per person', async () => {
   const f = await fixture();
   try {

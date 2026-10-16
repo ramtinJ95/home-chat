@@ -4,12 +4,13 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, chmod 
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
+import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
 import { ALLOWED_TOOLS, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
@@ -604,6 +605,19 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         const list: ChatSummary[] = [...chats.values()].filter(chat => chat.owner === session.user)
           .map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
         return send(200, list);
+      }
+      if (path === '/api/search' && req.method === 'GET') {
+        const query = url.searchParams.get('q') ?? '';
+        if (query.length > MAX_QUERY) throw fail(400, `Search for at most ${MAX_QUERY} characters`);
+        // Newest first, as the sidebar lists them. A search the app has replaced (its request closed) stops early.
+        const own = [...chats.values()].filter(chat => chat.owner === session.user).reverse();
+        const asker = new AbortController();
+        res.once('close', () => asker.abort());
+        let results: SearchResult[];
+        try { results = await searchChats(own, query, asker.signal); }
+        catch (error) { if (asker.signal.aborted) return; throw error; }
+        // A conversation deleted while the search paused is left out.
+        return send(200, results.filter(result => chats.has(result.chat)));
       }
       if (path === '/api/memory' && req.method === 'GET') return send(200, memory.view(session.user) satisfies MemoryView);
       if (path === '/api/memory' && req.method === 'PUT') {

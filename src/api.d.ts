@@ -47,6 +47,11 @@ export interface ChatSnapshot {
 // `unread`: a routine run arrived while nobody was looking. Routine conversations are listed under /api/routines.
 export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean }
 
+// GET /api/search?q=<words>: the user's own conversations whose title or messages contain every word, newest first.
+// `message` indexes the conversation's messages, or is null for a match in the title only; `marks` are the [start, end)
+// ranges in `snippet` where the words appear.
+export interface SearchResult { chat: string; title: string; message: number | null; snippet: string; marks: [number, number][] }
+
 export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 // Times are HH:MM in the household's time zone (src/routines.ts).
 export type RoutineSchedule =

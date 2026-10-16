@@ -162,6 +162,11 @@ Yes or No before anything is saved. The About us page in the sidebar shows the
 notes one per line for editing; it will not overwrite notes that changed after
 it opened. Each list holds up to 30 notes of 300 characters.
 
+**Search** in the sidebar looks through the titles and messages of your own
+conversations, ignoring case and accents, and finds messages with every word
+typed. A result opens its conversation at that message, which lights up for
+a moment. It shows at most 40 results, 5 per conversation.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -183,6 +188,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
+| `src/search.ts` | Search over a person's conversations: matching, snippets and highlight ranges |
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
@@ -196,7 +202,7 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/document.test.ts test/memory.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/server.test.ts
+  --test test/access.test.ts test/document.test.ts test/memory.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/search.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
