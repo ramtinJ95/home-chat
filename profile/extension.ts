@@ -9,7 +9,7 @@ import { documentTool } from './document.ts';
 import { callServer } from './internal.ts';
 import { memoryTool } from './memory.ts';
 import { routineTool } from './routine.ts';
-import { ALLOWED_TOOLS, POLICY_PREFIX, TURN_LIMITS, isAllowedTool, promptMode, refusedInTurn, validateToolInput, type ToolPolicy } from '../src/policy.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, REWIND_COMMAND, REWIND_PREFIX, TURN_LIMITS, carriesText, isAllowedTool, promptMode, refusedInTurn, validateToolInput, type ToolPolicy } from '../src/policy.ts';
 
 export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   const instructions = await readFile('/app/profile/instructions.md', 'utf8');
@@ -66,6 +66,25 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
     if (!ALLOWED_TOOLS.every(name => registered.includes(name))) throw new Error('Required chat tool missing');
     if (JSON.stringify(pi.getActiveTools()) !== JSON.stringify(ALLOWED_TOOLS)) pi.setActiveTools([...ALLOWED_TOOLS]);
   };
+  // Regenerate and edit (src/rpc.ts rewind): goes back to just before the last user message, so the next one replaces
+  // that turn. The argument is that message's text as the user wrote it; if Pi's last user message did not carry it, the
+  // message never reached Pi and there is nothing to undo. The label is saved as the session's newest entry, so the
+  // move outlasts a restart. Only the server can run this: user text always follows the server's prefix.
+  pi.registerCommand(REWIND_COMMAND, {
+    description: 'Home Chat: go back to before the last message',
+    handler: async (args, ctx) => {
+      const expected: unknown = JSON.parse(args);
+      const last = ctx.sessionManager.getBranch().findLast(entry => entry.type === 'message' && entry.message.role === 'user');
+      const content = last?.type === 'message' && last.message.role === 'user' ? last.message.content : undefined;
+      const text = typeof content === 'string' ? content
+        : (content ?? []).map(part => part.type === 'text' ? part.text : '').join('');
+      let outcome = 'unchanged';
+      if (last && typeof expected === 'string' && carriesText(text, expected)) {
+        outcome = (await ctx.navigateTree(last.id, {summarize: false, label: 'replaced in Home Chat'})).cancelled ? 'cancelled' : 'rewound';
+      }
+      ctx.ui.notify(REWIND_PREFIX + outcome, 'info');
+    },
+  });
   pi.on('session_start', async (_event, ctx) => {
     enforce();
     const policy = {registered: pi.getAllTools().map(t => t.name), active: pi.getActiveTools()} satisfies ToolPolicy;

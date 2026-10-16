@@ -10,7 +10,7 @@ import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
 import type { Question, User } from '../src/api.d.ts';
-import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
+import { PiRejected, type ChatWorker, type WorkerEvents } from '../src/rpc.ts';
 import type { TurnMode } from '../src/policy.ts';
 import { createApp, type AppOptions } from '../src/server.ts';
 import { documentTool } from '../profile/document.ts';
@@ -29,7 +29,11 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   lastDeep?: boolean;
   lastMode?: TurnMode;
   async start() {}
+  // Fails the next prompt: rejected, as Pi does before it records the message, or timed out, when nobody knows.
+  failNext?: 'rejected' | 'timeout';
   async prompt(text: string, _images?: unknown, mode: TurnMode = {}) {
+    const failure = this.failNext; this.failNext = undefined;
+    if (failure) throw failure === 'rejected' ? new PiRejected('rejected') : new Error('Pi command timed out');
     this.busy = true;
     this.lastText = text; this.lastMode = mode; this.lastDeep = mode.deepResearch === true;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
@@ -39,6 +43,11 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
     if (id !== this.question?.id || !this.question.options.includes(value as string)) throw new Error('Invalid answer');
     this.question = null; this.busy = false; this.emit('settled');
   }
+  // The texts regenerate and edit asked Pi to go back over.
+  rewound: string[] = [];
+  // What Pi reports: whether its last message carried the text.
+  rewindMatches = true;
+  async rewind(text: string) { this.rewound.push(text); return this.rewindMatches; }
   async abort() { this.busy = false; this.emit('settled'); }
   stop() { this.closed = true; }
 }
@@ -484,6 +493,52 @@ test('a routine paused while its run waits in line does not run', async () => {
       assert.equal(after.find((routine: {id: string}) => routine.id === second.id).lastRun.outcome, 'skipped');
     } finally { await restarted.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
+});
+test('the last turn can be regenerated or edited and sent again, and only the last turn', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    const send = (body: Record<string, unknown>) => f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {assets: [], ...body}, ...owner});
+    assert.equal((await send({text: 'Nothing to redo yet', replace: true})).status, 409);
+    assert.equal((await send({text: 'Plan a picnic'})).status, 202);
+    await delay(40);
+    // Not while the reply runs or waits on its question.
+    assert.equal((await send({text: 'Plan a picnic', replace: true})).status, 409);
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    assert.equal((await send({text: 'Plan a picnic', replace: 'yes'})).status, 400);
+    assert.equal((await send({text: 'Plan a picnic for four', replace: true})).status, 202);
+    await delay(40);
+    // Pi went back over the original message, and the conversation shows only the new turn.
+    assert.deepEqual(f.worker.rewound, ['Plan a picnic']);
+    assert.equal(f.worker.lastText, 'Plan a picnic for four');
+    const state = await (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    assert.deepEqual(state.messages.map((message: {role: string; text: string}) => [message.role, message.text.slice(0, 5)]), [['user', 'Plan '], ['assistant', 'Hello']]);
+    assert.equal(state.messages[0].text, 'Plan a picnic for four');
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    // A message Pi rejected never reached it, so redoing it goes back over nothing, even when the text is the same.
+    f.worker.failNext = 'rejected';
+    assert.equal((await send({text: 'Plan a picnic for four'})).status, 503);
+    assert.equal((await send({text: 'Plan a picnic for four', replace: true})).status, 202);
+    await delay(40);
+    assert.deepEqual(f.worker.rewound, ['Plan a picnic']);
+    assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).messages.length, 4);
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    // If Pi's copy does not end with the message, nothing is redone.
+    f.worker.rewindMatches = false;
+    assert.equal((await send({text: 'Something else', replace: true})).status, 409);
+    assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).messages.at(-2).text, 'Plan a picnic for four');
+    // Whether Pi recorded a message that timed out is unknown, so it cannot be redone.
+    f.worker.rewindMatches = true;
+    f.worker.failNext = 'timeout';
+    assert.equal((await send({text: 'Plan a picnic for four'})).status, 503);
+    const response = await send({text: 'Plan a picnic for four', replace: true});
+    assert.equal(response.status, 409);
+    assert.match((await response.json()).error, /cut off before Pi confirmed it/);
+  } finally { await f.close(); }
 });
 test('search covers only the signed-in person\'s own conversations', async () => {
   const f = await fixture();

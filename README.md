@@ -167,6 +167,13 @@ conversations, ignoring case and accents, and finds messages with every word
 typed. A result opens its conversation at that message, which lights up for
 a moment. It shows at most 40 results, 5 per conversation.
 
+Every finished reply can be **copied** (as Markdown) or **shared** as text.
+The last reply can be **regenerated**, and your last message **edited** in
+the composer and sent again; either way it replaces that turn, pictures
+included, and Pi forgets the old one too. Pi goes back through a private
+command of the extension that moves to just before that message in its
+session tree, and labels the move, so it is still in effect after a restart.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests

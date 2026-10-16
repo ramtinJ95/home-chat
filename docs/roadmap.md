@@ -4,7 +4,7 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PRs 1–6 (Home Screen app, push notifications, artifacts and reader view, deep research, routines, "About us" memory) merged and deployed. PR 7 (search) in review.
+Status: all eight PRs merged and deployed, small conveniences (PR 8) last. What is left is under "Also open".
 
 ## Decisions
 
@@ -80,6 +80,8 @@ How it works:
 ## 8. Small conveniences
 
 - Regenerate the last reply, edit and resend the last message, copy and share a reply.
+- Regenerate and edit replace the last turn in Pi's session too: a private extension command moves to just before that
+  message with Pi's tree navigation, in the same session file, and labels the move so it outlasts a restart.
 
 ## Also open
 

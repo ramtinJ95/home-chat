@@ -32,6 +32,8 @@ const ui = {
   providerWarning: $('#provider-warning'),
   messages: $('#messages'),
   question: $('#question'),
+  editing: $('#editing'),
+  cancelEdit: $<HTMLButtonElement>('#cancel-edit'),
   composer: $<HTMLFormElement>('#composer'),
   message: $<HTMLTextAreaElement>('#message'),
   attachments: $('#attachments'),
@@ -447,7 +449,43 @@ function runMark(label: string): HTMLElement {
   return mark;
 }
 
-function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean): HTMLElement {
+// The last turn can be asked again, as it was or edited: a message the user sent and the reply to it (as on the server,
+// src/server.ts replaceable). Not while a reply runs or waits on a question.
+function redoable(snapshot: ChatSnapshot): boolean {
+  const [question, answer] = snapshot.messages.slice(-2);
+  return snapshot.messages.length >= 2 && !snapshot.busy && !snapshot.question
+    && question.role === 'user' && !question.run && question.delivery !== 'unknown' && answer.role === 'assistant' && !answer.run;
+}
+
+function actionButton(name: string, label: string, run: (button: HTMLButtonElement) => Promise<void>): HTMLButtonElement {
+  const button = element('button');
+  button.type = 'button'; button.append(icon(name), label);
+  button.onclick = () => run(button).catch(showError);
+  return button;
+}
+
+function messageActions(snapshot: ChatSnapshot, message: Message, index: number): HTMLElement | undefined {
+  const last = index === snapshot.messages.length - 1;
+  const bar = element('div', 'message-actions');
+  // A reply still streaming is not finished enough to copy.
+  if (message.role === 'assistant' && message.text && !(last && snapshot.busy)) {
+    bar.append(actionButton('copy', 'Copy', async button => {
+      try { await navigator.clipboard.writeText(message.text); } catch { throw new Error('Could not copy; select the text instead'); }
+      button.lastChild!.textContent = 'Copied';
+    }));
+    // Shared as text, which every share target takes.
+    if (navigator.share) {
+      bar.append(actionButton('share', 'Share', () => navigator.share({text: message.text}).catch(error => {
+        if ((error as DOMException).name !== 'AbortError') throw new Error('Could not share this reply');
+      })));
+    }
+  }
+  if (redoable(snapshot) && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
+  if (redoable(snapshot) && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
+  return bar.childElementCount ? bar : undefined;
+}
+
+function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean, index: number): HTMLElement {
   // A run's scheduled message is the routine's standing task, which the mark stands for.
   if (message.run && message.role === 'user') return runMark(message.run);
   const article = element('article', `message ${message.role}${fresh ? ' fresh' : ''}`);
@@ -489,6 +527,8 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
   }
   if (message.error) bubble.append(element('p', 'failure', message.error));
   article.append(bubble);
+  const actions = messageActions(snapshot, message, index);
+  if (actions) (message.role === 'assistant' ? bubble : article).append(actions);
   // A skipped run is a note on its own, with no task message before it.
   if (message.run) { const wrap = element('div', 'run-note'); wrap.append(runMark(message.run), article); return wrap; }
   return article;
@@ -590,8 +630,9 @@ async function openAbout() {
 }
 
 function renderChat(next: ChatSnapshot) {
-  // Another conversation replaces the page, and any page over it.
+  // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
   if (chat?.id !== next.id) closeSheet();
+  if (editing && (editing.chat !== next.id || !redoable(next))) stopEditing();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
@@ -603,7 +644,7 @@ function renderChat(next: ChatSnapshot) {
   setBusy(next.busy);
   streaming = undefined;
   ui.messages.replaceChildren(...(next.messages.length
-    ? next.messages.map((message, index) => renderMessage(next, message, index >= previousCount))
+    ? next.messages.map((message, index) => renderMessage(next, message, index >= previousCount, index))
     : [renderEmpty()]));
   markFound();
   // The question card shrinks the thread, so place it before scrolling.
@@ -820,6 +861,42 @@ async function connect(id: string) {
     }
   };
   stream.onerror = () => { ui.activity.textContent = 'Connection interrupted; reconnecting…'; };
+}
+
+// Regenerate, and edit and resend: the last message goes again, as it was or as edited, in place of the last turn.
+// The same pictures go with it.
+async function resend(text: string) {
+  if (!chat) return;
+  const question = chat.messages.at(-2)!;
+  setBusy(true);
+  try { await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: question.assets, replace: true}); }
+  catch (error) { setBusy(false); throw error; }
+}
+
+async function regenerate() {
+  if (!chat || !confirm('Write a new reply in place of this one? This reply will be gone.')) return;
+  await resend(chat.messages.at(-2)!.text);
+}
+
+// Editing the last message happens in the composer. `draft` is whatever was there before, given back when the edit
+// ends: sent or cancelled.
+let editing: {chat: string; draft: string} | undefined;
+function startEditing() {
+  if (!chat) return;
+  editing = {chat: chat.id, draft: editing?.draft ?? ui.message.value};
+  ui.message.value = chat.messages.at(-2)!.text;
+  ui.editing.hidden = false;
+  resizeComposer();
+  ui.message.focus();
+}
+
+function stopEditing() {
+  if (!editing) return;
+  cancelDictation();
+  ui.message.value = editing.draft;
+  resizeComposer();
+  editing = undefined;
+  ui.editing.hidden = true;
 }
 
 async function newChat() {
@@ -1050,13 +1127,24 @@ ui.composer.onsubmit = async event => {
   const text = ui.message.value;
   const sent = [...attachments];
   try {
+    const edit = editing?.chat === chat.id ? editing : undefined;
     setBusy(true);
-    await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: sent.map(item => item.id)});
-    // The composer stays editable while a message is accepted; keep anything added since.
-    if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
+    if (edit) {
+      // Pictures added while editing go along with the message's own.
+      const question = chat.messages.at(-2)!;
+      await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: [...question.assets, ...sent.map(item => item.id)], replace: true});
+      // The draft from before the edit comes back, unless the new turn's snapshot already ended the edit (renderChat);
+      // an edit started since, perhaps in another conversation, is left alone.
+      if (editing === edit) stopEditing();
+    } else {
+      await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: sent.map(item => item.id)});
+      // The composer stays editable while a message is accepted; keep anything added since.
+      if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
+    }
     dropAttachments(sent);
   } catch (error) { setBusy(false); showError(error); }
 };
+ui.cancelEdit.onclick = () => stopEditing();
 ui.research.onclick = async () => {
   if (!chat) return;
   try { renderChat(await api<ChatSnapshot>(`/api/chats/${chat.id}/research`, 'POST', {on: !chat.deepResearch})); }
@@ -1078,6 +1166,7 @@ ui.messages.addEventListener('scroll', () => {
 // On touch keyboards Enter inserts a newline; the send button sends.
 const touchKeyboard = matchMedia('(pointer: coarse)');
 ui.message.onkeydown = event => {
+  if (event.key === 'Escape' && editing) { stopEditing(); return; }
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || touchKeyboard.matches) return;
   event.preventDefault();
   if (!ui.send.disabled) ui.composer.requestSubmit();

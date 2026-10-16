@@ -44,6 +44,17 @@ reply with the result. You cannot ask questions, change routines or change the h
   return notes.map(note => note + '\n').join('') + USER_PREFIX + message;
 }
 
+// Follows the user's text when pictures came with it, listing their paths for imagegen.
+export const ATTACHED_NOTE = '\nAttached image paths (this conversation only):\n';
+
+// Whether `prompt`, as Pi received it, carried the user's `text`.
+export function carriesText(prompt: string, text: string): boolean {
+  const start = prompt.indexOf(USER_PREFIX);
+  if (start === -1) return false;
+  const body = prompt.slice(start + USER_PREFIX.length);
+  return body === text || body.startsWith(text + ATTACHED_NOTE);
+}
+
 export function promptMode(prompt: string): {deepResearch: boolean; routineRun: boolean} {
   const start = prompt.indexOf(USER_PREFIX);
   const notes = start === -1 ? '' : prompt.slice(0, start);
@@ -64,6 +75,10 @@ export const TURN_LIMITS = Object.freeze({
 });
 // profile/extension.ts reports the tools Pi registered as a notify message with this prefix; src/rpc.ts checks it.
 export const POLICY_PREFIX = 'HOME_CHAT_POLICY:';
+// The extension's private command that takes Pi back to before the last message, for regenerate and edit (src/rpc.ts
+// rewind); it answers with a notify message with this prefix: rewound, unchanged or cancelled.
+export const REWIND_COMMAND = 'home-chat-rewind';
+export const REWIND_PREFIX = 'HOME_CHAT_REWIND:';
 
 export interface ToolPolicy { registered: string[]; active: string[] }
 

@@ -4,7 +4,16 @@ import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createECDH, randomBytes } from 'node:crypto';
-import { allowedDestination, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
+import { ATTACHED_NOTE, allowedDestination, carriesText, composePrompt, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
+
+test('the rewind recognises the message Pi was given, notes and picture paths included, and nothing else', () => {
+  const sent = composePrompt('What is this?' + ATTACHED_NOTE + '/work/uploads/a.png', {deepResearch: true});
+  assert.equal(carriesText(sent, 'What is this?'), true);
+  assert.equal(carriesText(composePrompt('Hello'), 'Hello'), true);
+  assert.equal(carriesText(composePrompt('Hello there'), 'Hello'), false);
+  assert.equal(carriesText(composePrompt('Hello'), 'Hello there'), false);
+  assert.equal(carriesText('Hello', 'Hello'), false);
+});
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');

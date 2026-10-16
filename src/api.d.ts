@@ -22,6 +22,10 @@ export interface Message {
   error?: string;
   // On a routine's scheduled message: when it ran, e.g. "Morning briefing · Friday 17 October, 07:30".
   run?: string;
+  // Whether Pi's own copy of the conversation has this message (src/server.ts startTurn): absent when it has, `rejected`
+  // when Pi turned it down, `unknown` from sending it until Pi accepts it, and for good if that never got settled (a
+  // restart or a timeout in between). A message whose delivery is unknown cannot be redone.
+  delivery?: 'rejected' | 'unknown';
 }
 
 // Set on document assets: every version of a document is its own asset, sharing `doc`.

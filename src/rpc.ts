@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { Question, QuestionMethod, ToolName } from './api.d.ts';
-import { ALLOWED_TOOLS, POLICY_PREFIX, composePrompt, isAllowedTool, type ToolPolicy, type TurnMode } from './policy.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, REWIND_COMMAND, REWIND_PREFIX, composePrompt, isAllowedTool, type ToolPolicy, type TurnMode } from './policy.ts';
 
 const QUESTION_METHODS: readonly QuestionMethod[] = ['select', 'input', 'editor', 'confirm'];
 
@@ -18,6 +18,7 @@ export type WorkerEvents = {
   question: [question: Question];
   settled: [];
   policy: [policy: ToolPolicy];
+  rewind: [outcome: string];
 };
 
 // The surface the server depends on; tests substitute a fake.
@@ -28,6 +29,8 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   deadline?: NodeJS.Timeout;
   start(): Promise<void>;
   prompt(message: string, images?: PromptImage[], mode?: TurnMode): Promise<void>;
+  // Takes Pi back to before its last user message, if that message carried `text`; false when there was nothing to undo.
+  rewind(text: string): Promise<boolean>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
   stop(): void;
@@ -64,6 +67,9 @@ export function providerFailure(value: unknown): string {
   if (status) return `Provider request failed (HTTP ${status[0]})`;
   return 'The model request failed. Check subscription login, quota and provider availability.';
 }
+
+// Pi answered a command with success: false, so it did not act on it (for a prompt: did not record the message).
+export class PiRejected extends Error {}
 
 export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
   readonly directory: string;
@@ -127,7 +133,7 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       const pending = this.pending.get(event.id);
       if (pending) {
         this.pending.delete(event.id); clearTimeout(pending.timer);
-        if (event.success) pending.resolve(event.data); else pending.reject(new Error(providerFailure(event.error)));
+        if (event.success) pending.resolve(event.data); else pending.reject(new PiRejected(providerFailure(event.error)));
         return;
       }
     }
@@ -138,6 +144,9 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
           this.stop(); this.emit('failure', 'Pi tool policy mismatch'); return;
         }
         this.emit('policy', policy); return;
+      }
+      if (event.method === 'notify' && typeof event.message === 'string' && event.message.startsWith(REWIND_PREFIX)) {
+        this.emit('rewind', event.message.slice(REWIND_PREFIX.length)); return;
       }
       const method = QUESTION_METHODS.find(item => item === event.method);
       if (method && event.id !== undefined) {
@@ -180,6 +189,23 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       // The prefix means browser text is never read as a Pi slash command or shell shortcut.
       await this.request('prompt', {message: composePrompt(message, mode), images});
     } catch (error) { this.busy = false; throw error; }
+  }
+
+  async rewind(text: string): Promise<boolean> {
+    // The extension's command (profile/extension.ts) reports its outcome as a notify message.
+    let listener: ((outcome: string) => void) | undefined;
+    const reported = new Promise<string>(resolve => { listener = resolve; this.once('rewind', resolve); });
+    let timer: NodeJS.Timeout | undefined;
+    const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Pi did not confirm going back')), 30_000); });
+    // Handled here too, so it never counts as unhandled while the request is still being answered.
+    late.catch(() => {});
+    try {
+      // Sent without the user prefix, so Pi runs it as the command.
+      await this.request('prompt', {message: `/${REWIND_COMMAND} ${JSON.stringify(text)}`});
+      const outcome = await Promise.race([reported, late]);
+      if (outcome !== 'rewound' && outcome !== 'unchanged') throw new Error('Pi would not go back');
+      return outcome === 'rewound';
+    } finally { clearTimeout(timer); this.off('rewind', listener!); }
   }
 
   answer(id: string, value: unknown, cancelled = false): void {
