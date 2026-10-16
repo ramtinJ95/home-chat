@@ -362,6 +362,21 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .message.user .content { white-space: pre-wrap; }
 .message.assistant .bubble { flex: 1; padding-top: 4px; }
+/* Under a reply: copy, share and regenerate; under your last message: edit. One row under the user's bubble. */
+.message.user { flex-wrap: wrap; row-gap: 4px; }
+.message-actions { display: flex; flex-wrap: wrap; gap: 2px; margin: 8px 0 0 -10px; }
+.message.user .message-actions { flex-basis: 100%; justify-content: flex-end; margin: 0 -10px 0 0; }
+.message-actions button {
+  display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 10px;
+  font-size: 0.82rem; color: var(--muted); transition: background 140ms, color 140ms;
+}
+.message-actions button:hover { background: var(--tint); color: var(--ink); }
+.message-actions svg { width: 16px; height: 16px; }
+.editing {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 8px 8px 14px;
+  border-radius: 14px; background: var(--tint); font-size: 0.88rem; line-height: 1.4; color: var(--ink-soft);
+}
+.editing .ghost { flex: none; font-weight: 600; color: var(--accent); }
 .avatar-mark {
   display: grid; place-items: center; flex: none;
   width: 34px; height: 34px; border-radius: 12px;
@@ -606,6 +621,8 @@ svg { width: 20px; height: 20px; flex: none; }
   .row-menu .menu button { padding: 13px 16px; }
   .chat-open, .sidebar-action button, .sidebar-action summary, .search-result { padding: 13px 12px; }
   .search input { padding-top: 11px; padding-bottom: 11px; }
+  .message-actions button { min-height: 44px; padding: 10px 12px; }
+  .editing .ghost { min-height: 44px; }
   .question .option { padding: 11px 18px; }
   .reader-actions .ghost { padding: 12px 10px; }
   .reader-contents button { padding: 12px 8px; }

@@ -5,14 +5,14 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
-import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
+import { PiRejected, PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
-import { ALLOWED_TOOLS, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
+import { ALLOWED_TOOLS, ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -256,9 +256,16 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   }
 
   // Admits one turn, for a sent message or a routine run, and hands it to Pi. Throws HttpError if it cannot start.
-  async function startTurn(chat: Chat, text: string, {images = [], attached = [], run}: {images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun} = {}) {
+  // `replace`: the message takes the place of the last turn (regenerate, or edit and resend), which Pi forgets first.
+  async function startTurn(chat: Chat, text: string, {images = [], attached = [], run, replace = false}:
+    {images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun; replace?: boolean} = {}) {
     if (occupied(chat.id)) throw fail(409, 'A message is already running');
     if ([...chats.values()].some(other => other.owner === chat.owner && occupied(other.id))) throw fail(409, 'One active conversation per user');
+    // Nothing else changes the conversation's messages while it is reserved, so this holds until the turn is admitted.
+    if (replace && !replaceable(chat)) throw fail(409, 'Only your last message and its reply can be redone');
+    if (replace && chat.messages.at(-2)!.delivery === 'unknown') {
+      throw fail(409, 'This message was cut off before Pi confirmed it, so it cannot be redone; send it again as a new message');
+    }
     inflight.add(chat.id);
     // A turn that was admitted and then could not start; it is ended after the reservation is released (below).
     let failed: {worker: ChatWorker; message: string} | undefined;
@@ -270,10 +277,21 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (stopping) { worker.stop(); throw fail(503, 'Home Chat is restarting; send the message again in a moment'); }
       // Checked again here, after the waits above and right before the run is admitted.
       if (run && !(current(run) && run.routine.enabled)) throw new StaleRun();
+      if (replace) {
+        // Every message Pi did not reject is in its copy of the conversation, the last one last, so that is the one it
+        // goes back over; one it rejected has nothing to undo.
+        const question = chat.messages.at(-2)!;
+        let rewound;
+        try { rewound = question.delivery === 'rejected' || await worker.rewind(question.text); }
+        catch { throw fail(503, 'Pi could not go back to your last message; try again'); }
+        if (!rewound) throw fail(409, 'Pi’s copy of this conversation does not match it, so the last turn cannot be redone; send a new message instead');
+        chat.messages.splice(-2);
+      }
       const deepResearch = run ? run.routine.deepResearch && researchReady : researching(chat);
       const due = run && runLabel(run.scheduled);
-      chat.messages.push({role: 'user', text, assets: attached.map(item => item.id), ...(run && {run: `${run.routine.title} · ${due}`})},
-        {role: 'assistant', text: '', assets: []});
+      // Saved as unknown before Pi gets it, so a restart before Pi confirms it leaves that on record (Message.delivery).
+      const asked: Message = {role: 'user', text, assets: attached.map(item => item.id), delivery: 'unknown', ...(run && {run: `${run.routine.title} · ${due}`})};
+      chat.messages.push(asked, {role: 'assistant', text: '', assets: []});
       if (chat.title === 'New conversation') chat.title = text.slice(0, 55) || 'Picture conversation';
       if (run) routineTurns.set(chat.id, run);
       chat.replying = true; running.add(chat.id); await publish(chat);
@@ -286,11 +304,16 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (!failed) {
         worker.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); worker.deadline.unref();
         try {
-          await worker.prompt(text + (attached.length ? '\nAttached image paths (this conversation only):\n' + attached.map(item => item.path).join('\n') : ''), images,
+          await worker.prompt(text + (attached.length ? ATTACHED_NOTE + attached.map(item => item.path).join('\n') : ''), images,
             {deepResearch, routineRun: due});
-        } catch {
+          delete asked.delivery;
+        } catch (error) {
           worker.stop();
-          failed = {worker, message: 'Pi rejected this message; no reply was completed'};
+          // A timeout or exit leaves it unknown whether Pi recorded the message.
+          const rejected = error instanceof PiRejected;
+          if (rejected) asked.delivery = 'rejected';
+          failed = {worker, message: rejected ? 'Pi rejected this message; no reply was completed'
+            : 'Pi did not confirm this message; no reply was completed'};
         }
       }
     } finally { inflight.delete(chat.id); }
@@ -300,6 +323,12 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       await endTurn(chat, failed.worker, failed.message);
       throw fail(503, failed.message);
     }
+  }
+
+  // The last turn can be asked again, as it was or edited: a message the user sent and the reply to it.
+  function replaceable(chat: Chat): boolean {
+    const [question, answer] = chat.messages.slice(-2);
+    return chat.messages.length >= 2 && question.role === 'user' && !question.run && answer.role === 'assistant' && !answer.run;
   }
 
   // A run that cannot happen leaves a dated note in its conversation, unless someone is using that conversation right now.
@@ -742,6 +771,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         const body = await jsonBody(req);
         const assetIds = body.assets ?? [];
         if (typeof body.text !== 'string' || body.text.length > 12_000 || !Array.isArray(assetIds) || assetIds.length > 4) throw fail(400, 'Invalid message');
+        if (body.replace !== undefined && typeof body.replace !== 'boolean') throw fail(400, 'Invalid message');
         if (!body.text.trim() && !assetIds.length) throw fail(400, 'Write a message or attach a picture');
         const images: PromptImage[] = []; const attached: StoredAsset[] = [];
         for (const id of assetIds) {
@@ -750,7 +780,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
           const path = await allowedImagePath(asset.path, workDir(chat));
           images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); attached.push(asset);
         }
-        await startTurn(chat, body.text, {images, attached});
+        await startTurn(chat, body.text, {images, attached, replace: body.replace === true});
         recent.push(Date.now()); rates.set(session.user, recent);
         return send(202, {ok: true});
       }
