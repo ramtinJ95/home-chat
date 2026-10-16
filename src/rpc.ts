@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { Question, QuestionMethod, ToolName } from './api.d.ts';
-import { ALLOWED_TOOLS, POLICY_PREFIX, isAllowedTool, type ToolPolicy } from './policy.ts';
+import { ALLOWED_TOOLS, DEEP_RESEARCH_INSTRUCTIONS, POLICY_PREFIX, isAllowedTool, type ToolPolicy } from './policy.ts';
 
 const QUESTION_METHODS: readonly QuestionMethod[] = ['select', 'input', 'editor', 'confirm'];
 
@@ -27,7 +27,7 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   question?: Question | null;
   deadline?: NodeJS.Timeout;
   start(): Promise<void>;
-  prompt(message: string, images?: PromptImage[]): Promise<void>;
+  prompt(message: string, images?: PromptImage[], deepResearch?: boolean): Promise<void>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
   stop(): void;
@@ -171,11 +171,13 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
     });
   }
 
-  async prompt(message: string, images: PromptImage[] = []): Promise<void> {
+  async prompt(message: string, images: PromptImage[] = [], deepResearch = false): Promise<void> {
     this.busy = true;
     try {
-      // Never interpret browser text as a Pi slash command or shell shortcut.
-      await this.request('prompt', {message: 'Message from the user:\n' + message, images});
+      // Never interpret browser text as a Pi slash command or shell shortcut. The research note goes first, where the
+      // user's text can never be.
+      const note = deepResearch ? DEEP_RESEARCH_INSTRUCTIONS + '\n' : '';
+      await this.request('prompt', {message: note + 'Message from the user:\n' + message, images});
     } catch (error) { this.busy = false; throw error; }
   }
 

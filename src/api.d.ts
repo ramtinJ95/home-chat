@@ -2,7 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research';
 export type AssetKind = 'upload' | 'generated' | 'document';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
@@ -36,6 +36,8 @@ export interface ChatSnapshot {
   assets: AssetRef[];
   busy: boolean;
   question: Question | null;
+  // Switched per conversation (POST /api/chats/<id>/research {on}) and kept until switched off.
+  deepResearch: boolean;
 }
 
 export interface ChatSummary { id: string; title: string }
@@ -47,6 +49,8 @@ export interface Me {
   // local: access codes on localhost. access: Cloudflare Access (Google sign-in) on the public hostname.
   mode: 'local' | 'access';
   tools: readonly ToolName[];
+  // Deep research needs an Exa key on the server; without one the app hides the switch.
+  deepResearch: boolean;
 }
 
 export type StreamEvent =

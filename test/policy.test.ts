@@ -8,6 +8,7 @@ import { allowedDestination, publicAddress, pushServiceHost, pushSubscription, r
 
 test('egress accepts only exact provider hosts on TLS port', () => {
   assert.equal(allowedDestination('chatgpt.com:443'), 'chatgpt.com');
+  assert.equal(allowedDestination('api.exa.ai:443'), 'api.exa.ai');
   for (const host of ['127.0.0.1:443', '100.64.0.1:443', '[::1]:443', 'host.docker.internal:443', 'chatgpt.com.evil.test:443', 'chatgpt.com:80', 'chatgpt.com.:443', 'CHATGPT.COM:443', 'user@chatgpt.com:443']) {
     assert.throws(() => allowedDestination(host));
   }
@@ -38,7 +39,7 @@ test('all private, mapped, reserved, metadata and tailnet addresses are denied',
 });
 test('execution tools are never allowlisted', () => {
   for (const name of ['exec', 'exec_command', 'write_stdin', 'bash', 'read', 'write', 'edit', 'apply_patch', 'view_image', 'browser', 'spawn_agent', 'notebook', 'ask; bash']) assert.throws(() => requireAllowedTool(name));
-  for (const name of ['ask', 'web_run', 'imagegen', 'document']) assert.doesNotThrow(() => requireAllowedTool(name));
+  for (const name of ['ask', 'web_run', 'imagegen', 'document', 'deep_research']) assert.doesNotThrow(() => requireAllowedTool(name));
 });
 test('image references reject traversal, secrets, sibling conversations and symlinks', async () => {
   const root = await mkdtemp(join(tmpdir(), 'home-chat-policy-'));

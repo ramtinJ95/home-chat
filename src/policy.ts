@@ -3,9 +3,10 @@ import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
-export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com']);
+// OpenAI for the model, and Exa for deep_research (profile/deep-research.ts).
+export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
 // Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
 // endpoints are numbered hosts such as wns2-par02p.notify.windows.com. Only the server sends to them, never the model.
 export const PUSH_HOSTS = new Set(['web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com']);
@@ -22,6 +23,18 @@ export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
 export const MAX_DOCUMENT_TITLE = 200;
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_FILES = 100;
+// Deep research mode: the server starts each of the conversation's messages with this note (src/rpc.ts), ahead of the
+// user's text, which cannot imitate it. profile/extension.ts reads it to allow deep_research and the larger limits.
+export const DEEP_RESEARCH_NOTE = 'Deep research mode is on for this message.';
+export const DEEP_RESEARCH_INSTRUCTIONS = DEEP_RESEARCH_NOTE + ` If the message needs research, use deep_research heavily:
+several calls covering different angles, with mode deep-reasoning for ambiguous, conflicting or judgment-heavy questions.
+Then save one consolidated report with document, sources included, and reply with a short summary. Answer ordinary chat
+normally, without research.
+`;
+export const TURN_LIMITS = Object.freeze({
+  normal: {toolCalls: 12, minutes: 5},
+  deep: {toolCalls: 30, minutes: 20},
+});
 // profile/extension.ts reports the tools Pi registered as a notify message with this prefix; src/rpc.ts checks it.
 export const POLICY_PREFIX = 'HOME_CHAT_POLICY:';
 

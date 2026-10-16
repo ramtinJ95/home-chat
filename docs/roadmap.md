@@ -4,14 +4,14 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PR 1 (Home Screen app) and PR 2 (push notifications) merged and deployed. PR 3 (artifacts and reader view) in review.
+Status: PRs 1–3 (Home Screen app, push notifications, artifacts and reader view) merged and deployed. PR 4 (deep research) in review.
 
 ## Decisions
 
 | Decision | For PR | Outcome |
 | --- | --- | --- |
 | Egress proxy may reach the push services (Apple `web.push.apple.com`, Google `fcm.googleapis.com`, Microsoft `*.notify.windows.com`) | 2 | Approved 2026-10-16. Only the server sends to them, never the model, and only to subscription endpoints on those hosts |
-| Egress proxy may reach `api.exa.ai`; Exa key on home-macmini | 4 | Approved. The existing key is in home-macmini's `.env` as `EXA_API_KEY` (mode 600, test call HTTP 200); compose does not pass it to the app yet |
+| Egress proxy may reach `api.exa.ai`; Exa key on home-macmini | 4 | Approved. The existing key is in home-macmini's `.env` as `EXA_API_KEY` (mode 600, test call HTTP 200); compose passes it to the app from PR 4 |
 | Exa spending caps | 4 | None, by the user's choice |
 | Household time zone for schedules | 5 | `Europe/Stockholm` |
 

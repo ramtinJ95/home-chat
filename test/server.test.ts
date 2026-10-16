@@ -20,10 +20,11 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   closed = false;
   question: Question | null = null;
   lastText?: string;
+  lastDeep?: boolean;
   async start() {}
-  async prompt(text: string) {
+  async prompt(text: string, _images?: unknown, deep = false) {
     this.busy = true;
-    this.lastText = text;
+    this.lastText = text; this.lastDeep = deep;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
     setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
@@ -41,7 +42,7 @@ interface TestResponse { status: number; headers: Headers; json(): Promise<any>;
 // Passing `data` from an earlier fixture starts a second app on the same volume, as a container restart would.
 // Push requests the app sends, answered as a push service would (201) unless a test says otherwise.
 interface Delivery { endpoint: string; headers: Record<string, string> }
-async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<AppOptions, 'access' | 'accessKeys' | 'data'> = {}) {
+async function fixture(ready = true, {access, accessKeys, data: existing, deepResearch}: Pick<AppOptions, 'access' | 'accessKeys' | 'data' | 'deepResearch'> = {}) {
   const data = existing ?? await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
   const deliveries: Delivery[] = [];
@@ -50,7 +51,7 @@ async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<
     deliveries.push({endpoint, headers: init.headers as Record<string, string>});
     return new Response(null, {status: pushStatus});
   }) as typeof fetch;
-  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys, pushFetch});
+  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys, pushFetch, deepResearch});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const host = access?.host ?? '127.0.0.1:8787';
   const origin = (access ? 'https://' : 'http://') + host;
@@ -303,6 +304,53 @@ test('push notifications reach a device only while nobody is looking', async () 
     assert.equal((await f.request('/api/logout', {method: 'POST', body: {pushEndpoint: second.endpoint}, ...owner})).status, 200);
     assert.deepEqual(JSON.parse(await readFile(join(f.data, 'push/subscriptions.json'), 'utf8')), []);
   } finally { await f.close(); }
+});
+test('deep research is a per-conversation switch that is kept and reaches every message', async () => {
+  const off = await fixture(true, {deepResearch: false});
+  try {
+    const owner = await off.login('owner');
+    assert.equal((await (await off.request('/api/me', owner)).json()).deepResearch, false);
+    const chat = await (await off.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal(chat.deepResearch, false);
+    assert.equal((await off.request(`/api/chats/${chat.id}/research`, {method: 'POST', body: {on: true}, ...owner})).status, 503);
+  } finally { await off.close(); }
+  const f = await fixture(true, {deepResearch: true});
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    assert.equal((await (await f.request('/api/me', owner)).json()).deepResearch, true);
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    const research = (on: unknown, as = owner) => f.request(`/api/chats/${chat.id}/research`, {method: 'POST', body: {on}, ...as});
+    assert.equal((await research(true, guest)).status, 404);
+    assert.equal((await research('yes')).status, 400);
+    assert.equal((await (await research(true)).json()).deepResearch, true);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Compare heat pumps', assets: []}, ...owner})).status, 202);
+    assert.equal(f.worker.lastDeep, true);
+    // Mid-reply the switch waits, so the running reply's mode never changes under it.
+    assert.equal((await research(false)).status, 409);
+    await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner});
+    await delay(30);
+    await f.app.stop();
+    const restarted = await fixture(true, {data: f.data, deepResearch: true});
+    try {
+      const again = await restarted.login('owner');
+      assert.equal((await (await restarted.request(`/api/chats/${chat.id}`, again)).json()).deepResearch, true);
+      const switched = await restarted.request(`/api/chats/${chat.id}/research`, {method: 'POST', body: {on: false}, ...again});
+      assert.equal((await switched.json()).deepResearch, false);
+      assert.equal((await restarted.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hi', assets: []}, ...again})).status, 202);
+      assert.equal(restarted.worker.lastDeep, false);
+      await restarted.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...again});
+      await delay(30);
+      assert.equal((await restarted.request(`/api/chats/${chat.id}/research`, {method: 'POST', body: {on: true}, ...again})).status, 200);
+    } finally { await restarted.app.stop(); }
+    // Without the key the saved switch counts as off, in the app and for new messages.
+    const keyless = await fixture(true, {data: f.data, deepResearch: false});
+    try {
+      const again = await keyless.login('owner');
+      assert.equal((await (await keyless.request(`/api/chats/${chat.id}`, again)).json()).deepResearch, false);
+      assert.equal((await keyless.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'hi', assets: []}, ...again})).status, 202);
+      assert.equal(keyless.worker.lastDeep, false);
+    } finally { await keyless.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {
   const f = await fixture(false);
