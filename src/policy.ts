@@ -3,7 +3,7 @@ import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (profile/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
@@ -23,14 +23,39 @@ export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
 export const MAX_DOCUMENT_TITLE = 200;
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_FILES = 100;
-// Deep research mode: the server starts each of the conversation's messages with this note (src/rpc.ts), ahead of the
-// user's text, which cannot imitate it. profile/extension.ts reads it to allow deep_research and the larger limits.
+// What the server tells Pi about a turn. Its notes open the prompt, ahead of USER_PREFIX; the user's text only ever follows
+// it, so it cannot add or imitate a note. profile/extension.ts reads the notes back to set the turn's tools and limits.
+export const USER_PREFIX = 'Message from the user:\n';
 export const DEEP_RESEARCH_NOTE = 'Deep research mode is on for this message.';
-export const DEEP_RESEARCH_INSTRUCTIONS = DEEP_RESEARCH_NOTE + ` If the message needs research, use deep_research heavily:
+const DEEP_RESEARCH_INSTRUCTIONS = DEEP_RESEARCH_NOTE + ` If the message needs research, use deep_research heavily:
 several calls covering different angles, with mode deep-reasoning for ambiguous, conflicting or judgment-heavy questions.
 Then save one consolidated report with document, sources included, and reply with a short summary. Answer ordinary chat
-normally, without research.
-`;
+normally, without research.`;
+export const ROUTINE_NOTE = 'This is a scheduled routine run, and nobody is watching.';
+// `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30".
+export interface TurnMode { deepResearch?: boolean; routineRun?: string }
+
+export function composePrompt(message: string, {deepResearch, routineRun}: TurnMode = {}): string {
+  const notes = [
+    routineRun && `${ROUTINE_NOTE} It was due ${routineRun} (Stockholm time). The message is the routine's standing task: do it and
+reply with the result. You cannot ask questions or change routines during this run.`,
+    deepResearch && DEEP_RESEARCH_INSTRUCTIONS,
+  ].filter(note => typeof note === 'string');
+  return notes.map(note => note + '\n').join('') + USER_PREFIX + message;
+}
+
+export function promptMode(prompt: string): {deepResearch: boolean; routineRun: boolean} {
+  const start = prompt.indexOf(USER_PREFIX);
+  const notes = start === -1 ? '' : prompt.slice(0, start);
+  return {deepResearch: notes.includes(DEEP_RESEARCH_NOTE), routineRun: notes.includes(ROUTINE_NOTE)};
+}
+
+// Research costs money per call, so it needs the conversation's switch; an unattended run has nobody to answer a
+// question, and routines never make routines.
+export function refusedInTurn(tool: string, mode: {deepResearch: boolean; routineRun: boolean}): string | undefined {
+  if (tool === 'deep_research' && !mode.deepResearch) return 'Deep research is off for this conversation; the user can switch it on';
+  if (mode.routineRun && (tool === 'ask' || tool === 'routine')) return 'Nobody is watching this routine run, so it cannot ask questions or change routines';
+}
 export const TURN_LIMITS = Object.freeze({
   normal: {toolCalls: 12, minutes: 5},
   deep: {toolCalls: 30, minutes: 20},

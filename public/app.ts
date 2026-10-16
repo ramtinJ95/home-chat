@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, Question, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -16,6 +16,9 @@ const ui = {
   closeSidebar: $<HTMLButtonElement>('#close-sidebar'),
   newChat: $<HTMLButtonElement>('#new-chat'),
   chatList: $('#chat-list'),
+  routines: $('#routines'),
+  routineList: $('#routine-list'),
+  routineBar: $('#routine-bar'),
   avatar: $('#avatar'),
   identity: $('#identity'),
   logout: $<HTMLButtonElement>('#logout'),
@@ -53,6 +56,7 @@ const TOOL_ACTIVITY: Record<ToolName, string> = {
   imagegen: 'Creating an image…',
   document: 'Writing a document…',
   deep_research: 'Researching… this can take a few minutes',
+  routine: 'Updating your routines…',
 };
 const SUGGESTIONS = [
   {icon: 'compass', title: 'Plan something lovely', prompt: 'Help me plan something lovely for the weekend'},
@@ -112,6 +116,16 @@ let following = true;
 
 function showError(error: unknown) {
   ui.error.textContent = error instanceof Error ? error.message : String(error);
+  ui.error.classList.remove('info');
+  ui.error.hidden = false;
+  clearTimeout(errorTimer);
+  errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
+}
+
+// The same toast, for confirmations rather than failures.
+function showNotice(text: string) {
+  ui.error.textContent = text;
+  ui.error.classList.add('info');
   ui.error.hidden = false;
   clearTimeout(errorTimer);
   errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
@@ -414,7 +428,16 @@ async function disableNotifications() {
   pushState = 'off'; renderSetup();
 }
 
+// Where a routine run starts in its conversation: its name and when it was due.
+function runMark(label: string): HTMLElement {
+  const mark = element('p', 'run-mark');
+  mark.append(icon('clock'), label);
+  return mark;
+}
+
 function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean): HTMLElement {
+  // A run's scheduled message is the routine's standing task, which the mark stands for.
+  if (message.run && message.role === 'user') return runMark(message.run);
   const article = element('article', `message ${message.role}${fresh ? ' fresh' : ''}`);
   const bubble = element('div', 'bubble');
   const content = element('div', 'content');
@@ -454,6 +477,8 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean)
   }
   if (message.error) bubble.append(element('p', 'failure', message.error));
   article.append(bubble);
+  // A skipped run is a note on its own, with no task message before it.
+  if (message.run) { const wrap = element('div'); wrap.append(runMark(message.run), article); return wrap; }
   return article;
 }
 
@@ -532,6 +557,7 @@ function renderChat(next: ChatSnapshot) {
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
   ui.message.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
+  renderRoutineBar(next.routine);
   setBusy(next.busy);
   streaming = undefined;
   ui.messages.replaceChildren(...(next.messages.length
@@ -557,10 +583,82 @@ function setDrawer(open: boolean) {
   ui.workspace.classList.toggle('drawer-open', open);
 }
 
+function routineSwitch(routine: RoutineSummary): HTMLElement {
+  const label = element('label', 'switch');
+  label.title = routine.enabled ? 'Pause this routine' : 'Turn this routine on';
+  const input = element('input');
+  input.type = 'checkbox'; input.setAttribute('role', 'switch'); input.checked = routine.enabled;
+  input.setAttribute('aria-label', `Run “${routine.title}”`);
+  // A one-off that has run cannot be switched back on; asking the model gives it a new date.
+  input.disabled = routine.next === 'Done';
+  input.onchange = () => setRoutine(routine, input.checked).catch(error => { input.checked = !input.checked; showError(error); });
+  label.append(input, element('span'));
+  return label;
+}
+
+async function setRoutine(routine: RoutineSummary, enabled: boolean) {
+  const changed = await api<RoutineSummary>(`/api/routines/${routine.id}`, 'POST', {enabled});
+  if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
+  await refreshList();
+}
+
+async function deleteRoutine(routine: RoutineSummary) {
+  if (!confirm(`Delete the routine “${routine.title}”? It stops running. Its conversation and past results stay.`)) return;
+  await api(`/api/routines/${routine.id}`, 'DELETE');
+  if (chat?.routine?.id === routine.id) renderRoutineBar(null);
+  await refreshList();
+}
+
+function renderRoutineBar(routine: RoutineSummary | null) {
+  ui.routineBar.hidden = !routine;
+  if (!routine) return ui.routineBar.replaceChildren();
+  const remove = element('button', 'ghost', 'Delete routine');
+  remove.type = 'button';
+  remove.onclick = () => deleteRoutine(routine).catch(showError);
+  const text = element('span', 'routine-text', `${routine.schedule} · ${routine.enabled || routine.next === 'Done' ? routine.next : 'Paused'}`);
+  ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), remove);
+}
+
+function routineRow(routine: RoutineSummary): HTMLElement {
+  const row = element('div', routine.chat === chat?.id ? 'chat-item active' : 'chat-item');
+  const open = element('button', 'chat-open routine-open');
+  open.type = 'button';
+  open.append(element('strong', undefined, routine.title), element('span', undefined, routine.next));
+  open.onclick = () => { setDrawer(false); openChat(routine.chat).catch(showError); };
+  const menu = element('details', 'row-menu');
+  const summary = element('summary');
+  summary.setAttribute('aria-label', `More for “${routine.title}”`);
+  summary.append(icon('more'));
+  const remove = element('button', undefined, 'Delete routine');
+  remove.type = 'button';
+  remove.onclick = () => { menu.open = false; deleteRoutine(routine).catch(showError); };
+  const items = element('div', 'menu'); items.append(remove);
+  menu.append(summary, items);
+  // Below the button, or above it when the screen ends first; right edges aligned.
+  menu.addEventListener('toggle', () => {
+    if (!menu.open) return;
+    const button = summary.getBoundingClientRect();
+    const below = button.bottom + 4 + items.offsetHeight <= innerHeight;
+    items.style.top = (below ? button.bottom + 4 : button.top - 4 - items.offsetHeight) + 'px';
+    items.style.right = (innerWidth - button.right) + 'px';
+  });
+  row.append(open, ...(routine.unread ? [unreadDot()] : []), routineSwitch(routine), menu);
+  return row;
+}
+
+function unreadDot(): HTMLElement {
+  const dot = element('span', 'unread-dot');
+  dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'New results');
+  return dot;
+}
+
 async function refreshList(): Promise<ChatSummary[]> {
-  // The server lists oldest first; everything here wants newest first.
-  const list = (await api<ChatSummary[]>('/api/chats')).reverse();
-  ui.chatList.replaceChildren(...list.map(item => {
+  const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines')]);
+  ui.routines.hidden = !routines.length;
+  ui.routineList.replaceChildren(...routines.map(routineRow));
+  // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list.
+  const list = all.reverse();
+  ui.chatList.replaceChildren(...list.filter(item => !item.routine).map(item => {
     const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
     const open = element('button', 'chat-open', item.title);
     open.type = 'button';
@@ -571,7 +669,7 @@ async function refreshList(): Promise<ChatSummary[]> {
     remove.setAttribute('aria-label', `Delete “${item.title}”`);
     remove.append(icon('trash'));
     remove.onclick = () => deleteChat(item).catch(showError);
-    row.append(open, remove);
+    row.append(open, ...(item.unread ? [unreadDot()] : []), remove);
     return row;
   }));
   return list;
@@ -622,6 +720,14 @@ async function newChat() {
   await openChat(created.id);
 }
 
+// The Pause button on a routine's notification.
+async function pauseRoutine(id: string) {
+  const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(id)}`, 'POST', {enabled: false});
+  if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
+  await refreshList();
+  showNotice(`Paused “${changed.title}”. Switch it back on in Routines.`);
+}
+
 async function openLatest(preferred?: string | null) {
   const list = await refreshList();
   const target = list.find(item => item.id === preferred) ?? list[0];
@@ -636,10 +742,13 @@ async function enter() {
   ui.modeBadge.textContent = me.mode === 'access' ? 'Private' : 'Local only';
   ui.avatar.textContent = me.user === 'owner' ? 'Y' : 'G';
   ui.providerWarning.hidden = me.codexConfigured;
-  // A tapped notification opens /?chat=<id>; the address goes back to / so a reload starts as usual.
-  const requested = new URLSearchParams(location.search).get('chat');
-  if (requested) history.replaceState(null, '', '/');
+  // A tapped notification opens /?chat=<id>, with &pause=<routine> from its Pause button; the address goes back to /
+  // so a reload starts as usual.
+  const query = new URLSearchParams(location.search);
+  const requested = query.get('chat'); const pause = query.get('pause');
+  if (requested || pause) history.replaceState(null, '', '/');
   await openLatest(requested);
+  if (pause) await pauseRoutine(pause).catch(showError);
   if (pushSupported) {
     // If the worker cannot be registered (an expired sign-in, for one), notifications stay hidden until the next load.
     navigator.serviceWorker.register('/sw.js').then(() => syncPush().catch(showError), () => {});
@@ -794,10 +903,12 @@ addEventListener('appinstalled', () => { installPrompt = undefined; renderSetup(
 renderSetup();
 // A notification tapped while the app is open: the service worker asks this window to show that conversation.
 navigator.serviceWorker?.addEventListener('message', event => {
-  const data = event.data as {type?: unknown; chat?: unknown} | null;
-  if (data?.type !== 'open-chat' || typeof data.chat !== 'string' || data.chat === chat?.id) return;
+  const data = event.data as {type?: unknown; chat?: unknown; pause?: unknown} | null;
+  if (data?.type !== 'open-chat' || typeof data.chat !== 'string') return;
+  const pause = typeof data.pause === 'string' ? data.pause : undefined;
   setDrawer(false);
-  openChat(data.chat).catch(showError);
+  (data.chat === chat?.id ? Promise.resolve() : openChat(data.chat))
+    .then(() => pause ? pauseRoutine(pause) : undefined).catch(showError);
 });
 // The server only notifies when nobody is looking, which it judges by open streams; so the stream closes while the
 // page is hidden and reopens, with a fresh snapshot, when it is back.

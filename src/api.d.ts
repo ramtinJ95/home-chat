@@ -2,7 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine';
 export type AssetKind = 'upload' | 'generated' | 'document';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
@@ -20,6 +20,8 @@ export interface Message {
   text: string;
   assets: string[];
   error?: string;
+  // On a routine's scheduled message: when it ran, e.g. "Morning briefing · Friday 17 October, 07:30".
+  run?: string;
 }
 
 // Set on document assets: every version of a document is its own asset, sharing `doc`.
@@ -38,9 +40,33 @@ export interface ChatSnapshot {
   question: Question | null;
   // Switched per conversation (POST /api/chats/<id>/research {on}) and kept until switched off.
   deepResearch: boolean;
+  // Set when this conversation is where a routine's runs arrive.
+  routine: RoutineSummary | null;
 }
 
-export interface ChatSummary { id: string; title: string }
+// `unread`: a routine run arrived while nobody was looking. Routine conversations are listed under /api/routines.
+export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean }
+
+export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
+// Times are HH:MM in the household's time zone (src/routines.ts).
+export type RoutineSchedule =
+  | {kind: 'daily' | 'weekdays'; time: string}
+  | {kind: 'weekly'; time: string; days: Weekday[]}
+  | {kind: 'monthly'; time: string; day: number}
+  | {kind: 'once'; time: string; date: string};
+
+// GET /api/routines; POST /api/routines/<id> {enabled} switches one; DELETE removes it and keeps its conversation.
+export interface RoutineSummary {
+  id: string;
+  title: string;
+  chat: string;
+  enabled: boolean;
+  // "Every day at 07:30"
+  schedule: string;
+  // "Tomorrow 07:30", "Paused" or "Done"
+  next: string;
+  unread: boolean;
+}
 
 export interface Me {
   user: User;
@@ -66,4 +92,5 @@ export interface ApiError { error: string }
 export interface PushInfo { publicKey: string }
 
 // A notification's payload, encrypted to one device; public/sw.ts shows it and opens `chat` when tapped.
-export interface PushMessage { title: string; body: string; chat?: string }
+// With `routine`, browsers that support notification buttons offer Pause and Open.
+export interface PushMessage { title: string; body: string; chat?: string; routine?: string }

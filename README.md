@@ -1,10 +1,11 @@
 # Home Chat
 
 A private, mobile-friendly chat app for everyday questions, web search,
-image generation, documents and deep research. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+image generation, documents, deep research and scheduled routines. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 agent against a Codex subscription inside Docker. The model can only use
-five tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`), can
-only reach OpenAI and Exa, and cannot run commands or read files.
+six tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
+`routine`), can only reach OpenAI and Exa, and cannot run commands or read
+files.
 
 It runs in one of two modes:
 
@@ -67,7 +68,7 @@ conflict with the CLI's own session, so prefer the device-code login.
 docker compose stop
 ```
 
-Conversations, images and credentials live in the `home-chat_chat-data`
+Conversations, images, routines (`routines.json`) and credentials live in the `home-chat_chat-data`
 volume, so they survive restarts, rebuilds and `docker compose down`;
 `docker compose down -v` deletes all of them. A reply that is still
 streaming when the app stops keeps the text saved so far (within about two
@@ -139,6 +140,20 @@ against 5 minutes and 12 calls otherwise, and each Exa call times out after
 90 seconds. The switch only appears when `EXA_API_KEY` is set in `.env`;
 compose passes it to the app. There are no spending caps on Exa.
 
+**Routines** are set up by asking ("every weekday at 7:30, give me the weather
+and my day"): the model confirms the plan, then saves a routine with its own
+conversation, where each run arrives with a notification and an unread dot.
+Schedules are daily, weekdays, weekly on chosen days, monthly (days 1 to 28) or
+once, always in Stockholm time, daylight saving included. The sidebar's
+Routines list and the bar at the top of a routine's conversation switch a
+routine off and on and delete it; deleting keeps its past results as an
+ordinary conversation. Saying "pause my briefing" anywhere also works, and on
+desktop Edge and Chrome the notification has a Pause button. A run waits while
+its owner has a reply running or both workers are busy, and is skipped with a
+note if it cannot start within 3 hours, for example because the app was down.
+Each person can have 10 routines and 20 runs a day; a run has no `ask` and no
+`routine` tool, and uses deep research only if the routine was set up with it.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -159,6 +174,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
+| `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/` | Pi extension that filters tool registration, the `document` tool, and the system prompt |
@@ -171,13 +187,13 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/document.test.ts test/policy.test.ts test/research.test.ts test/server.test.ts
+  --test test/access.test.ts test/document.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the five tools
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the six tools
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
@@ -190,12 +206,16 @@ screenshots to the git-ignored `.local/` folder.
 
 - **Tools.** Pi starts with no built-in tools, extensions, skills or context
   files. `profile/extension.ts` drops every tool registration except `ask`,
-  `web_run`, `imagegen` and its own `document` and `deep_research`, and validates tool input twice: at Pi's
+  `web_run`, `imagegen` and its own `document`, `deep_research` and `routine`, and validates tool input twice: at Pi's
   `tool_call` hook and in the execute wrapper. The server refuses a worker
   whose registered and active tools don't match exactly. Each message allows
   12 tool calls (30 in deep research mode) and 2 image generations.
-  `deep_research` is refused unless the server's deep research note opens
-  the message, ahead of the user's text, which cannot imitate it. `document` only writes new files
+  The server's notes open each message, ahead of the user's text, which
+  cannot imitate them: `deep_research` is refused unless the deep research
+  note is there, and `ask` and `routine` are refused in a routine run.
+  `routine` reaches the server only through a Unix socket in the data
+  directory (mode 600, never a network port), with a token per Pi process
+  that scopes it to the conversation's owner. `document` only writes new files
   under the conversation's `documents/` folder (at most 100, 256 K characters
   each), and the server reads them back through the same path check.
 - **Input.** Browser text is always prefixed before reaching Pi, so it can

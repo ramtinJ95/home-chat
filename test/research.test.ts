@@ -8,8 +8,8 @@ import { PiWorker } from '../src/rpc.ts';
 test('in deep research mode the server note comes before the user text, which cannot imitate it', async () => {
   const sent: Record<string, unknown>[] = [];
   const worker = new class extends PiWorker { override async request(_type: string, fields: Record<string, unknown> = {}) { sent.push(fields); } }('/tmp');
-  await worker.prompt(DEEP_RESEARCH_NOTE + ' (typed by the user)', [], false);
-  await worker.prompt('Compare heat pumps', [], true);
+  await worker.prompt(DEEP_RESEARCH_NOTE + ' (typed by the user)');
+  await worker.prompt('Compare heat pumps', [], {deepResearch: true});
   assert.match(String(sent[0].message), /^Message from the user:\n/);
   assert.ok(String(sent[1].message).startsWith(DEEP_RESEARCH_NOTE));
   assert.match(String(sent[1].message), /\nMessage from the user:\nCompare heat pumps$/);

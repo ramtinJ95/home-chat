@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { access, mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -11,20 +11,25 @@ import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
 import type { Question, User } from '../src/api.d.ts';
 import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
+import type { TurnMode } from '../src/policy.ts';
 import { createApp, type AppOptions } from '../src/server.ts';
 import { documentTool } from '../profile/document.ts';
+import { routineTool } from '../profile/routine.ts';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   busy = false;
   closed = false;
   question: Question | null = null;
+  // What the server gave Pi for its routine tool.
+  env: Record<string, string> = {};
   lastText?: string;
   lastDeep?: boolean;
+  lastMode?: TurnMode;
   async start() {}
-  async prompt(text: string, _images?: unknown, deep = false) {
+  async prompt(text: string, _images?: unknown, mode: TurnMode = {}) {
     this.busy = true;
-    this.lastText = text; this.lastDeep = deep;
+    this.lastText = text; this.lastMode = mode; this.lastDeep = mode.deepResearch === true;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
     setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
@@ -42,7 +47,8 @@ interface TestResponse { status: number; headers: Headers; json(): Promise<any>;
 // Passing `data` from an earlier fixture starts a second app on the same volume, as a container restart would.
 // Push requests the app sends, answered as a push service would (201) unless a test says otherwise.
 interface Delivery { endpoint: string; headers: Record<string, string> }
-async function fixture(ready = true, {access, accessKeys, data: existing, deepResearch}: Pick<AppOptions, 'access' | 'accessKeys' | 'data' | 'deepResearch'> = {}) {
+// `ready` may be a function, to hold the Codex sign-in check that every turn waits on.
+async function fixture(ready: boolean | (() => Promise<boolean>) = true, {access, accessKeys, data: existing, deepResearch}: Pick<AppOptions, 'access' | 'accessKeys' | 'data' | 'deepResearch'> = {}) {
   const data = existing ?? await mkdtemp(join(tmpdir(), 'home-chat-server-'));
   const worker = new FakePi();
   const deliveries: Delivery[] = [];
@@ -51,7 +57,7 @@ async function fixture(ready = true, {access, accessKeys, data: existing, deepRe
     deliveries.push({endpoint, headers: init.headers as Record<string, string>});
     return new Response(null, {status: pushStatus});
   }) as typeof fetch;
-  const app = await createApp({data, workerFactory: () => worker, authenticatedProvider: async () => ready, access, accessKeys, pushFetch, deepResearch});
+  const app = await createApp({data, workerFactory: (_directory, env) => { worker.env = env; return worker; }, authenticatedProvider: typeof ready === 'function' ? ready : async () => ready, access, accessKeys, pushFetch, deepResearch});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const host = access?.host ?? '127.0.0.1:8787';
   const origin = (access ? 'https://' : 'http://') + host;
@@ -351,6 +357,171 @@ test('deep research is a per-conversation switch that is kept and reaches every 
       assert.equal(keyless.worker.lastDeep, false);
     } finally { await keyless.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
+});
+// The routine tool as Pi would run it, with the socket and token the server gave the worker.
+async function callRoutine(env: Record<string, string>, params: Record<string, unknown>): Promise<string> {
+  const saved = {...process.env};
+  Object.assign(process.env, env);
+  try { return ((await routineTool.execute('call', params as never, undefined, undefined, {} as ExtensionToolContext)).content[0] as {text: string}).text; }
+  finally { for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
+}
+test('routines are set up by the model, listed and switched in the app, and kept apart per person', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Brief me every morning', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    const created = await callRoutine(f.worker.env, {action: 'create', title: 'Morning briefing', prompt: 'Weather and news for Stockholm',
+      schedule: {kind: 'daily', time: '07:30'}});
+    assert.match(created, /^Saved “Morning briefing”: Every day at 07:30\. Next run: (Today|Tomorrow) 07:30\./);
+    await assert.rejects(() => callRoutine({...f.worker.env, HOME_CHAT_ROUTINE_TOKEN: 'forged'}, {action: 'list'}), /cannot change routines/);
+    await assert.rejects(() => callRoutine(f.worker.env, {action: 'create', title: 'Hourly', prompt: 'x', schedule: {kind: 'hourly', time: '07:00'}}), /schedule.kind/);
+    const [routine] = await (await f.request('/api/routines', owner)).json();
+    assert.equal(routine.title, 'Morning briefing'); assert.equal(routine.schedule, 'Every day at 07:30'); assert.equal(routine.unread, false);
+    assert.deepEqual(await (await f.request('/api/routines', guest)).json(), []);
+    const listed = await (await f.request('/api/chats', owner)).json();
+    assert.deepEqual(listed.find((item: {id: string}) => item.id === routine.chat), {id: routine.chat, title: 'Morning briefing', unread: false, routine: true});
+    assert.equal((await (await f.request(`/api/chats/${routine.chat}`, owner)).json()).routine.id, routine.id);
+    assert.equal((await f.request(`/api/routines/${routine.id}`, {method: 'POST', body: {enabled: false}, ...guest})).status, 404);
+    const paused = await (await f.request(`/api/routines/${routine.id}`, {method: 'POST', body: {enabled: false}, ...owner})).json();
+    assert.equal(paused.next, 'Paused');
+    assert.match(await callRoutine(f.worker.env, {action: 'list'}), new RegExp(`“Morning briefing” \\(id ${routine.id}\\): Every day at 07:30; Paused`));
+    assert.match(await callRoutine(f.worker.env, {action: 'update', id: routine.id, schedule: {kind: 'weekly', time: '08:00', days: ['sat']}}), /Saturdays at 08:00/);
+    // The routine's conversation goes only after the routine does, and then like any other.
+    assert.equal((await f.request(`/api/chats/${routine.chat}`, {method: 'DELETE', ...owner})).status, 409);
+    assert.match(await callRoutine(f.worker.env, {action: 'delete', id: routine.id}), /earlier results stay/);
+    assert.deepEqual(await (await f.request('/api/routines', owner)).json(), []);
+    assert.equal((await (await f.request(`/api/chats/${routine.chat}`, owner)).json()).routine, null);
+    assert.equal((await f.request(`/api/chats/${routine.chat}`, {method: 'DELETE', ...owner})).status, 200);
+  } finally { await f.close(); }
+});
+test('a due routine runs unattended in its own conversation, is marked unread, and a run missed for hours is skipped', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Brief me', assets: []}, ...owner});
+    await delay(40);
+    await callRoutine(f.worker.env, {action: 'create', title: 'Morning briefing', prompt: 'Weather and news', schedule: {kind: 'daily', time: '07:30'}});
+    await f.app.stop();
+    // As if the app had been down at 07:30: due a minute ago, so it still runs.
+    const path = join(f.data, 'routines.json');
+    const due = (ago: number) => readFile(path, 'utf8').then(text => {
+      const [routine] = JSON.parse(text); routine.nextRun = new Date(Date.now() - ago).toISOString();
+      return writeFile(path, JSON.stringify([routine])).then(() => routine);
+    });
+    const routine = await due(60_000);
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      assert.equal(restarted.worker.lastText, 'Weather and news');
+      assert.match(restarted.worker.lastMode?.routineRun ?? '', /^\w+day \d+ \w+, \d{2}:\d{2}$/);
+      await assert.rejects(() => callRoutine(restarted.worker.env, {action: 'list'}), /during a routine run/);
+      restarted.worker.answer('question-1', 'One');
+      await delay(40);
+      const again = await restarted.login('owner');
+      const [summary] = await (await restarted.request('/api/routines', again)).json();
+      assert.equal(summary.unread, true);
+      const state = await (await restarted.request(`/api/chats/${routine.chat}`, again)).json();
+      assert.match(state.messages[0].run, /^Morning briefing · /);
+      assert.match(state.messages[1].text, /^Hello/);
+      assert.equal((await (await restarted.request('/api/routines', again)).json())[0].unread, false);
+    } finally { await restarted.app.stop(); }
+    await due(5 * 60 * 60_000);
+    const late = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      const again = await late.login('owner');
+      const state = await (await late.request(`/api/chats/${routine.chat}`, again)).json();
+      assert.equal(state.messages.length, 3);
+      assert.match(state.messages[2].error, /skipped: Home Chat was not running/);
+      assert.equal(late.worker.lastText, undefined);
+    } finally { await late.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
+test('a routine paused while its run waits in line does not run', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Set up two routines', assets: []}, ...owner});
+    await delay(40);
+    for (const title of ['First', 'Second']) {
+      await callRoutine(f.worker.env, {action: 'create', title, prompt: title + ' task', schedule: {kind: 'daily', time: '07:30'}});
+    }
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    await f.app.stop();
+    // Both came due a minute ago; one person runs one reply at a time, so Second waits behind First.
+    const path = join(f.data, 'routines.json');
+    const saved = JSON.parse(await readFile(path, 'utf8'));
+    for (const routine of saved) routine.nextRun = new Date(Date.now() - 60_000).toISOString();
+    await writeFile(path, JSON.stringify(saved));
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      assert.equal(restarted.worker.lastText, 'First task');
+      const again = await restarted.login('owner');
+      const second = saved.find((routine: {title: string}) => routine.title === 'Second');
+      assert.equal((await restarted.request(`/api/routines/${second.id}`, {method: 'POST', body: {enabled: false}, ...again})).status, 200);
+      restarted.worker.answer('question-1', 'One');
+      await delay(60);
+      assert.equal(restarted.worker.lastText, 'First task');
+      const after = JSON.parse(await readFile(path, 'utf8'));
+      assert.equal(after.find((routine: {id: string}) => routine.id === second.id).lastRun.outcome, 'skipped');
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
+// A routine whose run waits at the next start. The run's Codex sign-in check, the restarted app's first, is held so a
+// test can act while the run is being admitted; later checks, such as a log-in's, are not.
+async function heldRoutineRun() {
+  const f = await fixture();
+  const owner = await f.login('owner');
+  const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+  await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Set up a routine', assets: []}, ...owner});
+  await delay(40);
+  await callRoutine(f.worker.env, {action: 'create', title: 'Briefing', prompt: 'News', schedule: {kind: 'daily', time: '07:30'}});
+  f.worker.answer('question-1', 'One');
+  await delay(30);
+  await f.app.stop();
+  const path = join(f.data, 'routines.json');
+  const [routine] = JSON.parse(await readFile(path, 'utf8'));
+  routine.pending = new Date(Date.now() - 60_000).toISOString();
+  await writeFile(path, JSON.stringify([routine]));
+  let release!: (ready: boolean) => void;
+  const held = new Promise<boolean>(resolve => { release = resolve; });
+  let checks = 0;
+  const app = await fixture(() => checks++ === 0 ? held : Promise.resolve(true), {data: f.data});
+  await delay(30);
+  return {app, routine, path, release: () => release(true)};
+}
+test('a routine paused while its run is being admitted does not run', async () => {
+  const {app, routine, path, release} = await heldRoutineRun();
+  try {
+    const owner = await app.login('owner');
+    assert.equal((await app.request(`/api/routines/${routine.id}`, {method: 'POST', body: {enabled: false}, ...owner})).status, 200);
+    release();
+    await delay(60);
+    assert.equal(app.worker.lastText, undefined);
+    const [after] = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(after.lastRun.outcome, 'skipped');
+    assert.equal(after.pending, undefined);
+  } finally { await app.close(); }
+});
+test('a routine run that cannot be recorded as started does not start, so a restart cannot run it twice', async () => {
+  const {app, routine, path, release} = await heldRoutineRun();
+  try {
+    // Every save of routines.json fails from here on.
+    await rm(path); await mkdir(path);
+    release();
+    await delay(60);
+    assert.equal(app.worker.lastText, undefined);
+    const owner = await app.login('owner');
+    const state = await (await app.request(`/api/chats/${routine.chat}`, owner)).json();
+    assert.match(state.messages.at(-1).error, /could not save this run, so it did not start/);
+    assert.equal(state.busy, false);
+  } finally { await app.close(); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {
   const f = await fixture(false);

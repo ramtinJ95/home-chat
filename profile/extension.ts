@@ -6,14 +6,15 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import { readFile } from 'node:fs/promises';
 import { deepResearchTool } from './deep-research.ts';
 import { documentTool } from './document.ts';
-import { ALLOWED_TOOLS, DEEP_RESEARCH_NOTE, POLICY_PREFIX, TURN_LIMITS, isAllowedTool, validateToolInput, type ToolPolicy } from '../src/policy.ts';
+import { routineTool } from './routine.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, TURN_LIMITS, isAllowedTool, promptMode, refusedInTurn, validateToolInput, type ToolPolicy } from '../src/policy.ts';
 
 export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   const instructions = await readFile('/app/profile/instructions.md', 'utf8');
   let calls = 0;
   let images = 0;
-  // Set per message from the server's note at the start of the prompt (src/rpc.ts).
-  let deep = false;
+  // Set per message from the server's notes at the start of the prompt (src/policy.ts composePrompt).
+  let mode = {deepResearch: false, routineRun: false};
   // The third-party extensions only ever see this restricted view of the API.
   const overrides: Partial<ExtensionAPI> = {
     registerTool: ((tool: ToolDefinition) => {
@@ -22,8 +23,9 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
         ...tool,
         execute: async (id, args, signal, update, ctx) => {
           await validateToolInput(tool.name, args, ctx.cwd);
-          if (tool.name === 'deep_research' && !deep) throw new Error('Deep research is off for this conversation');
-          if (++calls > TURN_LIMITS[deep ? 'deep' : 'normal'].toolCalls) throw new Error('Tool-call limit reached for this message');
+          const refused = refusedInTurn(tool.name, mode);
+          if (refused) throw new Error(refused);
+          if (++calls > TURN_LIMITS[mode.deepResearch ? 'deep' : 'normal'].toolCalls) throw new Error('Tool-call limit reached for this message');
           if (tool.name === 'imagegen' && ++images > 2) throw new Error('Two image requests per message maximum');
           return tool.execute(id, args, signal, update, ctx);
         },
@@ -53,6 +55,7 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   // Home Chat's own tools go through the same wrapper, so they share the call limit and input checks.
   restricted.registerTool(documentTool);
   restricted.registerTool(deepResearchTool);
+  restricted.registerTool(routineTool);
 
   const enforce = () => {
     const registered = pi.getAllTools().map(tool => tool.name);
@@ -68,12 +71,12 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   pi.on('model_select', () => enforce());
   pi.on('before_agent_start', event => {
     enforce(); calls = 0; images = 0;
-    deep = event.messageType === 'user' && event.prompt.startsWith(DEEP_RESEARCH_NOTE);
+    mode = event.messageType === 'user' ? promptMode(event.prompt) : {deepResearch: false, routineRun: false};
     return {systemPrompt: instructions};
   });
   pi.on('tool_call', async (event, ctx) => {
-    // Research costs money per call, so it runs only when the conversation's switch is on.
-    if (event.toolName === 'deep_research' && !deep) return {block: true, reason: 'Deep research is off for this conversation; the user can switch it on'};
+    const refused = refusedInTurn(event.toolName, mode);
+    if (refused) return {block: true, reason: refused};
     try {
       await validateToolInput(event.toolName, event.input, ctx.cwd);
     } catch (error) {
