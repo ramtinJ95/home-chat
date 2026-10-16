@@ -2,8 +2,8 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen';
-export type AssetKind = 'upload' | 'generated';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document';
+export type AssetKind = 'upload' | 'generated' | 'document';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
 export interface Question {
@@ -22,7 +22,12 @@ export interface Message {
   error?: string;
 }
 
-export interface AssetRef { id: string; kind: AssetKind }
+// Set on document assets: every version of a document is its own asset, sharing `doc`.
+export interface DocumentInfo { doc: string; title: string; version: number }
+export interface AssetRef { id: string; kind: AssetKind; document?: DocumentInfo }
+
+// GET /api/chats/<id>/assets/<asset> for a document; with ?download=1 it is a Markdown file instead.
+export interface DocumentContent { title: string; markdown: string; version: number }
 
 export interface ChatSnapshot {
   id: string;

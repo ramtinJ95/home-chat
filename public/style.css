@@ -306,6 +306,13 @@ svg { width: 20px; height: 20px; flex: none; }
 .content pre code { padding: 0; background: none; font-size: 0.84rem; line-height: 1.6; }
 .content a { font-weight: 500; }
 .content a .host { margin-left: 6px; font-size: 0.78em; font-weight: 400; color: var(--muted); }
+.table-scroll { margin: 0 0 0.9em; overflow-x: auto; border: 1px solid var(--line); border-radius: 12px; }
+/* Words stay whole in a table, so a wide one scrolls inside its box rather than squeezing into single letters. */
+.content table { border-collapse: collapse; min-width: 100%; font-size: 0.92em; line-height: 1.5; overflow-wrap: normal; }
+.content th { white-space: nowrap; }
+.content th, .content td { padding: 8px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+.content th { font-weight: 650; background: var(--paper-deep); }
+.content tbody tr:last-child td { border-bottom: 0; }
 
 /* Typing dots on the reply that is still empty */
 .messages.busy .message.assistant:last-child .content:empty::before {
@@ -331,6 +338,18 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .download:hover { color: var(--accent); border-color: var(--accent); }
 .download svg { width: 15px; height: 15px; }
+.document-card {
+  margin: 14px 0 0; width: min(100%, 440px); display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px; border-radius: 16px; text-align: left;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-soft);
+  transition: transform 160ms var(--ease), box-shadow 160ms;
+}
+.document-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-lift); }
+.document-card > svg { width: 26px; height: 26px; color: var(--accent); }
+.document-text { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.document-text strong { font-weight: 600; line-height: 1.35; }
+.document-text span { font-size: 0.8rem; color: var(--muted); }
+.document-open { flex: none; font-size: 0.85rem; font-weight: 600; color: var(--accent); }
 .failure {
   margin: 12px 0 0; padding: 10px 14px; border-radius: 12px;
   background: color-mix(in srgb, var(--danger) 10%, transparent); color: var(--danger); font-size: 0.86rem;
@@ -405,6 +424,35 @@ svg { width: 20px; height: 20px; flex: none; }
   background: rgb(30 26 36 / 0.7); color: #fff; font-size: 0.9rem; line-height: 1;
 }
 
+/* Reader: a full-screen page over the conversation, sized for reading on a phone. */
+.reader {
+  position: fixed; inset: 0; z-index: 25; overflow-y: auto; overscroll-behavior: contain;
+  background: var(--paper);
+}
+.reader-bar {
+  position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) 8px max(10px, env(safe-area-inset-left));
+  background: color-mix(in srgb, var(--paper) 92%, transparent); backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.reader-actions { display: flex; align-items: center; gap: 2px; }
+.reader-actions .ghost { font-size: 0.9rem; font-weight: 600; color: var(--accent); text-decoration: none; }
+.reader-page {
+  width: min(100%, 700px); margin: 0 auto;
+  padding: 26px 22px max(48px, env(safe-area-inset-bottom));
+}
+.reader-meta { margin: 0 0 6px; font-size: 0.78rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--oak); }
+.reader-title { margin: 0 0 20px; font: 400 clamp(1.9rem, 6vw, 2.6rem)/1.12 var(--serif); letter-spacing: -0.02em; overflow-wrap: anywhere; }
+.reader-contents { margin: 0 0 26px; border: 1px solid var(--line); border-radius: 14px; background: var(--card); }
+.reader-contents summary { padding: 12px 16px; font-weight: 600; cursor: pointer; }
+.reader-contents ol { margin: 0; padding: 0 8px 10px; list-style: none; }
+.reader-contents li.sub { padding-left: 16px; }
+.reader-contents button { width: 100%; padding: 8px; border-radius: 10px; text-align: left; color: var(--ink-soft); line-height: 1.4; }
+.reader-contents button:hover { background: var(--tint); color: var(--ink); }
+.reader-body { font-size: 1.06rem; line-height: 1.75; overflow-wrap: anywhere; }
+.reader-body h3, .reader-body h4 { scroll-margin-top: 80px; }
+.reader-body h3 { font-size: 1.4rem; margin-top: 1.6em; }
+
 .toast {
   position: fixed; left: 50%; bottom: 28px; z-index: 30; transform: translateX(-50%);
   max-width: min(92vw, 520px); padding: 12px 20px; border-radius: 14px;
@@ -460,6 +508,8 @@ svg { width: 20px; height: 20px; flex: none; }
   .chat-delete { opacity: 1; }
   .chat-open, .sidebar-action button, .sidebar-action summary { padding: 13px 12px; }
   .question .option { padding: 11px 18px; }
+  .reader-actions .ghost { padding: 12px 10px; }
+  .reader-contents button { padding: 12px 8px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

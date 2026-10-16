@@ -12,6 +12,8 @@ import { request as httpRequest } from 'node:http';
 import type { Question, User } from '../src/api.d.ts';
 import type { ChatWorker, WorkerEvents } from '../src/rpc.ts';
 import { createApp, type AppOptions } from '../src/server.ts';
+import { documentTool } from '../profile/document.ts';
+import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
 
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   busy = false;
@@ -130,6 +132,41 @@ test('mocked Pi streaming and structured questions stay in their conversation', 
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
     await delay(30);
     assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).busy, false);
+  } finally { await f.close(); }
+});
+test('documents saved during a reply are attached to it, readable, downloadable and revisable', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    const ctx = {cwd: join(f.data, 'chats', chat.id, 'work')} as ExtensionToolContext;
+    // One turn: the tool runs while the reply is open, and the reply settles when the question is answered.
+    const turn = async (text: string, save: () => Promise<unknown>) => {
+      assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text, assets: []}, ...owner})).status, 202);
+      await delay(40); await save();
+      assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
+      await delay(40);
+      return (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    };
+    let state = await turn('Plan my weekend', () => documentTool.execute('1', {title: 'Weekend: plan', markdown: '| Day | Plan |\n|---|---|\n| Sat | Market |'}, undefined, undefined, ctx));
+    const [card] = state.assets;
+    const doc = card.document.doc;
+    assert.match(doc, /^doc_[0-9a-f]{32}$/);
+    assert.deepEqual(card.document, {doc, title: 'Weekend: plan', version: 1});
+    assert.deepEqual(state.messages[1].assets, [card.id]);
+    const url = `/api/chats/${chat.id}/assets/${card.id}`;
+    assert.deepEqual(await (await f.request(url, owner)).json(), {title: 'Weekend: plan', markdown: '| Day | Plan |\n|---|---|\n| Sat | Market |', version: 1});
+    assert.equal((await f.request(url, guest)).status, 404);
+    const download = await f.request(url + '?download=1', owner);
+    assert.match(download.headers.get('content-type') ?? '', /^text\/markdown/);
+    assert.equal(download.headers.get('content-disposition'), `attachment; filename="Weekend-plan.md"; filename*=UTF-8''Weekend%3A%20plan.md`);
+    assert.match(await download.text(), /^# Weekend: plan\n\n\| Day/);
+    // A document is not a picture the model can be sent.
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'x', assets: [card.id]}, ...owner})).status, 400);
+    state = await turn('Make Saturday a museum day', () => documentTool.execute('2', {title: 'Weekend plan', markdown: 'Museum', revises: doc}, undefined, undefined, ctx));
+    assert.deepEqual(state.assets.map((asset: {document: unknown}) => asset.document), [
+      {doc, title: 'Weekend: plan', version: 1}, {doc, title: 'Weekend plan', version: 2}]);
+    assert.deepEqual(state.messages[3].assets, [state.assets[1].id]);
   } finally { await f.close(); }
 });
 test('owners delete their idle conversations and everything stored with them', async () => {
