@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, sign, type KeyObject } from 'node:crypto';
+import { generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { encode, signedToken } from './helpers.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig } from '../src/access.ts';
 
 const config: AccessConfig = {
@@ -15,11 +16,7 @@ function keyPair(kid: string) {
   return {kid, privateKey, jwk: {...publicKey.export({format: 'jwk'}), kid, alg: 'RS256'}};
 }
 
-const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-function token(privateKey: KeyObject, claims: Record<string, unknown>, header: Record<string, unknown>) {
-  const body = `${encode(header)}.${encode(claims)}`;
-  return `${body}.${sign('RSA-SHA256', Buffer.from(body), privateKey).toString('base64url')}`;
-}
+const token = (privateKey: KeyObject, claims: Record<string, unknown>, header: Record<string, unknown>) => signedToken(privateKey, header, claims);
 
 const now = () => Math.floor(Date.now() / 1000);
 const validClaims = (overrides: Record<string, unknown> = {}) => ({

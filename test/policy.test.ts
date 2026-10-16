@@ -3,8 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createECDH, randomBytes } from 'node:crypto';
 import { ATTACHED_NOTE, allowedDestination, carriesText, composePrompt, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
+import { pushKeys } from './helpers.ts';
 
 test('the rewind recognises the message Pi was given, notes and picture paths included, and nothing else', () => {
   const sent = composePrompt('What is this?' + ATTACHED_NOTE + '/work/uploads/a.png', {deepResearch: true});
@@ -31,7 +31,7 @@ test('push goes only to the known browser push services', () => {
   }
   assert.equal(allowedDestination('web.push.apple.com:443', pushServiceHost), 'web.push.apple.com');
   assert.throws(() => allowedDestination('web.push.apple.com:443'));
-  const keys = {p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url')};
+  const keys = pushKeys();
   assert.equal(pushSubscription({endpoint: 'https://web.push.apple.com/QH4', keys}).endpoint, 'https://web.push.apple.com/QH4');
   for (const endpoint of ['http://web.push.apple.com/x', 'https://web.push.apple.com:8443/x', 'https://user@web.push.apple.com/x', 'https://evil.test/x', 'https://127.0.0.1/x', 'not a url']) {
     assert.throws(() => pushSubscription({endpoint, keys}), endpoint);

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
 import { setTimeout as delay } from 'node:timers/promises';
-import { createECDH, generateKeyPairSync, randomBytes, randomUUID, sign } from 'node:crypto';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
@@ -18,9 +18,9 @@ import { callServer } from '../profile/internal.ts';
 import { memoryTool } from '../profile/memory.ts';
 import { routineTool } from '../profile/routine.ts';
 import type { ExtensionToolContext } from '@earendil-works/pi-coding-agent';
+import { pushKeys, signedToken, withEnv } from './helpers.ts';
 
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
-  busy = false;
   closed = false;
   question: Question | null = null;
   // What the server gave Pi for its routine tool.
@@ -34,21 +34,20 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   async prompt(text: string, _images?: unknown, mode: TurnMode = {}) {
     const failure = this.failNext; this.failNext = undefined;
     if (failure) throw failure === 'rejected' ? new PiRejected('rejected') : new Error('Pi command timed out');
-    this.busy = true;
     this.lastText = text; this.lastMode = mode; this.lastDeep = mode.deepResearch === true;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
     setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
   answer(id: string, value: unknown) {
     if (id !== this.question?.id || !this.question.options.includes(value as string)) throw new Error('Invalid answer');
-    this.question = null; this.busy = false; this.emit('settled');
+    this.question = null; this.emit('settled');
   }
   // The texts regenerate and edit asked Pi to go back over.
   rewound: string[] = [];
   // What Pi reports: whether its last message carried the text.
   rewindMatches = true;
   async rewind(text: string) { this.rewound.push(text); return this.rewindMatches; }
-  async abort() { this.busy = false; this.emit('settled'); }
+  async abort() { this.emit('settled'); }
   stop() { this.closed = true; }
 }
 
@@ -273,7 +272,7 @@ test('push notifications reach a device only while nobody is looking', async () 
     const owner = await f.login('owner');
     const {publicKey} = await (await f.request('/api/push', owner)).json();
     assert.equal(Buffer.from(publicKey, 'base64url').length, 65);
-    const keys = {p256dh: createECDH('prime256v1').generateKeys().toString('base64url'), auth: randomBytes(16).toString('base64url')};
+    const keys = pushKeys();
     const device = {endpoint: 'https://web.push.apple.com/device-1', keys};
     assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: {...device, endpoint: 'https://evil.test/x'}, ...owner})).status, 400);
     assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: device, ...owner})).status, 200);
@@ -369,13 +368,7 @@ test('deep research is a per-conversation switch that is kept and reaches every 
     } finally { await keyless.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
 });
-// Runs as Pi's side of the internal socket would, with the socket and token the server gave the worker.
-async function withEnv<T>(env: Record<string, string>, run: () => Promise<T>): Promise<T> {
-  const saved = {...process.env};
-  Object.assign(process.env, env);
-  try { return await run(); }
-  finally { for (const key of Object.keys(env)) if (saved[key] === undefined) delete process.env[key]; else process.env[key] = saved[key]; }
-}
+// Pi's side of the internal socket runs under withEnv, with the socket and token the server gave the worker.
 const resultText = (result: {content: unknown[]}) => (result.content[0] as {text: string}).text;
 const callRoutine = (env: Record<string, string>, params: Record<string, unknown>) =>
   withEnv(env, async () => resultText(await routineTool.execute('call', params as never, undefined, undefined, {} as ExtensionToolContext)));
@@ -660,11 +653,8 @@ test('Cloudflare Access mode admits only verified, listed Google accounts over t
     users: new Map<string, User>([['owner@example.test', 'owner'], ['guest@example.test', 'guest']]),
   };
   const f = await fixture(true, {access, accessKeys: async () => [{...publicKey.export({format: 'jwk'}), kid: 'k1'}]});
-  const encode = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const signedIn = (email: string) => {
-    const body = `${encode({alg: 'RS256', kid: 'k1'})}.${encode({iss: 'https://home.cloudflareaccess.com', aud: ['aud-tag'], email, exp: Math.floor(Date.now() / 1000) + 600})}`;
-    return {'Cf-Access-Jwt-Assertion': `${body}.${sign('RSA-SHA256', Buffer.from(body), privateKey).toString('base64url')}`};
-  };
+  const signedIn = (email: string) => ({'Cf-Access-Jwt-Assertion': signedToken(privateKey, {alg: 'RS256', kid: 'k1'},
+    {iss: 'https://home.cloudflareaccess.com', aud: ['aud-tag'], email, exp: Math.floor(Date.now() / 1000) + 600})});
   try {
     assert.equal((await f.request('/api/me')).status, 401);
     assert.equal((await f.request('/api/me', {headers: {...signedIn('owner@example.test'), Host: '127.0.0.1:8787'}})).status, 421);
