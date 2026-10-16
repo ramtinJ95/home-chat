@@ -4,10 +4,11 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, chmod 
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, RoutineSummary, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
+import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
 import { ALLOWED_TOOLS, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
@@ -193,6 +194,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     if (late) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
     else { queue.push({routine, scheduled}); void drainRuns(); }
   });
+  const memory = await createMemory(join(data, 'memory.json'));
   // The routine run each conversation is replying to, if any; such a turn has nobody watching.
   const routineTurns = new Map<string, RoutineRun>();
   const internalSocket = join(data, 'internal.sock');
@@ -395,9 +397,9 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (!idle) throw fail(429, 'Both chat workers are busy');
       idle[1].stop(); workers.delete(idle[0]);
     }
-    // The token tells the internal socket which conversation a routine call comes from; it is good while this worker is.
+    // The token tells the internal socket which conversation a call comes from; it is good while this worker is.
     const token = randomBytes(32).toString('base64url');
-    const worker = workerFactory(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_ROUTINE_TOKEN: token});
+    const worker = workerFactory(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_INTERNAL_TOKEN: token});
     for (const [old, entry] of workerTokens) if (workers.get(entry.chat) !== entry.worker) workerTokens.delete(old);
     workerTokens.set(token, {chat: chat.id, worker});
     const failTurn = (message: string) => {
@@ -509,14 +511,21 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
       const entry = workerTokens.get(token);
       const chat = entry && workers.get(entry.chat) === entry.worker && !entry.worker.closed ? chats.get(entry.chat) : undefined;
-      if (!chat) return send(401, {error: 'This session cannot change routines'});
-      if (req.url !== '/routine' || req.method !== 'POST') return send(404, {error: 'Not found'});
-      if (routineTurns.has(chat.id)) return send(403, {error: 'Routines cannot be changed during a routine run'});
-      return send(200, {text: await routineAction(chat, await jsonBody(req, 16_000))});
+      if (!chat) return send(401, {error: 'This session cannot reach Home Chat'});
+      // The household notes for the turn's instructions (profile/extension.ts), routine runs included.
+      if (req.url === '/memory' && req.method === 'GET') return send(200, {text: memory.prompt(chat.owner)});
+      if (req.method !== 'POST' || (req.url !== '/routine' && req.url !== '/memory')) return send(404, {error: 'Not found'});
+      if (routineTurns.has(chat.id)) return send(403, {error: 'Routines and household notes cannot be changed during a routine run'});
+      const body = await jsonBody(req, 16_000);
+      if (req.url === '/routine') return send(200, {text: await routineAction(chat, body)});
+      // The memory tool checks a change first, then asks the user, then makes it (profile/memory.ts).
+      if (body.check === true) { memory.check(chat.owner, body); return send(200, {text: 'OK'}); }
+      await memory.apply(chat.owner, body);
+      return send(200, {text: body.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.'});
     } catch (error) {
-      if (error instanceof RoutineError) return send(400, {error: error.message});
+      if (error instanceof RoutineError || error instanceof MemoryError) return send(400, {error: error.message});
       if (error instanceof HttpError) return send(error.status, {error: error.message});
-      return send(500, {error: 'The routine could not be saved'});
+      return send(500, {error: 'Home Chat could not save that'});
     }
   });
   await rm(internalSocket, {force: true});
@@ -595,6 +604,16 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         const list: ChatSummary[] = [...chats.values()].filter(chat => chat.owner === session.user)
           .map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
         return send(200, list);
+      }
+      if (path === '/api/memory' && req.method === 'GET') return send(200, memory.view(session.user) satisfies MemoryView);
+      if (path === '/api/memory' && req.method === 'PUT') {
+        try { await memory.replace(session.user, await jsonBody(req, 64_000)); }
+        catch (error) {
+          if (error instanceof MemoryError) throw fail(400, error.message);
+          if (error instanceof MemoryConflict) throw fail(409, 'These notes were changed meanwhile; open About us again to see the latest');
+          throw error;
+        }
+        return send(200, memory.view(session.user) satisfies MemoryView);
       }
       if (path === '/api/routines' && req.method === 'GET') {
         const list: RoutineSummary[] = routines.list(session.user).map(routineSummary);

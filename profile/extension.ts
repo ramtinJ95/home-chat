@@ -6,6 +6,8 @@ import type { ExtensionAPI, ToolDefinition } from '@earendil-works/pi-coding-age
 import { readFile } from 'node:fs/promises';
 import { deepResearchTool } from './deep-research.ts';
 import { documentTool } from './document.ts';
+import { callServer } from './internal.ts';
+import { memoryTool } from './memory.ts';
 import { routineTool } from './routine.ts';
 import { ALLOWED_TOOLS, POLICY_PREFIX, TURN_LIMITS, isAllowedTool, promptMode, refusedInTurn, validateToolInput, type ToolPolicy } from '../src/policy.ts';
 
@@ -56,6 +58,7 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
   restricted.registerTool(documentTool);
   restricted.registerTool(deepResearchTool);
   restricted.registerTool(routineTool);
+  restricted.registerTool(memoryTool);
 
   const enforce = () => {
     const registered = pi.getAllTools().map(tool => tool.name);
@@ -69,10 +72,13 @@ export default async function homeChat(pi: ExtensionAPI): Promise<void> {
     ctx.ui.notify(POLICY_PREFIX + JSON.stringify(policy), 'info');
   });
   pi.on('model_select', () => enforce());
-  pi.on('before_agent_start', event => {
+  pi.on('before_agent_start', async event => {
     enforce(); calls = 0; images = 0;
     mode = event.messageType === 'user' ? promptMode(event.prompt) : {deepResearch: false, routineRun: false};
-    return {systemPrompt: instructions};
+    // The household notes as they are now, so an edit under About us counts from the next message on.
+    const notes = await callServer('/memory').catch(() => 'The household notes (About us) could not be loaded for this message. '
+      + 'If the user refers to something they asked you to remember, say that you cannot see the notes right now.\n');
+    return {systemPrompt: notes ? instructions + '\n' + notes : instructions};
   });
   pi.on('tool_call', async (event, ctx) => {
     const refused = refusedInTurn(event.toolName, mode);

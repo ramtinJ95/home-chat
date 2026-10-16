@@ -4,7 +4,7 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PRs 1–4 (Home Screen app, push notifications, artifacts and reader view, deep research) merged and deployed. PR 5 (routines) in review.
+Status: PRs 1–5 (Home Screen app, push notifications, artifacts and reader view, deep research, routines) merged and deployed. PR 6 ("About us" memory) in review.
 
 ## Decisions
 
@@ -70,6 +70,8 @@ How it works:
 - A short household profile (city, dietary preferences, names, interests) added to every conversation's instructions.
 - The model suggests additions through `ask` ("Should I remember that you're vegetarian?"); a settings page shows and edits it.
 - Per user, with an optional shared household part.
+- Built as a `memory` tool that asks the Yes/No itself (Pi's confirm dialog), so nothing is saved on the model's word
+  alone; the extension fetches the notes over the internal socket at the start of every turn.
 
 ## 7. Search across conversations
 
