@@ -1,25 +1,29 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, chmod } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, StreamEvent, User } from './api.d.ts';
+import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, Message, PushInfo, RoutineSummary, StreamEvent, User } from './api.d.ts';
 import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
 import { createPush } from './push.ts';
+import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
 import { ALLOWED_TOOLS, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
-interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true }
+// `unread`: a routine run arrived while nobody was looking; cleared when its owner opens the conversation.
+interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; unread?: true }
+interface RoutineRun { routine: Routine; scheduled: Date }
 interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
 export interface AppOptions {
   data?: string;
-  workerFactory?: (directory: string) => ChatWorker;
+  // `env` goes to Pi: the internal socket and this worker's token for the routine tool.
+  workerFactory?: (directory: string, env: Record<string, string>) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
   access?: AccessConfig;
@@ -38,6 +42,8 @@ class HttpError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 const fail = (status: number, message: string) => new HttpError(status, message);
+// Thrown by startTurn for a routine run that was paused or replaced while its worker started; drainOnce settles it.
+class StaleRun extends Error {}
 const sse = (res: http.ServerResponse, event: StreamEvent) => res.write('data: ' + JSON.stringify(event) + '\n\n');
 const publicRoot = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 
@@ -115,7 +121,7 @@ async function loadStaticFiles() {
   return new Map([...text, ...images]);
 }
 
-export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys, pushFetch,
+export async function createApp({data = '/data', workerFactory = (dir, env) => new PiWorker(dir, env), authenticatedProvider, access, accessKeys, pushFetch,
   deepResearch: researchReady = Boolean(process.env.EXA_API_KEY?.trim())}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
@@ -176,8 +182,35 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // Set by stop(). From then on no turn ends: stop() saves running replies and the next start marks them interrupted,
   // so Pi exiting or rejecting a prompt under a shutdown is never recorded as the turn's outcome.
   let stopping = false;
-  const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind, document}) => document ? {id, kind, document} : {id, kind}), busy: running.has(chat.id),
-    question: workers.get(chat.id)?.question ?? null, deepResearch: researching(chat)});
+  // Due runs wait here while their owner has a reply running or both workers are busy (drainRuns).
+  const queue: RoutineRun[] = [];
+  const dequeue = (run: RoutineRun) => { const index = queue.indexOf(run); if (index !== -1) queue.splice(index, 1); };
+  // The routine still exists, and this run is the one it is waiting for rather than one a newer run replaced.
+  const current = ({routine, scheduled}: RoutineRun) => routines.get(routine.id) === routine && routine.pending === scheduled.toISOString();
+  const routines = await createRoutines(join(data, 'routines.json'), (routine, scheduled, late) => {
+    // A newer run of the same routine replaces one still waiting.
+    for (const waiting of queue.filter(item => item.routine === routine)) dequeue(waiting);
+    if (late) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
+    else { queue.push({routine, scheduled}); void drainRuns(); }
+  });
+  // The routine run each conversation is replying to, if any; such a turn has nobody watching.
+  const routineTurns = new Map<string, RoutineRun>();
+  const internalSocket = join(data, 'internal.sock');
+  const workerTokens = new Map<string, {chat: string; worker: ChatWorker}>();
+  // Routine runs per owner, for the daily budget. Kept in memory: a restart forgets the day's count.
+  const runTimes = new Map<User, number[]>();
+  const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
+    schedule: describeSchedule(routine.schedule), next: nextLabel(routine), unread: chats.get(routine.chat)?.unread === true});
+  // Open copies of a routine's conversation show its new state: the switch at the top of the thread.
+  const showRoutine = (routine: Routine) => {
+    const chat = chats.get(routine.chat);
+    if (chat) emit(chat.id, {type: 'snapshot', chat: snapshot(chat)});
+  };
+  const snapshot = (chat: Chat): ChatSnapshot => {
+    const routine = routines.byChat(chat.id);
+    return {id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind, document}) => document ? {id, kind, document} : {id, kind}),
+      busy: running.has(chat.id), question: workers.get(chat.id)?.question ?? null, deepResearch: researching(chat), routine: routine ? routineSummary(routine) : null};
+  };
   // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
   const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
   const emit = (id: string, event: StreamEvent) => {
@@ -203,11 +236,129 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     const last = chat.messages.at(-1);
     if (error && last?.role === 'assistant') last.error = error;
     delete chat.replying;
+    const run = routineTurns.get(chat.id);
+    routineTurns.delete(chat.id);
+    if (run && !watching(chat.id)) chat.unread = true;
     // Clients see the turn end now, but the conversation stays in flight until it is saved, so a delete cannot remove the files under the save.
     inflight.add(chat.id);
     running.delete(chat.id); worker.busy = false;
     try { await publish(chat); } finally { inflight.delete(chat.id); }
-    if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
+    if (run) await routines.finished(run.routine, run.scheduled, error ? 'failed' : 'done').catch(() => console.warn('Could not save a routine run'));
+    if (!watching(chat.id)) {
+      push.notify(chat.owner, run
+        ? {title: run.routine.title, body: error ? 'This run stopped before it finished.' : 'New results are ready.', chat: chat.id, routine: run.routine.id}
+        : {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
+    }
+    void drainRuns();
+  }
+
+  // Admits one turn, for a sent message or a routine run, and hands it to Pi. Throws HttpError if it cannot start.
+  async function startTurn(chat: Chat, text: string, {images = [], attached = [], run}: {images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun} = {}) {
+    if (occupied(chat.id)) throw fail(409, 'A message is already running');
+    if ([...chats.values()].some(other => other.owner === chat.owner && occupied(other.id))) throw fail(409, 'One active conversation per user');
+    inflight.add(chat.id);
+    // A turn that was admitted and then could not start; it is ended after the reservation is released (below).
+    let failed: {worker: ChatWorker; message: string} | undefined;
+    try {
+      if (!await providerReady()) throw fail(503, 'Codex is not signed in to this isolated profile yet');
+      if (chat.messages.length >= 200 || await diskUsage(data) > MAX_DATA - 40 * 1024 * 1024) throw fail(413, 'Prototype conversation or storage limit reached');
+      const worker = await workerFor(chat);
+      // A worker started while stop() ran would outlive it, so it is stopped here before the message is admitted.
+      if (stopping) { worker.stop(); throw fail(503, 'Home Chat is restarting; send the message again in a moment'); }
+      // Checked again here, after the waits above and right before the run is admitted.
+      if (run && !(current(run) && run.routine.enabled)) throw new StaleRun();
+      const deepResearch = run ? run.routine.deepResearch && researchReady : researching(chat);
+      const due = run && runLabel(run.scheduled);
+      chat.messages.push({role: 'user', text, assets: attached.map(item => item.id), ...(run && {run: `${run.routine.title} · ${due}`})},
+        {role: 'assistant', text: '', assets: []});
+      if (chat.title === 'New conversation') chat.title = text.slice(0, 55) || 'Picture conversation';
+      if (run) routineTurns.set(chat.id, run);
+      chat.replying = true; running.add(chat.id); await publish(chat);
+      // Recorded before Pi starts, so the run's own end, however quick, comes after it. Unrecorded, a restart would run
+      // it again, so it does not start.
+      if (run) {
+        try { await routines.started(run.routine, run.scheduled); }
+        catch { failed = {worker, message: 'Home Chat could not save this run, so it did not start'}; }
+      }
+      if (!failed) {
+        worker.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); worker.deadline.unref();
+        try {
+          await worker.prompt(text + (attached.length ? '\nAttached image paths (this conversation only):\n' + attached.map(item => item.path).join('\n') : ''), images,
+            {deepResearch, routineRun: due});
+        } catch {
+          worker.stop();
+          failed = {worker, message: 'Pi rejected this message; no reply was completed'};
+        }
+      }
+    } finally { inflight.delete(chat.id); }
+    // The turn still counts as running here, so nothing else is admitted in between. endTurn takes its own reservation
+    // while it saves, and one taken after it has ended is left alone.
+    if (failed) {
+      await endTurn(chat, failed.worker, failed.message);
+      throw fail(503, failed.message);
+    }
+  }
+
+  // A run that cannot happen leaves a dated note in its conversation, unless someone is using that conversation right now.
+  async function skipRun({routine, scheduled}: RoutineRun, reason: string) {
+    const chat = chats.get(routine.chat);
+    if (chat && !occupied(chat.id)) {
+      chat.messages.push({role: 'assistant', text: '', assets: [], run: `${routine.title} · ${runLabel(scheduled)}`, error: `This run was skipped: ${reason}.`});
+      await publish(chat).catch(() => console.warn('Could not save a skipped routine run'));
+    }
+    await routines.finished(routine, scheduled, 'skipped').catch(() => console.warn('Could not save a routine run'));
+  }
+
+  // Starts the queued runs that can start now; the rest wait for the next turn to end. One pass at a time, and a call
+  // during a pass makes it go round again, so a run queued meanwhile is not left waiting.
+  let draining = false;
+  let drainAgain = false;
+  async function drainRuns() {
+    if (stopping) return;
+    if (draining) { drainAgain = true; return; }
+    draining = true;
+    try {
+      do { drainAgain = false; await drainOnce(); } while (drainAgain && !stopping);
+    } finally { draining = false; }
+  }
+  // Takes a run that should no longer happen out of the queue; true if it did.
+  async function dropped(run: RoutineRun) {
+    if (!chats.has(run.routine.chat) || !current(run)) { dequeue(run); return true; }
+    // Paused while it waited: it does not run, and nothing is noted, since the user chose it.
+    if (!run.routine.enabled) {
+      dequeue(run);
+      await routines.finished(run.routine, run.scheduled, 'skipped').catch(() => console.warn('Could not save a routine run'));
+      return true;
+    }
+    return false;
+  }
+  async function drainOnce() {
+    for (const run of [...queue]) {
+      // Replaced by a newer run of its routine during this pass.
+      if (!queue.includes(run) || await dropped(run)) continue;
+      const {routine, scheduled} = run;
+      const chat = chats.get(routine.chat)!;
+      if (Date.now() - scheduled.getTime() > MISSED_GRACE_MS) {
+        dequeue(run); await skipRun(run, 'Home Chat stayed busy for too long'); continue;
+      }
+      const today = (runTimes.get(routine.owner) ?? []).filter(time => time > Date.now() - 24 * 60 * 60_000);
+      if (today.length >= MAX_RUNS_PER_DAY) {
+        dequeue(run); await skipRun(run, `routines may run ${MAX_RUNS_PER_DAY} times a day`); continue;
+      }
+      const before = chat.messages.length;
+      try {
+        await startTurn(chat, routine.prompt, {run});
+        dequeue(run);
+        today.push(Date.now()); runTimes.set(routine.owner, today);
+      } catch (error) {
+        if (error instanceof StaleRun) { await dropped(run); continue; }
+        // Busy (a reply is running, or both workers are): it waits. Anything else will not get better by waiting.
+        if (error instanceof HttpError && (error.status === 409 || error.status === 429)) continue;
+        dequeue(run);
+        // A run that was admitted and then failed has already recorded its failure in the thread.
+        if (chat.messages.length === before) await skipRun(run, error instanceof HttpError ? error.message : 'it could not start');
+      }
+    }
   }
 
   // Pictures and documents the tools wrote during the turn become assets of its reply.
@@ -244,7 +395,11 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       if (!idle) throw fail(429, 'Both chat workers are busy');
       idle[1].stop(); workers.delete(idle[0]);
     }
-    const worker = workerFactory(join(chatsDirectory, chat.id));
+    // The token tells the internal socket which conversation a routine call comes from; it is good while this worker is.
+    const token = randomBytes(32).toString('base64url');
+    const worker = workerFactory(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_ROUTINE_TOKEN: token});
+    for (const [old, entry] of workerTokens) if (workers.get(entry.chat) !== entry.worker) workerTokens.delete(old);
+    workerTokens.set(token, {chat: chat.id, worker});
     const failTurn = (message: string) => {
       emit(chat.id, {type: 'error', message});
       return endTurn(chat, worker, message);
@@ -303,6 +458,70 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // Open streams end when their sign-in does: at logout, or at expiry (the Access token's own expiry under Access).
   const live = (sessionKey: string, session: Session) =>
     session.expires >= Date.now() && (verifyAccess !== undefined || sessions.get(sessionKey) === session);
+
+  // The routine tool's actions, for the owner of the conversation the call comes from. Returns the text the model sees.
+  async function routineAction(chat: Chat, body: Record<string, unknown>): Promise<string> {
+    const owner = chat.owner;
+    const saved = (routine: Routine) => `${describeSchedule(routine.schedule)}. Next run: ${nextLabel(routine)}.`;
+    switch (body.action) {
+      case 'list': {
+        const list = routines.list(owner);
+        if (!list.length) return 'There are no routines yet.';
+        return list.map(routine => `- “${routine.title}” (id ${routine.id}): ${describeSchedule(routine.schedule)}; ${nextLabel(routine)}`
+          + `${routine.deepResearch ? '; deep research' : ''}. Task: ${routine.prompt}`).join('\n');
+      }
+      case 'create': {
+        const prepared = routines.prepare(owner, body);
+        if ([...chats.values()].filter(item => item.owner === owner).length >= 20) {
+          throw new RoutineError('The user has 20 conversations, the most there can be; they need to delete one first');
+        }
+        // The routine's own conversation, where its runs arrive. It is only kept if the routine is saved too.
+        const home: Chat = {id: randomUUID(), owner, title: prepared.title, messages: [], assets: []};
+        await mkdir(join(workDir(home), 'uploads'), {recursive: true, mode: 0o700});
+        let routine;
+        try { await save(home); chats.set(home.id, home); routine = await routines.create(prepared, home.id); }
+        catch (error) { chats.delete(home.id); writes.delete(home.id); await rm(join(chatsDirectory, home.id), {recursive: true, force: true}); throw error; }
+        return `Saved “${routine.title}”: ${saved(routine)} Each run arrives in its own conversation, “${routine.title}”, with a notification.`;
+      }
+      case 'update': {
+        const routine = await routines.update(owner, body.id, body);
+        showRoutine(routine);
+        return `Updated “${routine.title}”: ${saved(routine)}`;
+      }
+      case 'pause': case 'resume': {
+        const routine = await routines.setEnabled(owner, body.id, body.action === 'resume');
+        showRoutine(routine);
+        return body.action === 'pause' ? `Paused “${routine.title}”. It will not run until resumed.` : `Resumed “${routine.title}”. Next run: ${nextLabel(routine)}.`;
+      }
+      case 'delete': {
+        const routine = await routines.remove(owner, body.id);
+        showRoutine(routine);
+        return `Deleted “${routine.title}”. Its earlier results stay in the conversation “${routine.title}”, which the user can delete like any other.`;
+      }
+      default: throw new RoutineError('action must be list, create, update, pause, resume or delete');
+    }
+  }
+
+  // Only this server's own Pi workers reach this: a Unix socket in the data directory, never a network port.
+  const internal = http.createServer(async (req, res) => {
+    const send = (status: number, value: unknown) => res.writeHead(status, jsonHeaders).end(JSON.stringify(value));
+    try {
+      const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
+      const entry = workerTokens.get(token);
+      const chat = entry && workers.get(entry.chat) === entry.worker && !entry.worker.closed ? chats.get(entry.chat) : undefined;
+      if (!chat) return send(401, {error: 'This session cannot change routines'});
+      if (req.url !== '/routine' || req.method !== 'POST') return send(404, {error: 'Not found'});
+      if (routineTurns.has(chat.id)) return send(403, {error: 'Routines cannot be changed during a routine run'});
+      return send(200, {text: await routineAction(chat, await jsonBody(req, 16_000))});
+    } catch (error) {
+      if (error instanceof RoutineError) return send(400, {error: error.message});
+      if (error instanceof HttpError) return send(error.status, {error: error.message});
+      return send(500, {error: 'The routine could not be saved'});
+    }
+  });
+  await rm(internalSocket, {force: true});
+  await new Promise<void>((resolve, reject) => { internal.once('error', reject); internal.listen(internalSocket, () => resolve()); });
+  await chmod(internalSocket, 0o600);
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -373,7 +592,12 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
-        const list: ChatSummary[] = [...chats.values()].filter(chat => chat.owner === session.user).map(({id, title}) => ({id, title}));
+        const list: ChatSummary[] = [...chats.values()].filter(chat => chat.owner === session.user)
+          .map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
+        return send(200, list);
+      }
+      if (path === '/api/routines' && req.method === 'GET') {
+        const list: RoutineSummary[] = routines.list(session.user).map(routineSummary);
         return send(200, list);
       }
       if (path === '/api/chats' && req.method === 'POST') {
@@ -384,14 +608,32 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         return send(201, snapshot(chat));
       }
       const parts = path.split('/').filter(Boolean);
+      // The app's on/off switch and delete; changing a routine otherwise happens by asking the model.
+      if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && (req.method === 'POST' || req.method === 'DELETE')) {
+        const routine = routines.get(parts[2]);
+        if (!routine || routine.owner !== session.user) throw fail(404, 'Not found');
+        let changed;
+        if (req.method === 'POST') {
+          const body = await jsonBody(req, 1024);
+          if (typeof body.enabled !== 'boolean') throw fail(400, 'Invalid setting');
+          try { changed = await routines.setEnabled(session.user, routine.id, body.enabled); }
+          catch (error) { if (error instanceof RoutineError) throw fail(409, error.message); throw error; }
+        } else changed = await routines.remove(session.user, routine.id);
+        showRoutine(changed);
+        return send(200, routineSummary(changed));
+      }
       if (parts[0] !== 'api' || parts[1] !== 'chats' || !ID_PATTERN.test(parts[2] ?? '')) throw fail(404, 'Not found');
       const chat = chats.get(parts[2]);
       if (!chat || chat.owner !== session.user) throw fail(404, 'Not found');
       // Method plus the path below the chat, e.g. 'GET', 'GET events', 'POST messages'.
       const route = [req.method, ...parts.slice(3)].join(' ');
+      // Opening a conversation reads its routine results.
+      if ((route === 'GET' || route === 'GET events') && chat.unread) { delete chat.unread; save(chat).catch(() => {}); }
       if (route === 'GET') return send(200, snapshot(chat));
       if (route === 'DELETE') {
         if (occupied(chat.id)) throw fail(409, 'Stop the current reply before deleting this conversation');
+        const routine = routines.byChat(chat.id);
+        if (routine) throw fail(409, `This conversation belongs to the routine “${routine.title}”; delete the routine first`);
         // Held as in flight so no message, upload or second delete starts while the files move.
         inflight.add(chat.id);
         try {
@@ -404,6 +646,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           streams.delete(chat.id);
           await rm(removed, {recursive: true, force: true});
         } finally { inflight.delete(chat.id); }
+        void drainRuns();
         return send(200, {ok: true});
       }
       if (route === 'GET events') {
@@ -461,43 +704,22 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
         return send(201, asset);
       }
       if (route === 'POST messages') {
-        if (occupied(chat.id)) throw fail(409, 'A message is already running');
-        if ([...chats.values()].some(other => other.owner === chat.owner && occupied(other.id))) throw fail(409, 'One active conversation per user');
-        inflight.add(chat.id);
-        try {
-          if (!await providerReady()) throw fail(503, 'Codex is not signed in to this isolated profile yet');
-          if (chat.messages.length >= 200 || await diskUsage(data) > MAX_DATA - 40 * 1024 * 1024) throw fail(413, 'Prototype conversation or storage limit reached');
-          const recent = (rates.get(session.user) ?? []).filter(time => time > Date.now() - 60 * 60_000);
-          if (recent.length >= 30) throw fail(429, 'Prototype limit: 30 messages per hour');
-          const body = await jsonBody(req);
-          const assetIds = body.assets ?? [];
-          if (typeof body.text !== 'string' || body.text.length > 12_000 || !Array.isArray(assetIds) || assetIds.length > 4) throw fail(400, 'Invalid message');
-          if (!body.text.trim() && !assetIds.length) throw fail(400, 'Write a message or attach a picture');
-          const images: PromptImage[] = []; const selected: StoredAsset[] = [];
-          for (const id of assetIds) {
-            const asset = chat.assets.find(item => item.id === id);
-            if (!asset || asset.document) throw fail(400, 'Invalid attachment');
-            const path = await allowedImagePath(asset.path, workDir(chat));
-            images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); selected.push(asset);
-          }
-          const worker = await workerFor(chat);
-          // A worker started while stop() ran would outlive it, so it is stopped here before the message is admitted.
-          if (stopping) { worker.stop(); throw fail(503, 'Home Chat is restarting; send the message again in a moment'); }
-          recent.push(Date.now()); rates.set(session.user, recent);
-          chat.messages.push({role: 'user', text: body.text, assets: selected.map(item => item.id)}, {role: 'assistant', text: '', assets: []});
-          if (chat.title === 'New conversation') chat.title = body.text.slice(0, 55) || 'Picture conversation';
-          chat.replying = true; running.add(chat.id); await publish(chat);
-          const deep = researching(chat);
-          worker.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deep ? 'deep' : 'normal'].minutes * 60_000); worker.deadline.unref();
-          try {
-            await worker.prompt(body.text + (selected.length ? '\nAttached image paths (this conversation only):\n' + selected.map(item => item.path).join('\n') : ''), images, deep);
-          } catch {
-            worker.stop();
-            await endTurn(chat, worker, 'Pi rejected this message; no reply was completed');
-            throw fail(503, 'Pi rejected this message; no reply was completed');
-          }
-          return send(202, {ok: true});
-        } finally { inflight.delete(chat.id); }
+        const recent = (rates.get(session.user) ?? []).filter(time => time > Date.now() - 60 * 60_000);
+        if (recent.length >= 30) throw fail(429, 'Prototype limit: 30 messages per hour');
+        const body = await jsonBody(req);
+        const assetIds = body.assets ?? [];
+        if (typeof body.text !== 'string' || body.text.length > 12_000 || !Array.isArray(assetIds) || assetIds.length > 4) throw fail(400, 'Invalid message');
+        if (!body.text.trim() && !assetIds.length) throw fail(400, 'Write a message or attach a picture');
+        const images: PromptImage[] = []; const attached: StoredAsset[] = [];
+        for (const id of assetIds) {
+          const asset = chat.assets.find(item => item.id === id);
+          if (!asset || asset.document) throw fail(400, 'Invalid attachment');
+          const path = await allowedImagePath(asset.path, workDir(chat));
+          images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); attached.push(asset);
+        }
+        await startTurn(chat, body.text, {images, attached});
+        recent.push(Date.now()); rates.set(session.user, recent);
+        return send(202, {ok: true});
       }
       if (route === 'POST research') {
         const body = await jsonBody(req, 1024);
@@ -532,6 +754,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   server.keepAliveTimeout = access ? 100_000 : 5000;
   const stop = async () => {
     stopping = true;
+    routines.stop();
+    internal.close(); internal.closeAllConnections();
     // Keep what has streamed so far; if this save fails, the `replying` flag saved with the message still marks it.
     await Promise.allSettled([...running].flatMap(id => chats.get(id) ?? []).map(save));
     for (const worker of workers.values()) worker.stop();
@@ -539,6 +763,12 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   };
+  // Runs that came due while the app was stopped are run or skipped now, and the timer is set for the next one. A run the
+  // app stopped in the middle of already says so in its conversation, which is marked unread for its owner.
+  for (const routine of routines.start()) {
+    const chat = chats.get(routine.chat);
+    if (chat && !chat.unread) { chat.unread = true; await save(chat).catch(() => console.warn('Could not save a conversation')); }
+  }
   return {server, stop};
 }
 

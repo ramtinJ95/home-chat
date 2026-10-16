@@ -18,6 +18,7 @@
     "@howaboua/pi-codex-conversion": "3.0.52",
     "@howaboua/pi-codex-imagegen": "0.0.10",
     "@howaboua/pi-codex-web-run": "0.0.7",
+    "croner": "10.0.1",
     "ipaddr.js": "2.2.0",
     "sharp": "0.35.5",
     "undici": "8.10.2",

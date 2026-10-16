@@ -4,7 +4,7 @@ Agreed on 2026-10-16. Eight features, each in its own PR, built in this order.
 Home Chat is for non-technical people on phones first: the model sets things up
 through conversation and questions, and the interface only shows and stops them.
 
-Status: PRs 1–3 (Home Screen app, push notifications, artifacts and reader view) merged and deployed. PR 4 (deep research) in review.
+Status: PRs 1–4 (Home Screen app, push notifications, artifacts and reader view, deep research) merged and deployed. PR 5 (routines) in review.
 
 ## Decisions
 
@@ -52,7 +52,7 @@ Status: PRs 1–3 (Home Screen app, push notifications, artifacts and reader vie
 How it works:
 
 - **Model tool.** A first-party Pi tool, `routine`, with actions list, create, update, pause, resume and delete. The model fills in a title, a self-contained prompt for future runs, and a structured schedule (`daily`, `weekdays`, `weekly` with days, `monthly` with day, `once` with date, all with a time). It uses `ask` to clarify and confirm ("Every day at 7:30, starting tomorrow — OK?") before calling create.
-- **Tool to server.** The tool runs inside the Pi process, so it calls the server over a separate internal listener on `127.0.0.1` (never published, never behind the tunnel) with a per-worker token passed at spawn. The server validates, scopes everything to the conversation's owner, and returns a plain result ("Saved. Next run: tomorrow 07:30").
+- **Tool to server.** The tool runs inside the Pi process, so it calls the server over a separate internal listener on `127.0.0.1` (never published, never behind the tunnel) with a per-worker token passed at spawn. Built as a Unix socket in the data directory instead of a loopback port: it is never routable, and it sidesteps the egress proxy settings that every outgoing request in the container follows. The server validates, scopes everything to the conversation's owner, and returns a plain result ("Saved. Next run: tomorrow 07:30").
 - **Storage.** `routines.json` on the data volume, written with the same atomic, synced write as conversations: id, owner, title, prompt, schedule, enabled, next run, last run and its outcome, and the routine's own conversation id.
 - **Scheduler.** Each schedule is stored as a cron expression plus the household time zone, and a cron library (e.g. `croner`) computes the next run, including daylight-saving changes. The server keeps one timer set for the earliest next run, with no polling, and re-arms it at startup, after every change and after every run. A host crontab or a cron daemon in the container is ruled out: the container is read-only with no daemon, and the model would have to edit the host's crontab. A due routine becomes a normal turn in its own conversation through the same admission path as a sent message, so it inherits saving, interruption recovery and limits. It waits in a queue while workers are busy or the owner has an active reply.
 - **Unattended runs.** Routine runs have no `ask` tool (nobody is watching) and no `routine` tool (routines never create routines). Each run adds a dated reply, marks the routine unread and sends a push.

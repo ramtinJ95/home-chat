@@ -5,7 +5,7 @@ import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import type { Question, QuestionMethod, ToolName } from './api.d.ts';
-import { ALLOWED_TOOLS, DEEP_RESEARCH_INSTRUCTIONS, POLICY_PREFIX, isAllowedTool, type ToolPolicy } from './policy.ts';
+import { ALLOWED_TOOLS, POLICY_PREFIX, composePrompt, isAllowedTool, type ToolPolicy, type TurnMode } from './policy.ts';
 
 const QUESTION_METHODS: readonly QuestionMethod[] = ['select', 'input', 'editor', 'confirm'];
 
@@ -27,7 +27,7 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   question?: Question | null;
   deadline?: NodeJS.Timeout;
   start(): Promise<void>;
-  prompt(message: string, images?: PromptImage[], deepResearch?: boolean): Promise<void>;
+  prompt(message: string, images?: PromptImage[], mode?: TurnMode): Promise<void>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
   stop(): void;
@@ -67,6 +67,8 @@ export function providerFailure(value: unknown): string {
 
 export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
   readonly directory: string;
+  // Added to Pi's environment: how its routine tool reaches the server (profile/routine.ts).
+  readonly env: Record<string, string>;
   readonly pending = new Map<string, Pending>();
   busy = false;
   closed = false;
@@ -75,9 +77,10 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
   policy?: ToolPolicy;
   child?: ChildProcessByStdio<Writable, Readable, null>;
 
-  constructor(directory: string) {
+  constructor(directory: string, env: Record<string, string> = {}) {
     super();
     this.directory = directory;
+    this.env = env;
   }
 
   async start(): Promise<void> {
@@ -91,7 +94,7 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
       '--model', process.env.HOME_CHAT_MODEL ?? 'gpt-6.1-sol', '--thinking', 'high',
       '--session', join(this.directory, 'pi-session.jsonl')];
     // Provider errors may include headers or payloads, so raw stderr is discarded, never forwarded or logged.
-    const child = this.child = spawn(process.execPath, args, {cwd, stdio: ['pipe', 'pipe', 'ignore']});
+    const child = this.child = spawn(process.execPath, args, {cwd, env: {...process.env, ...this.env}, stdio: ['pipe', 'pipe', 'ignore']});
     child.stdin.on('error', () => {});
     let buffer = '';
     child.stdout.setEncoding('utf8');
@@ -171,13 +174,11 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
     });
   }
 
-  async prompt(message: string, images: PromptImage[] = [], deepResearch = false): Promise<void> {
+  async prompt(message: string, images: PromptImage[] = [], mode: TurnMode = {}): Promise<void> {
     this.busy = true;
     try {
-      // Never interpret browser text as a Pi slash command or shell shortcut. The research note goes first, where the
-      // user's text can never be.
-      const note = deepResearch ? DEEP_RESEARCH_INSTRUCTIONS + '\n' : '';
-      await this.request('prompt', {message: note + 'Message from the user:\n' + message, images});
+      // The prefix means browser text is never read as a Pi slash command or shell shortcut.
+      await this.request('prompt', {message: composePrompt(message, mode), images});
     } catch (error) { this.busy = false; throw error; }
   }
 

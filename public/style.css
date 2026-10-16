@@ -188,6 +188,52 @@ svg { width: 20px; height: 20px; flex: none; }
 .chat-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
 /* A mouse reveals delete on the hovered or current row; touch and keyboard users always reach it. */
 .chat-item:hover .chat-delete, .chat-item.active .chat-delete, .chat-delete:focus-visible { opacity: 1; }
+/* Routines: their own list above Recent, a switch per routine, and delete behind a menu. */
+.routines { display: grid; }
+.routine-list { flex: none; max-height: 38vh; }
+.routine-open { display: grid; gap: 1px; }
+.routine-open strong { font-weight: inherit; overflow: hidden; text-overflow: ellipsis; }
+.routine-open span { font-size: 0.76rem; font-weight: 400; color: var(--muted); }
+.unread-dot { flex: none; width: 8px; height: 8px; margin: 0 2px 0 -4px; border-radius: 50%; background: var(--accent); }
+.switch { position: relative; flex: none; display: inline-grid; place-items: center; width: 44px; height: 34px; cursor: pointer; }
+.switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+.switch span {
+  width: 34px; height: 20px; border-radius: 999px; background: var(--line); position: relative; transition: background 160ms;
+}
+.switch span::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%;
+  background: var(--card); box-shadow: 0 1px 2px rgb(0 0 0 / 0.2); transition: transform 160ms var(--ease);
+}
+.switch input:checked + span { background: var(--accent); }
+.switch input:checked + span::after { transform: translateX(14px); }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row-menu { position: relative; flex: none; }
+.row-menu summary {
+  display: grid; place-items: center; width: 34px; height: 34px; margin-right: 2px; border-radius: 10px;
+  color: var(--muted); list-style: none; cursor: pointer;
+}
+.row-menu summary::-webkit-details-marker { display: none; }
+.row-menu summary:hover { background: var(--tint); color: var(--ink); }
+.row-menu .menu {
+  /* Fixed and placed by public/app.ts, so the scrolling list never cuts it off. */
+  position: fixed; z-index: 25; padding: 4px; border-radius: 12px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-lift);
+}
+.row-menu .menu button { padding: 10px 14px; border-radius: 9px; white-space: nowrap; color: var(--danger); font-size: 0.88rem; }
+.row-menu .menu button:hover { background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.routine-bar {
+  display: flex; align-items: center; gap: 10px; padding: 8px 28px;
+  border-bottom: 1px solid var(--line); background: var(--paper-deep); font-size: 0.85rem; color: var(--ink-soft);
+}
+.routine-bar > svg { width: 18px; height: 18px; color: var(--oak); }
+.routine-bar .routine-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.routine-bar .ghost { color: var(--danger); }
+.run-mark {
+  display: flex; align-items: center; gap: 8px; margin: 6px 0 18px;
+  font-size: 0.8rem; font-weight: 600; color: var(--muted);
+}
+.run-mark::before, .run-mark::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.run-mark svg { width: 16px; height: 16px; color: var(--oak); }
 .sidebar-foot {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 6px 0; border-top: 1px solid var(--line);
@@ -464,6 +510,7 @@ svg { width: 20px; height: 20px; flex: none; }
 .reader-body h3, .reader-body h4 { scroll-margin-top: 80px; }
 .reader-body h3 { font-size: 1.4rem; margin-top: 1.6em; }
 
+.toast.info { background: var(--ink); color: var(--paper); }
 .toast {
   position: fixed; left: 50%; bottom: 28px; z-index: 30; transform: translateX(-50%);
   max-width: min(92vw, 520px); padding: 12px 20px; border-radius: 14px;
@@ -509,6 +556,8 @@ svg { width: 20px; height: 20px; flex: none; }
   .dock { padding: 0 10px max(10px, env(safe-area-inset-bottom)); }
   .dock > .fineprint { display: none; }
   .notice { width: calc(100% - 24px); }
+  .routine-bar { padding: 6px 10px 6px 16px; flex-wrap: wrap; row-gap: 0; }
+  .routine-bar .routine-text { flex-basis: calc(100% - 120px); }
 }
 
 /* 44px touch targets wherever the pointer is a finger, whatever the window width. */
@@ -517,6 +566,8 @@ svg { width: 20px; height: 20px; flex: none; }
   .stop, .research-toggle { height: 44px; }
   .sidebar-foot .icon-button, .chat-delete { width: 44px; height: 44px; }
   .chat-delete { opacity: 1; }
+  .row-menu summary, .switch { width: 44px; height: 44px; }
+  .row-menu .menu button { padding: 13px 16px; }
   .chat-open, .sidebar-action button, .sidebar-action summary { padding: 13px 12px; }
   .question .option { padding: 11px 18px; }
   .reader-actions .ghost { padding: 12px 10px; }

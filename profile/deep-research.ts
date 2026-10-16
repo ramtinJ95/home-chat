@@ -75,6 +75,7 @@ function checkFilters(params: Params) {
 function failure(status: number, body: ExaResponse | undefined, text: string): string {
   const detail = (typeof body?.error === 'string' ? body.error : undefined) ?? clip(text, 600) ?? `HTTP ${status}`;
   if (status === 401) return `Exa authentication failed (${detail}). The Exa key on this Home Chat needs checking.`;
+  if (status === 402) return `Exa needs payment or more credits (${detail}). Research is unavailable until the account is topped up.`;
   if (status === 429) return `Exa rate limited the request (${detail}). Try again later.`;
   if (status >= 400 && status < 500) return `Exa rejected the request (${detail}). Check category and filter compatibility.`;
   return `Exa request failed (${detail}).`;
