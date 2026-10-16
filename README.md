@@ -131,7 +131,7 @@ Copy, Share and Download (a Markdown file); the back button or gesture
 returns to the conversation. When the model revises a document, every card
 of it opens the newest version.
 
-**Deep research** at the top of a conversation switches it into research
+**Deep research** beside the message box switches a conversation into research
 mode until it is switched off again. Each message then asks the model to
 research with Exa (`deep_research`) where the question needs it, and to
 finish with a sourced report saved as a document; ordinary chat is answered
