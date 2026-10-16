@@ -304,6 +304,7 @@ function setBusy(busy: boolean) {
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   ui.messages.classList.toggle('busy', busy);
+  ui.composer.classList.toggle('busy', busy);
   ui.activity.textContent = busy ? 'Thinking…' : '';
 }
 
@@ -753,7 +754,7 @@ async function refreshList(): Promise<ChatSummary[]> {
     remove.setAttribute('aria-label', `Delete “${item.title}”`);
     remove.append(icon('trash'));
     remove.onclick = () => deleteChat(item).catch(showError);
-    row.append(open, ...(item.unread ? [unreadDot()] : []), remove);
+    row.append(remove, open, ...(item.unread ? [unreadDot()] : []));
     return row;
   }));
   return list;

@@ -164,7 +164,8 @@ svg { width: 20px; height: 20px; flex: none; }
   margin: 10px 10px 0; font-size: 0.7rem; font-weight: 700;
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
 }
-.chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
+/* One column no wider than the list, so a long title ends in "…" instead of widening the list sideways. */
+.chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
 
 /* Search: while the box has words in it, results take the place of the lists under it. 16px text, so iOS does not zoom. */
 .search { position: relative; }
@@ -175,7 +176,7 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .search input:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .sidebar.searching #routines, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
-.search-results { flex: 1; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: 2px; }
+.search-results { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
 .search-result { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background 140ms; }
 .search-result:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .search-result strong { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -203,14 +204,14 @@ svg { width: 20px; height: 20px; flex: none; }
   text-align: left; font-size: 0.9rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* Delete leads the row, where a long title cannot push it out of sight. */
 .chat-delete {
-  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-right: 2px;
-  border-radius: 10px; color: var(--muted); opacity: 0; transition: opacity 140ms, color 140ms, background 140ms;
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-left: 4px;
+  border-radius: 10px; color: var(--muted); transition: color 140ms, background 140ms;
 }
+.chat-delete + .chat-open { padding-left: 4px; }
 .chat-delete svg { width: 17px; height: 17px; }
 .chat-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
-/* A mouse reveals delete on the hovered or current row; touch and keyboard users always reach it. */
-.chat-item:hover .chat-delete, .chat-item.active .chat-delete, .chat-delete:focus-visible { opacity: 1; }
 /* Routines: their own list above Recent, a switch per routine, and delete behind a menu. */
 .routines { display: grid; }
 .routine-list { flex: none; max-height: 38vh; }
@@ -218,6 +219,7 @@ svg { width: 20px; height: 20px; flex: none; }
 .routine-open strong { font-weight: inherit; overflow: hidden; text-overflow: ellipsis; }
 .routine-open span { font-size: 0.76rem; font-weight: 400; color: var(--muted); }
 .unread-dot { flex: none; width: 8px; height: 8px; margin: 0 2px 0 -4px; border-radius: 50%; background: var(--accent); }
+.chat-item > .unread-dot:last-child { margin-right: 14px; }
 .switch { position: relative; flex: none; display: inline-grid; place-items: center; width: 44px; height: 34px; cursor: pointer; }
 .switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .switch span {
@@ -287,9 +289,10 @@ svg { width: 20px; height: 20px; flex: none; }
   padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line);
   font-size: 0.72rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
 }
+/* In the composer row beside the picture and dictation buttons; filled while on. */
 .research-toggle {
-  flex: none; display: inline-flex; align-items: center; gap: 6px;
-  padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line);
+  flex: none; display: inline-flex; align-items: center; gap: 6px; height: 38px;
+  padding: 0 12px; border-radius: 999px; border: 1px solid var(--line);
   font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
   transition: background 160ms, color 160ms, border-color 160ms;
 }
@@ -609,6 +612,9 @@ svg { width: 20px; height: 20px; flex: none; }
   .notice { width: calc(100% - 24px); }
   .routine-bar { padding: 6px 10px 6px 16px; flex-wrap: wrap; row-gap: 0; }
   .routine-bar .routine-text { flex-basis: calc(100% - 120px); }
+  /* While a reply runs the switch is locked and Stop is wider than Send, so it keeps only its icon and leaves room for the activity line. */
+  .composer.busy .research-label { display: none; }
+  .composer.busy .research-toggle { padding: 0 11px; }
 }
 
 /* 44px touch targets wherever the pointer is a finger, whatever the window width. */
@@ -616,7 +622,6 @@ svg { width: 20px; height: 20px; flex: none; }
   .icon-button, .attach, .send { width: 44px; height: 44px; }
   .stop, .research-toggle { height: 44px; }
   .sidebar-foot .icon-button, .chat-delete { width: 44px; height: 44px; }
-  .chat-delete { opacity: 1; }
   .row-menu summary, .switch { width: 44px; height: 44px; }
   .row-menu .menu button { padding: 13px 16px; }
   .chat-open, .sidebar-action button, .sidebar-action summary, .search-result { padding: 13px 12px; }
