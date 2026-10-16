@@ -19,6 +19,8 @@ services:
       NO_PROXY: ""
       NODE_USE_ENV_PROXY: "1"
       PI_SKIP_VERSION_CHECK: "1"
+      # Deep research (Exa). Empty leaves the mode switched off and hidden in the app.
+      EXA_API_KEY: ${EXA_API_KEY:-}
     volumes: ["chat-data:/data"]
     tmpfs: ["/tmp:size=128m,mode=1777", "/run:size=8m,mode=755"]
     networks:

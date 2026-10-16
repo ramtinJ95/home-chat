@@ -21,6 +21,7 @@ const ui = {
   logout: $<HTMLButtonElement>('#logout'),
   modeBadge: $('#mode-badge'),
   title: $('#chat-title'),
+  research: $<HTMLButtonElement>('#research'),
   providerWarning: $('#provider-warning'),
   messages: $('#messages'),
   question: $('#question'),
@@ -51,6 +52,7 @@ const TOOL_ACTIVITY: Record<ToolName, string> = {
   web_run: 'Searching the web…',
   imagegen: 'Creating an image…',
   document: 'Writing a document…',
+  deep_research: 'Researching… this can take a few minutes',
 };
 const SUGGESTIONS = [
   {icon: 'compass', title: 'Plan something lovely', prompt: 'Help me plan something lovely for the weekend'},
@@ -269,6 +271,8 @@ function link(href: string, label?: string): Node {
 
 function setBusy(busy: boolean) {
   ui.send.disabled = busy;
+  // The switch applies from the next message, so it waits while a reply runs.
+  ui.research.disabled = busy;
   ui.send.hidden = busy;
   ui.stop.hidden = !busy;
   ui.messages.classList.toggle('busy', busy);
@@ -525,6 +529,9 @@ function renderChat(next: ChatSnapshot) {
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
   ui.title.textContent = next.title;
+  ui.research.hidden = !me?.deepResearch;
+  ui.research.setAttribute('aria-pressed', String(next.deepResearch));
+  ui.message.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
   setBusy(next.busy);
   streaming = undefined;
   ui.messages.replaceChildren(...(next.messages.length
@@ -826,6 +833,11 @@ ui.composer.onsubmit = async event => {
     if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
     dropAttachments(sent);
   } catch (error) { setBusy(false); showError(error); }
+};
+ui.research.onclick = async () => {
+  if (!chat) return;
+  try { renderChat(await api<ChatSnapshot>(`/api/chats/${chat.id}/research`, 'POST', {on: !chat.deepResearch})); }
+  catch (error) { showError(error); }
 };
 ui.stop.onclick = () => {
   if (chat) api(`/api/chats/${chat.id}/abort`, 'POST', {}).catch(showError);

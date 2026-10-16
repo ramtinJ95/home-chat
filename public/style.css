@@ -218,6 +218,16 @@ svg { width: 20px; height: 20px; flex: none; }
   padding: 6px 11px; border-radius: 999px; border: 1px solid var(--line);
   font-size: 0.72rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
 }
+.research-toggle {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 999px; border: 1px solid var(--line);
+  font-size: 0.8rem; font-weight: 600; color: var(--ink-soft); white-space: nowrap;
+  transition: background 160ms, color 160ms, border-color 160ms;
+}
+.research-toggle svg { width: 16px; height: 16px; }
+.research-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.research-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.research-toggle:disabled { opacity: 0.55; cursor: default; }
 .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
 
 .notice {
@@ -357,7 +367,8 @@ svg { width: 20px; height: 20px; flex: none; }
 
 /* Composer dock */
 
-.dock { width: min(100%, 808px); margin: 0 auto; padding: 0 24px max(14px, env(safe-area-inset-bottom)); display: grid; gap: 10px; }
+/* minmax(0, …) here and in .composer: a long status line is cut off rather than widening the page past the Stop button. */
+.dock { width: min(100%, 808px); margin: 0 auto; padding: 0 24px max(14px, env(safe-area-inset-bottom)); display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
 
 .question {
   padding: 18px 20px; border-radius: var(--radius);
@@ -380,7 +391,7 @@ svg { width: 20px; height: 20px; flex: none; }
 .question .ghost { margin-left: 4px; }
 
 .composer {
-  display: grid; gap: 6px; padding: 10px 10px 10px 16px;
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; padding: 10px 10px 10px 16px;
   border-radius: 24px; background: var(--card); border: 1px solid var(--line);
   box-shadow: var(--shadow-lift);
   transition: border-color 160ms, box-shadow 160ms;
@@ -503,7 +514,7 @@ svg { width: 20px; height: 20px; flex: none; }
 /* 44px touch targets wherever the pointer is a finger, whatever the window width. */
 @media (pointer: coarse) {
   .icon-button, .attach, .send { width: 44px; height: 44px; }
-  .stop { height: 44px; }
+  .stop, .research-toggle { height: 44px; }
   .sidebar-foot .icon-button, .chat-delete { width: 44px; height: 44px; }
   .chat-delete { opacity: 1; }
   .chat-open, .sidebar-action button, .sidebar-action summary { padding: 13px 12px; }

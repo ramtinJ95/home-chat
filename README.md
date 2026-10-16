@@ -1,10 +1,10 @@
 # Home Chat
 
 A private, mobile-friendly chat app for everyday questions, web search,
-image generation and documents. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+image generation, documents and deep research. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
 agent against a Codex subscription inside Docker. The model can only use
-four tools (`ask`, `web_run`, `imagegen`, `document`), can only reach OpenAI,
-and cannot run commands or read files.
+five tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`), can
+only reach OpenAI and Exa, and cannot run commands or read files.
 
 It runs in one of two modes:
 
@@ -130,6 +130,15 @@ Copy, Share and Download (a Markdown file); the back button or gesture
 returns to the conversation. When the model revises a document, every card
 of it opens the newest version.
 
+**Deep research** at the top of a conversation switches it into research
+mode until it is switched off again. Each message then asks the model to
+research with Exa (`deep_research`) where the question needs it, and to
+finish with a sourced report saved as a document; ordinary chat is answered
+as usual. A research reply may run for 20 minutes and use 30 tool calls,
+against 5 minutes and 12 calls otherwise, and each Exa call times out after
+90 seconds. The switch only appears when `EXA_API_KEY` is set in `.env`;
+compose passes it to the app. There are no spending caps on Exa.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -162,13 +171,13 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/document.test.ts test/policy.test.ts test/server.test.ts
+  --test test/access.test.ts test/document.test.ts test/policy.test.ts test/research.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the four tools
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the five tools
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
@@ -181,10 +190,12 @@ screenshots to the git-ignored `.local/` folder.
 
 - **Tools.** Pi starts with no built-in tools, extensions, skills or context
   files. `profile/extension.ts` drops every tool registration except `ask`,
-  `web_run`, `imagegen` and its own `document`, and validates tool input twice: at Pi's
+  `web_run`, `imagegen` and its own `document` and `deep_research`, and validates tool input twice: at Pi's
   `tool_call` hook and in the execute wrapper. The server refuses a worker
   whose registered and active tools don't match exactly. Each message allows
-  12 tool calls and 2 image generations. `document` only writes new files
+  12 tool calls (30 in deep research mode) and 2 image generations.
+  `deep_research` is refused unless the server's deep research note opens
+  the message, ahead of the user's text, which cannot imitate it. `document` only writes new files
   under the conversation's `documents/` folder (at most 100, 256 K characters
   each), and the server reads them back through the same path check.
 - **Input.** Browser text is always prefixed before reaching Pi, so it can
@@ -193,8 +204,8 @@ screenshots to the git-ignored `.local/` folder.
   upload; the server then decodes them, strips metadata, limits them to
   2048 px and re-encodes them as PNG.
 - **Network.** The app container's firewall allows only the egress proxy.
-  The proxy allows CONNECT to `chatgpt.com`, `api.openai.com` and
-  `auth.openai.com` on port 443, and to the browser push services (Apple,
+  The proxy allows CONNECT to `chatgpt.com`, `api.openai.com`,
+  `auth.openai.com` and `api.exa.ai` on port 443, and to the browser push services (Apple,
   Google, Mozilla and Microsoft's `*.notify.windows.com`). Only the server
   sends to the push services, never the model, and it accepts a device's push
   address only on those hosts. Notifications carry the conversation title and

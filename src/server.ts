@@ -9,11 +9,11 @@ import { PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson } from './files.ts';
 import { createPush } from './push.ts';
-import { ALLOWED_TOOLS, DOCUMENT_FILE, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
+import { ALLOWED_TOOLS, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
 interface StoredAsset { id: string; kind: AssetKind; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
-interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true }
+interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true }
 interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
@@ -26,6 +26,8 @@ export interface AppOptions {
   accessKeys?: AccessKeySource;
   // Sends push requests; tests replace it so nothing reaches a real push service.
   pushFetch?: typeof fetch;
+  // Whether deep research can run; by default, whether the Exa key is set.
+  deepResearch?: boolean;
 }
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
@@ -113,7 +115,8 @@ async function loadStaticFiles() {
   return new Map([...text, ...images]);
 }
 
-export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys, pushFetch}: AppOptions = {}) {
+export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys, pushFetch,
+  deepResearch: researchReady = Boolean(process.env.EXA_API_KEY?.trim())}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
   const deletedDirectory = join(data, 'deleted');
@@ -139,6 +142,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   const running = new Set<string>();
   const inflight = new Set<string>();
   const occupied = (id: string) => running.has(id) || inflight.has(id);
+  // The saved switch only counts while Exa is set up, so removing the key turns research off everywhere, visibly.
+  const researching = (chat: Chat) => researchReady && chat.deepResearch === true;
   const workDir = (chat: Chat) => join(chatsDirectory, chat.id, 'work');
   // Writes to one conversation run in order, so a slow earlier write never replaces a newer one. Each caller handles its
   // own write's failure, so the next write only waits for it.
@@ -172,7 +177,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
   // so Pi exiting or rejecting a prompt under a shutdown is never recorded as the turn's outcome.
   let stopping = false;
   const snapshot = (chat: Chat): ChatSnapshot => ({id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind, document}) => document ? {id, kind, document} : {id, kind}), busy: running.has(chat.id),
-    question: workers.get(chat.id)?.question ?? null});
+    question: workers.get(chat.id)?.question ?? null, deepResearch: researching(chat)});
   // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
   const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
   const emit = (id: string, event: StreamEvent) => {
@@ -341,7 +346,8 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
       const {session, sessionKey} = await authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
-        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local', tools: ALLOWED_TOOLS};
+        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local', tools: ALLOWED_TOOLS,
+          deepResearch: researchReady};
         return send(200, me);
       }
       if (path === '/api/push' && req.method === 'GET') {
@@ -481,9 +487,10 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           chat.messages.push({role: 'user', text: body.text, assets: selected.map(item => item.id)}, {role: 'assistant', text: '', assets: []});
           if (chat.title === 'New conversation') chat.title = body.text.slice(0, 55) || 'Picture conversation';
           chat.replying = true; running.add(chat.id); await publish(chat);
-          worker.deadline = setTimeout(() => worker.stop(), 5 * 60_000); worker.deadline.unref();
+          const deep = researching(chat);
+          worker.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deep ? 'deep' : 'normal'].minutes * 60_000); worker.deadline.unref();
           try {
-            await worker.prompt(body.text + (selected.length ? '\nAttached image paths (this conversation only):\n' + selected.map(item => item.path).join('\n') : ''), images);
+            await worker.prompt(body.text + (selected.length ? '\nAttached image paths (this conversation only):\n' + selected.map(item => item.path).join('\n') : ''), images, deep);
           } catch {
             worker.stop();
             await endTurn(chat, worker, 'Pi rejected this message; no reply was completed');
@@ -491,6 +498,16 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
           }
           return send(202, {ok: true});
         } finally { inflight.delete(chat.id); }
+      }
+      if (route === 'POST research') {
+        const body = await jsonBody(req, 1024);
+        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        if (body.on && !researchReady) throw fail(503, 'Deep research is not set up on this Home Chat');
+        // It applies from the next message; changing it during a reply would leave that reply's mode unclear.
+        if (occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
+        if (body.on) chat.deepResearch = true; else delete chat.deepResearch;
+        await publish(chat);
+        return send(200, snapshot(chat));
       }
       if (route === 'POST answer') {
         const body = await jsonBody(req, 16_000);
