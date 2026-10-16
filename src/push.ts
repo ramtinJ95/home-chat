@@ -1,8 +1,8 @@
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import webpush from 'web-push';
 import type { PushMessage, User } from './api.d.ts';
-import { atomicJson } from './files.ts';
+import { atomicJson, readJson, serialSave } from './files.ts';
 import type { PushSubscriptionInput } from './policy.ts';
 
 interface StoredSubscription extends PushSubscriptionInput { user: User }
@@ -10,11 +10,6 @@ interface VapidKeys { publicKey: string; privateKey: string }
 
 // More devices than a household has; the oldest goes first.
 const MAX_DEVICES = 10;
-
-async function readJson<T>(path: string): Promise<T | undefined> {
-  try { return JSON.parse(await readFile(path, 'utf8')) as T; }
-  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
-}
 
 // Web Push for every signed-in device. The VAPID key pair identifies this server to the push services; it is made on
 // first start and kept on the data volume, so subscriptions survive restarts and rebuilds.
@@ -26,9 +21,7 @@ export async function createPush(directory: string, subject: string, send: typeo
   if (!vapid) { vapid = webpush.generateVAPIDKeys(); await atomicJson(vapidPath, vapid); }
   const keys = vapid;
   let subscriptions = await readJson<StoredSubscription[]>(subscriptionsPath) ?? [];
-  let saving = Promise.resolve();
-  // Saves run in order, so a slow earlier save never replaces a newer list.
-  const save = () => (saving = saving.catch(() => {}).then(() => atomicJson(subscriptionsPath, subscriptions)));
+  const save = serialSave(subscriptionsPath, () => subscriptions);
 
   async function deliver(subscription: StoredSubscription, message: PushMessage): Promise<void> {
     // web-push only builds the encrypted, signed request; fetch sends it, so it goes through the egress proxy like

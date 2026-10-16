@@ -11,7 +11,7 @@ export interface AccessConfig {
   users: ReadonlyMap<string, User>;
 }
 
-export interface AccessIdentity { email: string; user: User; expires: number }
+interface AccessIdentity { email: string; user: User; expires: number }
 
 type AccessKey = JsonWebKey & {kid?: string};
 export type AccessKeySource = () => Promise<AccessKey[]>;
@@ -42,7 +42,7 @@ export function accessConfigFromEnv(env: NodeJS.ProcessEnv): AccessConfig {
   return {host, team, audience, users};
 }
 
-export function fetchAccessKeys(team: string): AccessKeySource {
+function fetchAccessKeys(team: string): AccessKeySource {
   return async () => {
     const response = await fetch(`https://${accessTeamHost(team)}/cdn-cgi/access/certs`, {signal: AbortSignal.timeout(10_000)});
     if (!response.ok) throw new Error(`Cloudflare Access keys unavailable (HTTP ${response.status})`);

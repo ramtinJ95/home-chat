@@ -76,7 +76,7 @@ function foldedMessage(message: Message): string {
   return folded;
 }
 
-export const queryWords = (query: string): string[] => [...new Set(foldText(query).split(/\s+/).filter(Boolean))];
+const queryWords = (query: string): string[] => [...new Set(foldText(query).split(/\s+/).filter(Boolean))];
 
 // Moves an index off the second half of a surrogate pair, so a snippet never splits an emoji.
 const whole = (text: string, index: number) => (index > 0 && index < text.length && /[\uDC00-\uDFFF]/.test(text[index]) ? index - 1 : index);

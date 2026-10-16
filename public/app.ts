@@ -117,6 +117,9 @@ let pushState: PushState = 'unsupported';
 
 let me: Me | undefined;
 let chat: ChatSnapshot | undefined;
+// The snapshot last drawn, as JSON, so the same one coming again is not drawn twice (update). Cleared by anything that
+// changes the page since: stream events, and a dropped stream, after which the next snapshot is drawn in full.
+let shown = '';
 let stream: EventSource | undefined;
 let attachments: Attachment[] = [];
 // The assistant reply currently receiving deltas; re-rendered at most every STREAM_RENDER_MS.
@@ -127,22 +130,16 @@ let dictation: Recognition | undefined;
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
 let following = true;
 
-function showError(error: unknown) {
-  ui.error.textContent = error instanceof Error ? error.message : String(error);
-  ui.error.classList.remove('info');
-  ui.error.hidden = false;
-  clearTimeout(errorTimer);
-  errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
-}
-
-// The same toast, for confirmations rather than failures.
-function showNotice(text: string) {
+// One toast, for failures and, styled as `info`, for confirmations.
+function toast(text: string, info: boolean) {
   ui.error.textContent = text;
-  ui.error.classList.add('info');
+  ui.error.classList.toggle('info', info);
   ui.error.hidden = false;
   clearTimeout(errorTimer);
   errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
 }
+const showError = (error: unknown) => toast(error instanceof Error ? error.message : String(error), false);
+const showNotice = (text: string) => toast(text, true);
 
 async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
@@ -164,8 +161,10 @@ async function api<T>(path: string, method = 'GET', body?: unknown, signal?: Abo
   return result as T;
 }
 
+// Buttons made here never submit a form; the composer's send button is the one that does, in index.html.
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
+  if (node instanceof HTMLButtonElement) node.type = 'button';
   if (className) node.className = className;
   if (text !== undefined) node.textContent = text;
   return node;
@@ -316,7 +315,6 @@ function renderEmpty(): HTMLElement {
   const suggestions = element('div', 'suggestions');
   for (const {icon: name, title, prompt} of SUGGESTIONS) {
     const button = element('button');
-    button.type = 'button';
     button.append(icon(name), element('strong', undefined, title), element('span', undefined, prompt));
     button.onclick = () => { cancelDictation(); ui.message.value = prompt; resizeComposer(); ui.message.focus(); };
     suggestions.append(button);
@@ -355,27 +353,19 @@ function stepCard(name: string, title: string, text: string, dismissKey: string,
   const actions = element('div', 'setup-actions');
   if (action) {
     const run = element('button', 'primary', action[0]);
-    run.type = 'button'; run.onclick = () => action[1]().catch(showError);
+    run.onclick = () => action[1]().catch(showError);
     actions.append(run);
   }
   const later = element('button', 'ghost', 'Not now');
-  later.type = 'button';
   later.onclick = () => { localStorage.setItem(dismissKey, '1'); renderSetup(); };
   actions.append(later);
   card.append(icon(name), copy, actions);
   return card;
 }
 
-function sidebarButton(name: string, label: string, run: () => Promise<void>): HTMLButtonElement {
-  const button = element('button');
-  button.type = 'button'; button.append(icon(name), label);
-  button.onclick = () => run().catch(showError);
-  return button;
-}
-
 function renderSetup() {
   ui.install.hidden = !installable();
-  if (installPrompt) ui.install.replaceChildren(sidebarButton('home', 'Install Home Chat', install));
+  if (installPrompt) ui.install.replaceChildren(actionButton('home', 'Install Home Chat', install));
   else {
     const help = element('details');
     const summary = element('summary');
@@ -385,8 +375,8 @@ function renderSetup() {
   }
   ui.notifications.hidden = pushState === 'unsupported';
   ui.notifications.replaceChildren(
-    pushState === 'on' ? sidebarButton('bell', 'Notifications on · Turn off', disableNotifications)
-    : pushState === 'off' ? sidebarButton('bell', 'Turn on notifications', enableNotifications)
+    pushState === 'on' ? actionButton('bell', 'Notifications on · Turn off', disableNotifications)
+    : pushState === 'off' ? actionButton('bell', 'Turn on notifications', enableNotifications)
     : element('p', undefined, 'Notifications are blocked. Allow them for this site in your browser settings.'));
   const empty = document.querySelector('.empty');
   if (!empty) return;
@@ -450,17 +440,18 @@ function runMark(label: string): HTMLElement {
   return mark;
 }
 
-// The last turn can be asked again, as it was or edited: a message the user sent and the reply to it (as on the server,
-// src/server.ts replaceable). Not while a reply runs or waits on a question.
-function redoable(snapshot: ChatSnapshot): boolean {
-  const [question, answer] = snapshot.messages.slice(-2);
-  return snapshot.messages.length >= 2 && !snapshot.busy && !snapshot.question
-    && question.role === 'user' && !question.run && question.delivery !== 'unknown' && answer.role === 'assistant' && !answer.run;
+async function copyText(text: string) {
+  try { await navigator.clipboard.writeText(text); } catch { throw new Error('Could not copy; select the text instead'); }
+}
+
+// Shared as text, which every share target takes (Messages, Mail, Notes). Closing the share sheet is no failure.
+async function shareText(data: ShareData, failure: string) {
+  try { await navigator.share(data); } catch (error) { if ((error as DOMException).name !== 'AbortError') throw new Error(failure); }
 }
 
 function actionButton(name: string, label: string, run: (button: HTMLButtonElement) => Promise<void>): HTMLButtonElement {
   const button = element('button');
-  button.type = 'button'; button.append(icon(name), label);
+  button.append(icon(name), label);
   button.onclick = () => run(button).catch(showError);
   return button;
 }
@@ -470,19 +461,11 @@ function messageActions(snapshot: ChatSnapshot, message: Message, index: number)
   const bar = element('div', 'message-actions');
   // A reply still streaming is not finished enough to copy.
   if (message.role === 'assistant' && message.text && !(last && snapshot.busy)) {
-    bar.append(actionButton('copy', 'Copy', async button => {
-      try { await navigator.clipboard.writeText(message.text); } catch { throw new Error('Could not copy; select the text instead'); }
-      button.lastChild!.textContent = 'Copied';
-    }));
-    // Shared as text, which every share target takes.
-    if (navigator.share) {
-      bar.append(actionButton('share', 'Share', () => navigator.share({text: message.text}).catch(error => {
-        if ((error as DOMException).name !== 'AbortError') throw new Error('Could not share this reply');
-      })));
-    }
+    bar.append(actionButton('copy', 'Copy', async button => { await copyText(message.text); button.lastChild!.textContent = 'Copied'; }));
+    if ('share' in navigator) bar.append(actionButton('share', 'Share', () => shareText({text: message.text}, 'Could not share this reply')));
   }
-  if (redoable(snapshot) && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
-  if (redoable(snapshot) && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
+  if (snapshot.redoable && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
+  if (snapshot.redoable && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
   return bar.childElementCount ? bar : undefined;
 }
 
@@ -544,7 +527,6 @@ function latestVersion(snapshot: ChatSnapshot, doc: string): AssetRef & {documen
 function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
   const latest = latestVersion(snapshot, info.doc);
   const card = element('button', 'document-card');
-  card.type = 'button';
   const text = element('span', 'document-text');
   const meta = latest.document.version === 1 ? 'Document'
     : latest.document.version === info.version ? `Version ${info.version}` : `Updated later · version ${latest.document.version}`;
@@ -595,7 +577,6 @@ async function openReader(chatId: string, asset: AssetRef & {document: DocumentI
   list.append(...headings.map(heading => {
     const item = element('li', heading.tagName === 'H4' ? 'sub' : undefined);
     const jump = element('button', undefined, heading.textContent ?? '');
-    jump.type = 'button';
     jump.onclick = () => { ui.readerContents.open = false; heading.scrollIntoView({behavior: 'smooth', block: 'start'}); };
     item.append(jump);
     return item;
@@ -633,10 +614,11 @@ async function openAbout() {
 function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
   if (chat?.id !== next.id) closeSheet();
-  if (editing && (editing.chat !== next.id || !redoable(next))) stopEditing();
+  if (editing && (editing.chat !== next.id || !next.redoable)) stopEditing();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
+  shown = JSON.stringify(next);
   ui.title.textContent = next.title;
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
@@ -651,6 +633,13 @@ function renderChat(next: ChatSnapshot) {
   // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
   if (sameChat) keepFollowing(); else scrollToEnd();
+}
+
+// Draws a snapshot unless it is the one already shown; true if it drew it.
+function update(next: ChatSnapshot): boolean {
+  if (JSON.stringify(next) === shown) return false;
+  renderChat(next);
+  return true;
 }
 
 function appendDelta(text: string) {
@@ -676,15 +665,16 @@ function routineSwitch(routine: RoutineSummary): HTMLElement {
   input.setAttribute('aria-label', `Run “${routine.title}”`);
   // A one-off that has run cannot be switched back on; asking the model gives it a new date.
   input.disabled = routine.next === 'Done';
-  input.onchange = () => setRoutine(routine, input.checked).catch(error => { input.checked = !input.checked; showError(error); });
+  input.onchange = () => setRoutine(routine.id, input.checked).catch(error => { input.checked = !input.checked; showError(error); });
   label.append(input, element('span'));
   return label;
 }
 
-async function setRoutine(routine: RoutineSummary, enabled: boolean) {
-  const changed = await api<RoutineSummary>(`/api/routines/${routine.id}`, 'POST', {enabled});
+async function setRoutine(id: string, enabled: boolean): Promise<RoutineSummary> {
+  const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(id)}`, 'POST', {enabled});
   if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
   await refreshList();
+  return changed;
 }
 
 async function deleteRoutine(routine: RoutineSummary) {
@@ -698,16 +688,14 @@ function renderRoutineBar(routine: RoutineSummary | null) {
   ui.routineBar.hidden = !routine;
   if (!routine) return ui.routineBar.replaceChildren();
   const remove = element('button', 'ghost', 'Delete routine');
-  remove.type = 'button';
   remove.onclick = () => deleteRoutine(routine).catch(showError);
-  const text = element('span', 'routine-text', `${routine.schedule} · ${routine.enabled || routine.next === 'Done' ? routine.next : 'Paused'}`);
+  const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
   ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), remove);
 }
 
 function routineRow(routine: RoutineSummary): HTMLElement {
   const row = element('div', routine.chat === chat?.id ? 'chat-item active' : 'chat-item');
   const open = element('button', 'chat-open routine-open');
-  open.type = 'button';
   open.append(element('strong', undefined, routine.title), element('span', undefined, routine.next));
   open.onclick = () => { setDrawer(false); openChat(routine.chat).catch(showError); };
   const menu = element('details', 'row-menu');
@@ -715,7 +703,6 @@ function routineRow(routine: RoutineSummary): HTMLElement {
   summary.setAttribute('aria-label', `More for “${routine.title}”`);
   summary.append(icon('more'));
   const remove = element('button', undefined, 'Delete routine');
-  remove.type = 'button';
   remove.onclick = () => { menu.open = false; deleteRoutine(routine).catch(showError); };
   const items = element('div', 'menu'); items.append(remove);
   menu.append(summary, items);
@@ -746,10 +733,8 @@ async function refreshList(): Promise<ChatSummary[]> {
   ui.chatList.replaceChildren(...list.filter(item => !item.routine).map(item => {
     const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
     const open = element('button', 'chat-open', item.title);
-    open.type = 'button';
     open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
     const remove = element('button', 'chat-delete');
-    remove.type = 'button';
     remove.title = 'Delete conversation';
     remove.setAttribute('aria-label', `Delete “${item.title}”`);
     remove.append(icon('trash'));
@@ -786,7 +771,6 @@ function runSearch(delay = 250) {
 
 function searchRow(result: SearchResult): HTMLButtonElement {
   const row = element('button', 'search-result');
-  row.type = 'button';
   row.append(element('strong', undefined, result.title));
   if (result.snippet) {
     const snippet = element('span', 'search-snippet');
@@ -834,7 +818,6 @@ async function deleteChat(item: ChatSummary) {
 async function openChat(id: string) {
   dropAttachments(attachments);
   await connect(id);
-  await refreshList();
 }
 
 // Bumped by every connect and by hiding the page, so a connect still waiting for its snapshot never opens a stream
@@ -849,28 +832,36 @@ async function connect(id: string) {
   const snapshot = await api<ChatSnapshot>(`/api/chats/${id}`);
   if (attempt !== connection) return;
   renderChat(snapshot);
-  if (document.hidden) return;
+  // The sidebar too, which may have changed while this page was elsewhere or hidden.
+  const listed = refreshList();
+  if (!document.hidden) listen(id);
+  await listed;
+}
+
+function listen(id: string) {
   stream = new EventSource(`/api/chats/${id}/events`);
   stream.onmessage = message => {
     const event = JSON.parse(message.data) as StreamEvent;
+    if (event.type !== 'snapshot') shown = '';
     switch (event.type) {
-      case 'snapshot': renderChat(event.chat); refreshList().catch(showError); break;
+      // The stream opens with the snapshot connect just drew, which is not drawn again.
+      case 'snapshot': if (update(event.chat)) refreshList().catch(showError); break;
       case 'delta': appendDelta(event.text); break;
       case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
     }
   };
-  stream.onerror = () => { ui.activity.textContent = 'Connection interrupted; reconnecting…'; };
+  stream.onerror = () => { shown = ''; ui.activity.textContent = 'Connection interrupted; reconnecting…'; };
 }
 
 // Regenerate, and edit and resend: the last message goes again, as it was or as edited, in place of the last turn.
-// The same pictures go with it.
-async function resend(text: string) {
+// The same pictures go with it, and any `added` while editing.
+async function resend(text: string, added: string[] = []) {
   if (!chat) return;
   const question = chat.messages.at(-2)!;
   setBusy(true);
-  try { await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: question.assets, replace: true}); }
+  try { await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: [...question.assets, ...added], replace: true}); }
   catch (error) { setBusy(false); throw error; }
 }
 
@@ -908,9 +899,7 @@ async function newChat() {
 
 // The Pause button on a routine's notification.
 async function pauseRoutine(id: string) {
-  const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(id)}`, 'POST', {enabled: false});
-  if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
-  await refreshList();
+  const changed = await setRoutine(id, false);
   showNotice(`Paused “${changed.title}”. Switch it back on in Routines.`);
 }
 
@@ -950,7 +939,6 @@ function dropAttachments(dropped: readonly Attachment[]) {
 function renderAttachments() {
   ui.attachments.replaceChildren(...attachments.map((attachment, index) => {
     const button = element('button');
-    button.type = 'button';
     button.setAttribute('aria-label', `Remove picture ${index + 1}`);
     const preview = element('img');
     preview.src = attachment.preview;
@@ -977,7 +965,6 @@ function showQuestion(question: Question | null) {
   };
   const option = (label: string, value: string | boolean) => {
     const button = element('button', 'option', label);
-    button.type = 'button';
     button.onclick = () => void respond(value);
     return button;
   };
@@ -995,13 +982,11 @@ function showQuestion(question: Question | null) {
     input.setAttribute('aria-label', question.title);
     const options = element('div', 'options');
     const submit = element('button', 'option', 'Reply');
-    submit.type = 'button';
     submit.onclick = () => void respond(input.value);
     options.append(submit);
     root.append(input, options);
   }
   const skip = element('button', 'ghost', 'Skip');
-  skip.type = 'button';
   skip.onclick = () => void respond('', true);
   root.lastElementChild?.append(skip);
 }
@@ -1131,9 +1116,7 @@ ui.composer.onsubmit = async event => {
     const edit = editing?.chat === chat.id ? editing : undefined;
     setBusy(true);
     if (edit) {
-      // Pictures added while editing go along with the message's own.
-      const question = chat.messages.at(-2)!;
-      await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: [...question.assets, ...sent.map(item => item.id)], replace: true});
+      await resend(text, sent.map(item => item.id));
       // The draft from before the edit comes back, unless the new turn's snapshot already ended the edit (renderChat);
       // an edit started since, perhaps in another conversation, is left alone.
       if (editing === edit) stopEditing();
@@ -1148,7 +1131,8 @@ ui.composer.onsubmit = async event => {
 ui.cancelEdit.onclick = () => stopEditing();
 ui.research.onclick = async () => {
   if (!chat) return;
-  try { renderChat(await api<ChatSnapshot>(`/api/chats/${chat.id}/research`, 'POST', {on: !chat.deepResearch})); }
+  // The stream may bring the same snapshot first.
+  try { update(await api<ChatSnapshot>(`/api/chats/${chat.id}/research`, 'POST', {on: !chat.deepResearch})); }
   catch (error) { showError(error); }
 };
 ui.stop.onclick = () => {
@@ -1195,7 +1179,7 @@ addEventListener('popstate', () => {
   hideSheet();
 });
 addEventListener('keydown', event => { if (event.key === 'Escape' && sheet) closeSheet(); });
-ui.aboutEntry.replaceChildren(sidebarButton('people', 'About us', openAbout));
+ui.aboutEntry.replaceChildren(actionButton('people', 'About us', openAbout));
 ui.aboutForm.onsubmit = async event => {
   event.preventDefault();
   // A second tap would send the same version again and be refused as a conflict.
@@ -1209,19 +1193,10 @@ ui.aboutForm.onsubmit = async event => {
   } catch (error) { showError(error); }
   finally { aboutSaving = false; }
 };
-ui.readerCopy.onclick = async () => {
-  try {
-    await navigator.clipboard.writeText(readerText);
-    ui.readerCopy.textContent = 'Copied';
-  } catch { showError('Could not copy; select the text instead'); }
-};
-// Shared as text, which every share target takes (Messages, Mail, Notes); download gives the .md file.
+ui.readerCopy.onclick = () => copyText(readerText).then(() => { ui.readerCopy.textContent = 'Copied'; }, showError);
+// Download gives the .md file.
 ui.readerShare.hidden = !navigator.share;
-ui.readerShare.onclick = () => {
-  navigator.share({title: ui.readerTitle.textContent ?? '', text: readerText}).catch(error => {
-    if ((error as DOMException).name !== 'AbortError') showError('Could not share this document');
-  });
-};
+ui.readerShare.onclick = () => shareText({title: ui.readerTitle.textContent ?? '', text: readerText}, 'Could not share this document').catch(showError);
 
 // The access-code form is only for local mode; under Cloudflare Access the user is already signed in.
 enter().catch(error => {

@@ -1,6 +1,5 @@
-import { readFile } from 'node:fs/promises';
 import type { MemoryView, User } from './api.d.ts';
-import { atomicJson } from './files.ts';
+import { atomicJson, readJson } from './files.ts';
 
 // "About us": short notes about the household that the model is told in every conversation (profile/extension.ts).
 // Each person has their own notes, and the shared ones belong to everyone: either user can read and change them.
@@ -8,7 +7,7 @@ export const MAX_NOTE = 300;
 export const MAX_NOTES = 30;
 
 // The memory tool's change (profile/memory.ts), unchecked.
-export interface ModelChange { action?: unknown; text?: unknown; shared?: unknown; replaces?: unknown }
+interface ModelChange { action?: unknown; text?: unknown; shared?: unknown; replaces?: unknown }
 interface Saved { version: number; people: Partial<Record<User, string[]>>; shared: string[] }
 
 // Thrown for a change that cannot be made as asked; the message goes back to the model or the settings page.
@@ -31,9 +30,7 @@ function notes(value: unknown): string[] {
 }
 
 export async function createMemory(path: string) {
-  let saved: Saved;
-  try { saved = JSON.parse(await readFile(path, 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; saved = {version: 0, people: {}, shared: []}; }
+  let saved = await readJson<Saved>(path) ?? {version: 0, people: {}, shared: []};
   // Changes run one at a time, each on the state the one before it left; a change counts once it is saved.
   let changing = Promise.resolve();
   const change = (apply: (next: Saved) => void): Promise<void> => {
@@ -101,4 +98,3 @@ export async function createMemory(path: string) {
     },
   };
 }
-export type MemoryStore = Awaited<ReturnType<typeof createMemory>>;

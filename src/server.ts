@@ -4,21 +4,24 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, chmod 
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetKind, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
+import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
 import { PiRejected, PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
-import { atomicJson } from './files.ts';
+import { atomicJson, readJson, serialSave } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
-import { ALLOWED_TOOLS, ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
-interface StoredAsset { id: string; kind: AssetKind; path: string; document?: DocumentInfo }
+interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
 // `unread`: a routine run arrived while nobody was looking; cleared when its owner opens the conversation.
 interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; unread?: true }
 interface RoutineRun { routine: Routine; scheduled: Date }
+// What a conversation is busy with, from a message's admission until its reply's end is saved, or during a delete.
+// `run`: the routine run being answered, with nobody watching. `deadline`: the reply's time limit.
+interface Turn { run?: RoutineRun; deadline?: NodeJS.Timeout }
 interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
@@ -44,8 +47,22 @@ class HttpError extends Error {
   constructor(status: number, message: string) { super(message); this.status = status; }
 }
 const fail = (status: number, message: string) => new HttpError(status, message);
+// Thrown by startTurn while the conversation, its owner or both workers are busy; a routine run waits and tries again.
+class Busy extends HttpError { constructor(message: string, status = 409) { super(status, message); } }
+// Thrown by startTurn for a turn that was admitted and then failed; its thread already says so.
+class TurnFailed extends HttpError { constructor(message: string) { super(503, message); } }
 // Thrown by startTurn for a routine run that was paused or replaced while its worker started; drainOnce settles it.
 class StaleRun extends Error {}
+const MAX_CHATS = 20;
+// The times in `log` for `key` within the last `ms`, for the rate limits. Older ones are dropped from the same list,
+// so a time pushed after a wait still lands in it, however many requests read it meanwhile.
+function recent<K>(log: Map<K, number[]>, key: K, ms: number): number[] {
+  let times = log.get(key);
+  if (!times) log.set(key, times = []);
+  const kept = times.findIndex(time => time > Date.now() - ms);
+  times.splice(0, kept === -1 ? times.length : kept);
+  return times;
+}
 const sse = (res: http.ServerResponse, event: StreamEvent) => res.write('data: ' + JSON.stringify(event) + '\n\n');
 const publicRoot = resolve(fileURLToPath(new URL('../public', import.meta.url)));
 
@@ -91,10 +108,8 @@ async function diskUsage(directory: string): Promise<number> {
 
 // Only hashes stay in memory; the plaintext codes are scoped to this call.
 async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
-  let access: Record<string, unknown>;
-  try { access = JSON.parse(await readFile(path, 'utf8')); }
-  catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  let access = await readJson<Record<string, unknown>>(path);
+  if (!access) {
     access = {owner: randomBytes(32).toString('base64url'), guest: randomBytes(32).toString('base64url')};
     await atomicJson(path, access);
   }
@@ -144,22 +159,25 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
   const workers = new Map<string, ChatWorker>();
+  // Each worker's token for the internal socket, which tells it the conversation a call comes from.
+  const tokens = new WeakMap<ChatWorker, string>();
   const streams = new Map<string, Set<StreamClient>>();
-  // `running`: a turn is visible to clients, until settle/failure. `inflight`: files are changing outside a visible turn
-  // (a message being admitted, a turn's final save, a delete).
-  const running = new Set<string>();
-  const inflight = new Set<string>();
-  const occupied = (id: string) => running.has(id) || inflight.has(id);
+  // A conversation in `turns` is occupied. Clients see a reply running while `chat.replying` is set, which is shorter: a
+  // message being admitted comes before, and the save of its end after. Each step removes only the entry it set, so
+  // it never releases a later one.
+  const turns = new Map<string, Turn>();
+  const occupied = (id: string) => turns.has(id);
+  const release = (id: string, turn: Turn) => { if (turns.get(id) === turn) turns.delete(id); };
+  const ownChats = (user: User) => [...chats.values()].filter(chat => chat.owner === user);
   // The saved switch only counts while Exa is set up, so removing the key turns research off everywhere, visibly.
   const researching = (chat: Chat) => researchReady && chat.deepResearch === true;
   const workDir = (chat: Chat) => join(chatsDirectory, chat.id, 'work');
-  // Writes to one conversation run in order, so a slow earlier write never replaces a newer one. Each caller handles its
-  // own write's failure, so the next write only waits for it.
-  const writes = new Map<string, Promise<void>>();
+  // One saver per conversation, which runs its saves in order (serialSave).
+  const savers = new Map<string, () => Promise<void>>();
   const save = (chat: Chat) => {
-    const write = (writes.get(chat.id) ?? Promise.resolve()).catch(() => {}).then(() => atomicJson(join(chatsDirectory, chat.id, 'chat.json'), chat));
-    writes.set(chat.id, write);
-    return write;
+    let saver = savers.get(chat.id);
+    if (!saver) savers.set(chat.id, saver = serialSave(join(chatsDirectory, chat.id, 'chat.json'), () => chat));
+    return saver();
   };
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
@@ -196,10 +214,10 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     else { queue.push({routine, scheduled}); void drainRuns(); }
   });
   const memory = await createMemory(join(data, 'memory.json'));
-  // The routine run each conversation is replying to, if any; such a turn has nobody watching.
-  const routineTurns = new Map<string, RoutineRun>();
+  const recordRun = ({routine, scheduled}: RoutineRun, outcome: 'done' | 'failed' | 'skipped') =>
+    routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
+  const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
   const internalSocket = join(data, 'internal.sock');
-  const workerTokens = new Map<string, {chat: string; worker: ChatWorker}>();
   // Routine runs per owner, for the daily budget. Kept in memory: a restart forgets the day's count.
   const runTimes = new Map<User, number[]>();
   const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
@@ -211,8 +229,10 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   };
   const snapshot = (chat: Chat): ChatSnapshot => {
     const routine = routines.byChat(chat.id);
-    return {id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, kind, document}) => document ? {id, kind, document} : {id, kind}),
-      busy: running.has(chat.id), question: workers.get(chat.id)?.question ?? null, deepResearch: researching(chat), routine: routine ? routineSummary(routine) : null};
+    const question = workers.get(chat.id)?.question ?? null;
+    return {id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, document}) => document ? {id, document} : {id}),
+      busy: chat.replying === true, question, redoable: !chat.replying && !question && !notRedoable(chat), deepResearch: researching(chat),
+      routine: routine ? routineSummary(routine) : null};
   };
   // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
   const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
@@ -233,20 +253,33 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     } catch { return false; }
   });
 
-  async function endTurn(chat: Chat, worker: ChatWorker, error?: string) {
+  // A new conversation, shown to anyone only once its record is saved. `full` is the error for an owner at MAX_CHATS.
+  async function createChat(owner: User, title: string, full: () => Error): Promise<Chat> {
+    if (ownChats(owner).length >= MAX_CHATS) throw full();
+    const chat: Chat = {id: randomUUID(), owner, title, messages: [], assets: []};
+    await mkdir(join(workDir(chat), 'uploads'), {recursive: true, mode: 0o700});
+    try { await save(chat); } catch (error) { await discardChat(chat); throw error; }
+    chats.set(chat.id, chat);
+    return chat;
+  }
+  async function discardChat(chat: Chat) {
+    chats.delete(chat.id); savers.delete(chat.id);
+    await rm(join(chatsDirectory, chat.id), {recursive: true, force: true});
+  }
+
+  async function endTurn(chat: Chat, error?: string) {
     if (stopping) return;
-    clearTimeout(worker.deadline);
+    const {run, deadline} = turns.get(chat.id) ?? {};
+    clearTimeout(deadline);
     const last = chat.messages.at(-1);
     if (error && last?.role === 'assistant') last.error = error;
     delete chat.replying;
-    const run = routineTurns.get(chat.id);
-    routineTurns.delete(chat.id);
     if (run && !watching(chat.id)) chat.unread = true;
-    // Clients see the turn end now, but the conversation stays in flight until it is saved, so a delete cannot remove the files under the save.
-    inflight.add(chat.id);
-    running.delete(chat.id); worker.busy = false;
-    try { await publish(chat); } finally { inflight.delete(chat.id); }
-    if (run) await routines.finished(run.routine, run.scheduled, error ? 'failed' : 'done').catch(() => console.warn('Could not save a routine run'));
+    // Clients see the turn end now, but the conversation stays occupied until it is saved, so a delete cannot remove the files under the save.
+    const saving: Turn = {};
+    turns.set(chat.id, saving);
+    try { await publish(chat); } finally { release(chat.id, saving); }
+    if (run) await recordRun(run, error ? 'failed' : 'done');
     if (!watching(chat.id)) {
       push.notify(chat.owner, run
         ? {title: run.routine.title, body: error ? 'This run stopped before it finished.' : 'New results are ready.', chat: chat.id, routine: run.routine.id}
@@ -259,16 +292,15 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   // `replace`: the message takes the place of the last turn (regenerate, or edit and resend), which Pi forgets first.
   async function startTurn(chat: Chat, text: string, {images = [], attached = [], run, replace = false}:
     {images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun; replace?: boolean} = {}) {
-    if (occupied(chat.id)) throw fail(409, 'A message is already running');
-    if ([...chats.values()].some(other => other.owner === chat.owner && occupied(other.id))) throw fail(409, 'One active conversation per user');
-    // Nothing else changes the conversation's messages while it is reserved, so this holds until the turn is admitted.
-    if (replace && !replaceable(chat)) throw fail(409, 'Only your last message and its reply can be redone');
-    if (replace && chat.messages.at(-2)!.delivery === 'unknown') {
-      throw fail(409, 'This message was cut off before Pi confirmed it, so it cannot be redone; send it again as a new message');
-    }
-    inflight.add(chat.id);
-    // A turn that was admitted and then could not start; it is ended after the reservation is released (below).
-    let failed: {worker: ChatWorker; message: string} | undefined;
+    if (occupied(chat.id)) throw new Busy('A message is already running');
+    if (ownChats(chat.owner).some(other => occupied(other.id))) throw new Busy('One active conversation per user');
+    // Nothing else changes the conversation's messages while it is occupied, so this holds until the turn is admitted.
+    const refused = replace && notRedoable(chat);
+    if (refused) throw fail(409, refused);
+    const turn: Turn = {run};
+    turns.set(chat.id, turn);
+    // Why a turn that was admitted could not start; it is ended once admission is over (below).
+    let failed: string | undefined;
     try {
       if (!await providerReady()) throw fail(503, 'Codex is not signed in to this isolated profile yet');
       if (chat.messages.length >= 200 || await diskUsage(data) > MAX_DATA - 40 * 1024 * 1024) throw fail(413, 'Prototype conversation or storage limit reached');
@@ -290,19 +322,19 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const deepResearch = run ? run.routine.deepResearch && researchReady : researching(chat);
       const due = run && runLabel(run.scheduled);
       // Saved as unknown before Pi gets it, so a restart before Pi confirms it leaves that on record (Message.delivery).
-      const asked: Message = {role: 'user', text, assets: attached.map(item => item.id), delivery: 'unknown', ...(run && {run: `${run.routine.title} · ${due}`})};
+      const asked: Message = {role: 'user', text, assets: attached.map(item => item.id), delivery: 'unknown', ...(run && {run: runTag(run)})};
       chat.messages.push(asked, {role: 'assistant', text: '', assets: []});
       if (chat.title === 'New conversation') chat.title = text.slice(0, 55) || 'Picture conversation';
-      if (run) routineTurns.set(chat.id, run);
-      chat.replying = true; running.add(chat.id); await publish(chat);
+      chat.replying = true;
+      try { await publish(chat); } catch { failed = 'Home Chat could not save this message, so it was not sent'; }
       // Recorded before Pi starts, so the run's own end, however quick, comes after it. Unrecorded, a restart would run
       // it again, so it does not start.
-      if (run) {
+      if (run && !failed) {
         try { await routines.started(run.routine, run.scheduled); }
-        catch { failed = {worker, message: 'Home Chat could not save this run, so it did not start'}; }
+        catch { failed = 'Home Chat could not save this run, so it did not start'; }
       }
       if (!failed) {
-        worker.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); worker.deadline.unref();
+        turn.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); turn.deadline.unref();
         try {
           await worker.prompt(text + (attached.length ? ATTACHED_NOTE + attached.map(item => item.path).join('\n') : ''), images,
             {deepResearch, routineRun: due});
@@ -312,33 +344,38 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
           // A timeout or exit leaves it unknown whether Pi recorded the message.
           const rejected = error instanceof PiRejected;
           if (rejected) asked.delivery = 'rejected';
-          failed = {worker, message: rejected ? 'Pi rejected this message; no reply was completed'
-            : 'Pi did not confirm this message; no reply was completed'};
+          failed = rejected ? 'Pi rejected this message; no reply was completed' : 'Pi did not confirm this message; no reply was completed';
         }
       }
-    } finally { inflight.delete(chat.id); }
-    // The turn still counts as running here, so nothing else is admitted in between. endTurn takes its own reservation
-    // while it saves, and one taken after it has ended is left alone.
+    } finally {
+      // A turn that clients saw stays occupied, so nothing else is admitted before endTurn.
+      if (!chat.replying) release(chat.id, turn);
+    }
     if (failed) {
-      await endTurn(chat, failed.worker, failed.message);
-      throw fail(503, failed.message);
+      // If even this save fails, the reply is on disk as running, which the next start reports, or not on disk at all.
+      await endTurn(chat, failed).catch(() => console.warn('Could not save a conversation'));
+      throw new TurnFailed(failed);
     }
   }
 
-  // The last turn can be asked again, as it was or edited: a message the user sent and the reply to it.
-  function replaceable(chat: Chat): boolean {
+  // Why the last turn cannot be asked again, as it was or edited; undefined when it can. It can when it is a message the
+  // user sent and the reply to it, and Pi confirmed the message.
+  function notRedoable(chat: Chat): string | undefined {
     const [question, answer] = chat.messages.slice(-2);
-    return chat.messages.length >= 2 && question.role === 'user' && !question.run && answer.role === 'assistant' && !answer.run;
+    if (!(chat.messages.length >= 2 && question.role === 'user' && !question.run && answer.role === 'assistant' && !answer.run)) {
+      return 'Only your last message and its reply can be redone';
+    }
+    if (question.delivery === 'unknown') return 'This message was cut off before Pi confirmed it, so it cannot be redone; send it again as a new message';
   }
 
   // A run that cannot happen leaves a dated note in its conversation, unless someone is using that conversation right now.
   async function skipRun({routine, scheduled}: RoutineRun, reason: string) {
     const chat = chats.get(routine.chat);
     if (chat && !occupied(chat.id)) {
-      chat.messages.push({role: 'assistant', text: '', assets: [], run: `${routine.title} · ${runLabel(scheduled)}`, error: `This run was skipped: ${reason}.`});
+      chat.messages.push({role: 'assistant', text: '', assets: [], run: runTag({routine, scheduled}), error: `This run was skipped: ${reason}.`});
       await publish(chat).catch(() => console.warn('Could not save a skipped routine run'));
     }
-    await routines.finished(routine, scheduled, 'skipped').catch(() => console.warn('Could not save a routine run'));
+    await recordRun({routine, scheduled}, 'skipped');
   }
 
   // Starts the queued runs that can start now; the rest wait for the next turn to end. One pass at a time, and a call
@@ -359,7 +396,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     // Paused while it waited: it does not run, and nothing is noted, since the user chose it.
     if (!run.routine.enabled) {
       dequeue(run);
-      await routines.finished(run.routine, run.scheduled, 'skipped').catch(() => console.warn('Could not save a routine run'));
+      await recordRun(run, 'skipped');
       return true;
     }
     return false;
@@ -373,22 +410,20 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (Date.now() - scheduled.getTime() > MISSED_GRACE_MS) {
         dequeue(run); await skipRun(run, 'Home Chat stayed busy for too long'); continue;
       }
-      const today = (runTimes.get(routine.owner) ?? []).filter(time => time > Date.now() - 24 * 60 * 60_000);
+      const today = recent(runTimes, routine.owner, 24 * 60 * 60_000);
       if (today.length >= MAX_RUNS_PER_DAY) {
         dequeue(run); await skipRun(run, `routines may run ${MAX_RUNS_PER_DAY} times a day`); continue;
       }
-      const before = chat.messages.length;
       try {
         await startTurn(chat, routine.prompt, {run});
         dequeue(run);
-        today.push(Date.now()); runTimes.set(routine.owner, today);
+        today.push(Date.now());
       } catch (error) {
         if (error instanceof StaleRun) { await dropped(run); continue; }
         // Busy (a reply is running, or both workers are): it waits. Anything else will not get better by waiting.
-        if (error instanceof HttpError && (error.status === 409 || error.status === 429)) continue;
+        if (error instanceof Busy) continue;
         dequeue(run);
-        // A run that was admitted and then failed has already recorded its failure in the thread.
-        if (chat.messages.length === before) await skipRun(run, error instanceof HttpError ? error.message : 'it could not start');
+        if (!(error instanceof TurnFailed)) await skipRun(run, error instanceof HttpError ? error.message : 'it could not start');
       }
     }
   }
@@ -403,7 +438,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const path = join(images, file);
       if (!/^ig_[0-9a-f]{32}(?:_\d+)?\.png$/.test(file) || known(path)) continue;
       await allowedImagePath(path, cwd);
-      found.push({id: randomUUID(), kind: 'generated', path});
+      found.push({id: randomUUID(), path});
     }
     const documents = join(cwd, 'documents');
     for (const file of await filesIn(documents)) {
@@ -411,7 +446,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const path = join(documents, file);
       if (!match || known(path)) continue;
       const {title} = await readDocument(path, cwd);
-      found.push({id: randomUUID(), kind: 'document', path, document: {doc: match[1], title, version: Number(match[2])}});
+      found.push({id: randomUUID(), path, document: {doc: match[1], title, version: Number(match[2])}});
     }
     chat.assets.push(...found);
     const last = chat.messages.at(-1);
@@ -423,18 +458,16 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     if (existing && !existing.closed) return existing;
     workers.delete(chat.id);
     if (workers.size >= 2) {
-      const idle = [...workers].find(([, worker]) => !worker.busy);
-      if (!idle) throw fail(429, 'Both chat workers are busy');
-      idle[1].stop(); workers.delete(idle[0]);
+      const idle = [...workers.keys()].find(id => !occupied(id));
+      if (!idle) throw new Busy('Both chat workers are busy', 429);
+      workers.get(idle)!.stop(); workers.delete(idle);
     }
-    // The token tells the internal socket which conversation a call comes from; it is good while this worker is.
     const token = randomBytes(32).toString('base64url');
     const worker = workerFactory(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_INTERNAL_TOKEN: token});
-    for (const [old, entry] of workerTokens) if (workers.get(entry.chat) !== entry.worker) workerTokens.delete(old);
-    workerTokens.set(token, {chat: chat.id, worker});
+    tokens.set(worker, token);
     const failTurn = (message: string) => {
       emit(chat.id, {type: 'error', message});
-      return endTurn(chat, worker, message);
+      return endTurn(chat, message);
     };
     worker.on('failure', message => { void failTurn(message).catch(() => worker.stop()); });
     let saveTimer: NodeJS.Timeout | undefined;
@@ -447,7 +480,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       // left to the turn's final save, which reports it.
       saveTimer ??= setTimeout(() => {
         saveTimer = undefined;
-        if (running.has(chat.id)) save(chat).catch(() => {});
+        if (chat.replying) save(chat).catch(() => {});
       }, 2000);
       saveTimer.unref();
     });
@@ -457,10 +490,10 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: 'Home Chat has a question for you.', chat: chat.id});
     });
     worker.on('settled', () => {
-      clearTimeout(worker.deadline);
+      clearTimeout(turns.get(chat.id)?.deadline);
       void (async () => {
         await collectGenerated(chat);
-        await endTurn(chat, worker);
+        await endTurn(chat);
       })().catch(() => failTurn('Could not persist the response'));
     });
     workers.set(chat.id, worker);
@@ -504,15 +537,12 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       }
       case 'create': {
         const prepared = routines.prepare(owner, body);
-        if ([...chats.values()].filter(item => item.owner === owner).length >= 20) {
-          throw new RoutineError('The user has 20 conversations, the most there can be; they need to delete one first');
-        }
         // The routine's own conversation, where its runs arrive. It is only kept if the routine is saved too.
-        const home: Chat = {id: randomUUID(), owner, title: prepared.title, messages: [], assets: []};
-        await mkdir(join(workDir(home), 'uploads'), {recursive: true, mode: 0o700});
+        const home = await createChat(owner, prepared.title,
+          () => new RoutineError(`The user has ${MAX_CHATS} conversations, the most there can be; they need to delete one first`));
         let routine;
-        try { await save(home); chats.set(home.id, home); routine = await routines.create(prepared, home.id); }
-        catch (error) { chats.delete(home.id); writes.delete(home.id); await rm(join(chatsDirectory, home.id), {recursive: true, force: true}); throw error; }
+        try { routine = await routines.create(prepared, home.id); }
+        catch (error) { await discardChat(home); throw error; }
         return `Saved “${routine.title}”: ${saved(routine)} Each run arrives in its own conversation, “${routine.title}”, with a notification.`;
       }
       case 'update': {
@@ -539,13 +569,14 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     const send = (status: number, value: unknown) => res.writeHead(status, jsonHeaders).end(JSON.stringify(value));
     try {
       const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
-      const entry = workerTokens.get(token);
-      const chat = entry && workers.get(entry.chat) === entry.worker && !entry.worker.closed ? chats.get(entry.chat) : undefined;
+      // A token is good while its worker is the conversation's current one.
+      const id = [...workers].find(([, worker]) => !worker.closed && tokens.get(worker) === token)?.[0];
+      const chat = id === undefined ? undefined : chats.get(id);
       if (!chat) return send(401, {error: 'This session cannot reach Home Chat'});
       // The household notes for the turn's instructions (profile/extension.ts), routine runs included.
       if (req.url === '/memory' && req.method === 'GET') return send(200, {text: memory.prompt(chat.owner)});
       if (req.method !== 'POST' || (req.url !== '/routine' && req.url !== '/memory')) return send(404, {error: 'Not found'});
-      if (routineTurns.has(chat.id)) return send(403, {error: 'Routines and household notes cannot be changed during a routine run'});
+      if (turns.get(chat.id)?.run) return send(403, {error: 'Routines and household notes cannot be changed during a routine run'});
       const body = await jsonBody(req, 16_000);
       if (req.url === '/routine') return send(200, {text: await routineAction(chat, body)});
       // The memory tool checks a change first, then asks the user, then makes it (profile/memory.ts).
@@ -585,9 +616,9 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       if (file) return send(200, file.body, {'Content-Type': file.type});
       if (path === '/api/login' && req.method === 'POST' && !access) {
         const ip = req.socket.remoteAddress ?? '';
-        const recent = (loginAttempts.get(ip) ?? []).filter(time => time > Date.now() - 15 * 60_000);
-        if (recent.length >= 5) throw fail(429, 'Too many attempts; wait 15 minutes');
-        recent.push(Date.now()); loginAttempts.set(ip, recent);
+        const attempts = recent(loginAttempts, ip, 15 * 60_000);
+        if (attempts.length >= 5) throw fail(429, 'Too many attempts; wait 15 minutes');
+        attempts.push(Date.now());
         const body = await jsonBody(req, 1024);
         if (typeof body.code !== 'string' || body.code.length > 128) throw fail(401, 'Invalid access code');
         const candidate = digest(body.code);
@@ -604,7 +635,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const {session, sessionKey} = await authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
-        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local', tools: ALLOWED_TOOLS,
+        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
           deepResearch: researchReady};
         return send(200, me);
       }
@@ -631,15 +662,14 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
-        const list: ChatSummary[] = [...chats.values()].filter(chat => chat.owner === session.user)
-          .map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
+        const list: ChatSummary[] = ownChats(session.user).map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
         return send(200, list);
       }
       if (path === '/api/search' && req.method === 'GET') {
         const query = url.searchParams.get('q') ?? '';
         if (query.length > MAX_QUERY) throw fail(400, `Search for at most ${MAX_QUERY} characters`);
         // Newest first, as the sidebar lists them. A search the app has replaced (its request closed) stops early.
-        const own = [...chats.values()].filter(chat => chat.owner === session.user).reverse();
+        const own = ownChats(session.user).reverse();
         const asker = new AbortController();
         res.once('close', () => asker.abort());
         let results: SearchResult[];
@@ -663,10 +693,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         return send(200, list);
       }
       if (path === '/api/chats' && req.method === 'POST') {
-        if ([...chats.values()].filter(chat => chat.owner === session.user).length >= 20) throw fail(429, 'Prototype limit: 20 conversations per user');
-        const chat: Chat = {id: randomUUID(), owner: session.user, title: 'New conversation', messages: [], assets: []};
-        await mkdir(join(workDir(chat), 'uploads'), {recursive: true, mode: 0o700});
-        await save(chat); chats.set(chat.id, chat);
+        const chat = await createChat(session.user, 'New conversation', () => fail(429, `Prototype limit: ${MAX_CHATS} conversations per user`));
         return send(201, snapshot(chat));
       }
       const parts = path.split('/').filter(Boolean);
@@ -696,18 +723,19 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         if (occupied(chat.id)) throw fail(409, 'Stop the current reply before deleting this conversation');
         const routine = routines.byChat(chat.id);
         if (routine) throw fail(409, `This conversation belongs to the routine “${routine.title}”; delete the routine first`);
-        // Held as in flight so no message, upload or second delete starts while the files move.
-        inflight.add(chat.id);
+        // Occupied so no message, upload or second delete starts while the files move.
+        const deleting: Turn = {};
+        turns.set(chat.id, deleting);
         try {
           workers.get(chat.id)?.stop(); workers.delete(chat.id);
           // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
-          chats.delete(chat.id); writes.delete(chat.id);
+          chats.delete(chat.id); savers.delete(chat.id);
           for (const client of streams.get(chat.id) ?? []) client.res.end();
           streams.delete(chat.id);
           await rm(removed, {recursive: true, force: true});
-        } finally { inflight.delete(chat.id); }
+        } finally { release(chat.id, deleting); }
         void drainRuns();
         return send(200, {ok: true});
       }
@@ -761,13 +789,13 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         const id = randomUUID();
         const path = join(workDir(chat), 'uploads', id + '.png');
         await writeFile(path, normalized, {mode: 0o600});
-        chat.assets.push({id, path, kind: 'upload'}); await save(chat);
-        const asset: AssetRef = {id, kind: 'upload'};
+        chat.assets.push({id, path}); await save(chat);
+        const asset: AssetRef = {id};
         return send(201, asset);
       }
       if (route === 'POST messages') {
-        const recent = (rates.get(session.user) ?? []).filter(time => time > Date.now() - 60 * 60_000);
-        if (recent.length >= 30) throw fail(429, 'Prototype limit: 30 messages per hour');
+        const sent = recent(rates, session.user, 60 * 60_000);
+        if (sent.length >= 30) throw fail(429, 'Prototype limit: 30 messages per hour');
         const body = await jsonBody(req);
         const assetIds = body.assets ?? [];
         if (typeof body.text !== 'string' || body.text.length > 12_000 || !Array.isArray(assetIds) || assetIds.length > 4) throw fail(400, 'Invalid message');
@@ -781,7 +809,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
           images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); attached.push(asset);
         }
         await startTurn(chat, body.text, {images, attached, replace: body.replace === true});
-        recent.push(Date.now()); rates.set(session.user, recent);
+        sent.push(Date.now());
         return send(202, {ok: true});
       }
       if (route === 'POST research') {
@@ -820,7 +848,7 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     routines.stop();
     internal.close(); internal.closeAllConnections();
     // Keep what has streamed so far; if this save fails, the `replying` flag saved with the message still marks it.
-    await Promise.allSettled([...running].flatMap(id => chats.get(id) ?? []).map(save));
+    await Promise.allSettled([...chats.values()].filter(chat => chat.replying).map(save));
     for (const worker of workers.values()) worker.stop();
     for (const clients of streams.values()) for (const client of clients) client.res.end();
     server.closeAllConnections();

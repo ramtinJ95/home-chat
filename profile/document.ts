@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { Type } from 'typebox';
 import { atomicJson } from '../src/files.ts';
-import { DOCUMENT_FILE, MAX_DOCUMENT_FILES, MAX_DOCUMENT_TEXT, MAX_DOCUMENT_TITLE, documentInput } from '../src/policy.ts';
+import { DOCUMENT_FILE, DOCUMENT_ID, MAX_DOCUMENT_FILES, MAX_DOCUMENT_TEXT, MAX_DOCUMENT_TITLE, documentInput } from '../src/policy.ts';
 
 // Each call writes a new file, documents/<doc>_v<n>.json, and never changes an earlier one. The server attaches new files
 // to the reply when the turn ends (src/server.ts), and the app shows the newest version of each document.
@@ -20,7 +20,7 @@ export const documentTool = defineTool({
   parameters: Type.Object({
     title: Type.String({maxLength: MAX_DOCUMENT_TITLE, description: 'Shown above the document; not repeated as a heading inside it'}),
     markdown: Type.String({maxLength: MAX_DOCUMENT_TEXT, description: 'The whole document, with ## headings for its sections'}),
-    revises: Type.Optional(Type.String({pattern: '^doc_[0-9a-f]{32}$', description: 'Id of an earlier document in this conversation'})),
+    revises: Type.Optional(Type.String({pattern: DOCUMENT_ID.source, description: 'Id of an earlier document in this conversation'})),
   }),
   execute(_id, params, _signal, _update, ctx) {
     const run = saving.then(() => save(params, ctx.cwd));

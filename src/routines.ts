@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { Cron } from 'croner';
-import type { RoutineSchedule, User, Weekday } from './api.d.ts';
-import { atomicJson } from './files.ts';
+import type { RoutineSchedule, User } from './api.d.ts';
+import { readJson, serialSave } from './files.ts';
+import { MAX_ROUTINE_PROMPT, MAX_ROUTINE_TITLE, WEEKDAYS } from './policy.ts';
 
 // Routines: prompts that run on a schedule, each into its own conversation. This module keeps routines.json and one
 // timer for the earliest next run; src/server.ts turns a due routine into a turn.
-export const TIME_ZONE = 'Europe/Stockholm';
-export const MAX_ROUTINES = 10;
+const TIME_ZONE = 'Europe/Stockholm';
+const MAX_ROUTINES = 10;
 export const MAX_RUNS_PER_DAY = 20;
 // A run missed by less than this (the app was down, or the run waited in the queue) still happens once; older ones
 // are skipped with a note in the routine's conversation.
@@ -34,9 +34,8 @@ export interface Routine {
   lastRun?: {at: string; outcome: 'running' | 'done' | 'failed' | 'skipped'};
 }
 
-export interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown }
+interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown }
 
-const WEEKDAYS: readonly Weekday[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 
 // Thrown for input the model can correct; the message goes back to it as the tool result.
@@ -109,10 +108,11 @@ export function describeSchedule(schedule: RoutineSchedule): string {
 const zoned = (options: Intl.DateTimeFormatOptions) => new Intl.DateTimeFormat('en-GB', {timeZone: TIME_ZONE, ...options});
 const calendarDay = (date: Date) => Date.parse(zoned({year: 'numeric', month: '2-digit', day: '2-digit'}).format(date).split('/').reverse().join('-'));
 const dateLabel = (date: Date) => zoned({weekday: 'long', day: 'numeric', month: 'long'}).format(date);
+const clock = (date: Date) => zoned({hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(date);
 
 // "Today 07:30", "Tomorrow 07:30", "Friday 07:30" within the week, then "Monday 3 November 07:30".
 export function whenLabel(date: Date, now = new Date()): string {
-  const time = zoned({hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(date);
+  const time = clock(date);
   const days = Math.round((calendarDay(date) - calendarDay(now)) / 86_400_000);
   if (days === 0) return `Today ${time}`;
   if (days === 1) return `Tomorrow ${time}`;
@@ -121,7 +121,7 @@ export function whenLabel(date: Date, now = new Date()): string {
 }
 
 // For a run's message: "Friday 17 October, 07:30".
-export const runLabel = (date: Date) => `${dateLabel(date)}, ${zoned({hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(date)}`;
+export const runLabel = (date: Date) => `${dateLabel(date)}, ${clock(date)}`;
 
 export const nextLabel = (routine: Routine, now = new Date()) =>
   !routine.nextRun ? 'Done' : !routine.enabled ? 'Paused' : whenLabel(new Date(routine.nextRun), now);
@@ -130,12 +130,8 @@ export const nextLabel = (routine: Routine, now = new Date()) =>
 // It is called once the routine's next run has moved on and the due run is saved as `pending`; started() or finished()
 // clears that.
 export async function createRoutines(path: string, due: (routine: Routine, scheduled: Date, late: boolean) => void) {
-  let routines: Routine[];
-  try { routines = JSON.parse(await readFile(path, 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; routines = []; }
-  let saving = Promise.resolve();
-  // Saves run in order, so a slow earlier save never replaces a newer list.
-  const save = () => (saving = saving.catch(() => {}).then(() => atomicJson(path, routines)));
+  let routines = await readJson<Routine[]>(path) ?? [];
+  const save = serialSave(path, () => routines);
   let timer: NodeJS.Timeout | undefined;
   let stopped = false;
 
@@ -203,7 +199,7 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       if (!next) throw new RoutineError('That time has already passed');
       if (input.deepResearch !== undefined && typeof input.deepResearch !== 'boolean') throw new RoutineError('deepResearch must be true or false');
       return {
-        id: randomUUID(), owner, title: text(input.title, 'title', 80), prompt: text(input.prompt, 'prompt', 4000), schedule, cron,
+        id: randomUUID(), owner, title: text(input.title, 'title', MAX_ROUTINE_TITLE), prompt: text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT), schedule, cron,
         enabled: true, deepResearch: input.deepResearch === true, nextRun: next.toISOString(),
       };
     },
@@ -216,8 +212,8 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
     async update(owner: User, id: unknown, input: RoutineInput, now = new Date()): Promise<Routine> {
       const routine = mine(owner, id);
       const changed = {...routine};
-      if (input.title !== undefined) changed.title = text(input.title, 'title', 80);
-      if (input.prompt !== undefined) changed.prompt = text(input.prompt, 'prompt', 4000);
+      if (input.title !== undefined) changed.title = text(input.title, 'title', MAX_ROUTINE_TITLE);
+      if (input.prompt !== undefined) changed.prompt = text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT);
       if (input.deepResearch !== undefined) {
         if (typeof input.deepResearch !== 'boolean') throw new RoutineError('deepResearch must be true or false');
         changed.deepResearch = input.deepResearch;
@@ -265,4 +261,3 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
     },
   };
 }
-export type RoutineStore = Awaited<ReturnType<typeof createRoutines>>;

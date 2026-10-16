@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessByStdio } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -23,10 +23,8 @@ export type WorkerEvents = {
 
 // The surface the server depends on; tests substitute a fake.
 export interface ChatWorker extends EventEmitter<WorkerEvents> {
-  busy: boolean;
   closed?: boolean;
   question?: Question | null;
-  deadline?: NodeJS.Timeout;
   start(): Promise<void>;
   prompt(message: string, images?: PromptImage[], mode?: TurnMode): Promise<void>;
   // Takes Pi back to before its last user message, if that message carried `text`; false when there was nothing to undo.
@@ -57,7 +55,7 @@ interface Pending { resolve: (value: unknown) => void; reject: (error: Error) =>
 
 const sameTools = (names: string[]) => JSON.stringify([...names].sort()) === JSON.stringify([...ALLOWED_TOOLS].sort());
 
-export function providerFailure(value: unknown): string {
+function providerFailure(value: unknown): string {
   const text = String(value ?? '');
   const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
   if (code) return `Subscription login needs refreshing (${code[0]})`;
@@ -76,10 +74,10 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
   // Added to Pi's environment: how its routine tool reaches the server (profile/routine.ts).
   readonly env: Record<string, string>;
   readonly pending = new Map<string, Pending>();
+  // From a prompt until Pi settles; an exit meanwhile fails the turn.
   busy = false;
   closed = false;
   question: Question | null = null;
-  deadline?: NodeJS.Timeout;
   policy?: ToolPolicy;
   child?: ChildProcessByStdio<Writable, Readable, null>;
 
@@ -192,20 +190,16 @@ export class PiWorker extends EventEmitter<WorkerEvents> implements ChatWorker {
   }
 
   async rewind(text: string): Promise<boolean> {
-    // The extension's command (profile/extension.ts) reports its outcome as a notify message.
-    let listener: ((outcome: string) => void) | undefined;
-    const reported = new Promise<string>(resolve => { listener = resolve; this.once('rewind', resolve); });
-    let timer: NodeJS.Timeout | undefined;
-    const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Pi did not confirm going back')), 30_000); });
-    // Handled here too, so it never counts as unhandled while the request is still being answered.
-    late.catch(() => {});
-    try {
-      // Sent without the user prefix, so Pi runs it as the command.
-      await this.request('prompt', {message: `/${REWIND_COMMAND} ${JSON.stringify(text)}`});
-      const outcome = await Promise.race([reported, late]);
-      if (outcome !== 'rewound' && outcome !== 'unchanged') throw new Error('Pi would not go back');
-      return outcome === 'rewound';
-    } finally { clearTimeout(timer); this.off('rewind', listener!); }
+    // The extension's command (profile/extension.ts) reports its outcome as a notify message. Listened for before the
+    // command is sent, and handled here too, so a timeout while the request is still being answered is never unhandled.
+    const reported = once(this, 'rewind', {signal: AbortSignal.timeout(30_000)});
+    reported.catch(() => {});
+    // Sent without the user prefix, so Pi runs it as the command.
+    await this.request('prompt', {message: `/${REWIND_COMMAND} ${JSON.stringify(text)}`});
+    let outcome: string;
+    try { [outcome] = await reported; } catch { throw new Error('Pi did not confirm going back'); }
+    if (outcome !== 'rewound' && outcome !== 'unchanged') throw new Error('Pi would not go back');
+    return outcome === 'rewound';
   }
 
   answer(id: string, value: unknown, cancelled = false): void {

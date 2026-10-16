@@ -1,8 +1,8 @@
 // The service worker: shows Home Chat's push notifications and opens the conversation when one is tapped.
-// A classic script, so it has no imports; the payload matches PushMessage in src/api.d.ts.
+// A classic script, so it has no import statements; an inline import type adds nothing to the output.
 {
   const worker = self as unknown as ServiceWorkerGlobalScope;
-  interface PushMessage { title: string; body: string; chat?: string; routine?: string }
+  type PushMessage = import('../src/api.d.ts').PushMessage;
 
   worker.addEventListener('install', () => { void worker.skipWaiting(); });
   worker.addEventListener('activate', event => event.waitUntil(worker.clients.claim()));
