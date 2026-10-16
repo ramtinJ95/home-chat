@@ -87,9 +87,22 @@ async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
 }
 
 async function loadStaticFiles() {
-  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'], ['/style.css', 'style.css', 'text/css']];
-  return new Map(await Promise.all(files.map(async ([path, file, type]) =>
-    [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const)));
+  const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'],
+    ['/style.css', 'style.css', 'text/css'], ['/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json'],
+    ['/icon.svg', 'icon.svg', 'image/svg+xml']];
+  const text = await Promise.all(files.map(async ([path, file, type]) =>
+    [path, {body: await readFile(join(publicRoot, file)), type: type + '; charset=utf-8'}] as const));
+  // Home Screen icons are drawn from the one SVG at startup. Apple and maskable icons stay full-bleed because the
+  // system cuts them to shape; the plain ones get their own rounded corners.
+  const svg = await readFile(join(publicRoot, 'icon.svg'));
+  const icon = (size: number) => sharp(svg).resize(size, size).png().toBuffer();
+  const rounded = async (size: number) => sharp(await icon(size))
+    .composite([{input: Buffer.from(`<svg width="${size}" height="${size}"><rect width="${size}" height="${size}" rx="${size * 0.22}"/></svg>`), blend: 'dest-in'}])
+    .png().toBuffer();
+  const icons = [['/icons/apple-touch-icon.png', icon(180)], ['/icons/maskable-512.png', icon(512)],
+    ['/icons/icon-192.png', rounded(192)], ['/icons/icon-512.png', rounded(512)]] as const;
+  const images = await Promise.all(icons.map(async ([path, body]) => [path, {body: await body, type: 'image/png'}] as const));
+  return new Map([...text, ...images]);
 }
 
 export async function createApp({data = '/data', workerFactory = dir => new PiWorker(dir), authenticatedProvider, access, accessKeys}: AppOptions = {}) {
@@ -268,7 +281,7 @@ export async function createApp({data = '/data', workerFactory = dir => new PiWo
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
     res.setHeader('X-Frame-Options', 'DENY');
-    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
+    res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
     try {
