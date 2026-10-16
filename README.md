@@ -107,6 +107,15 @@ The owner and guest emails in `.env` decide who is which account; anyone else
 is refused even if the Access policy were to let them through. Sign out ends
 the Cloudflare session too.
 
+### On phones
+
+Home Chat can live on the Home Screen and open full screen like an app. Edge,
+Chrome and Android offer an **Install** button on the welcome screen; on an
+iPhone or iPad, tap Share in the browser (in Safari it can be under ···), then
+**Add to Home Screen**. The sidebar keeps the same option after "Not now". An
+installed app can keep its own cookies apart from the browser, so it may ask
+for Google sign-in again the first time it opens.
+
 ## Develop
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
@@ -128,7 +137,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI on port 443 |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/` | Pi extension that filters tool registration, plus the system prompt |
-| `public/` | Single-page UI (HTML, CSS, `app.ts`, and `theme.ts` for the light/dark choice) |
+| `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), Home Screen manifest and `icon.svg`, which the server renders into the app icons |
 | `scripts/` | Container entrypoint, login helpers and environment checks |
 
 The image builds and type-checks everything. Run the test suite inside it

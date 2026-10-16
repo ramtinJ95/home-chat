@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed on purpose: iOS and maskable icons are cut to shape by the system; src/server.ts rounds the rest. -->
+  <defs>
+    <linearGradient id="wash" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8678c4"/>
+      <stop offset="1" stop-color="#5d4f94"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#wash)"/>
+  <!-- The sidebar leaf (index.html #leaf), scaled to sit inside the maskable safe zone. -->
+  <path transform="translate(106 118) scale(12)" d="M5 19c0-8 5-14 15-15-1 10-7 15-15 15Zm0 0c3-4 6-7 10-9"
+    fill="none" stroke="#faf7f2" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

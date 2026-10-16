@@ -32,6 +32,7 @@ const ui = {
   activity: $('#activity'),
   stop: $<HTMLButtonElement>('#stop'),
   send: $<HTMLButtonElement>('#send'),
+  install: $('#install'),
   error: $('#error'),
 };
 
@@ -68,6 +69,15 @@ interface Recognition {
 // Safari and Chrome only (Firefox has none), and the speech is transcribed by the browser's own service, not Home Chat.
 const speech = window as unknown as {SpeechRecognition?: new () => Recognition; webkitSpeechRecognition?: new () => Recognition};
 const Recognizer = speech.SpeechRecognition ?? speech.webkitSpeechRecognition;
+
+// Adding to the Home Screen: Chromium browsers (Edge, Chrome, Android) hand over a prompt the page can show; iPhone and
+// iPad only install through the browser's Share sheet, so they get instructions instead. Neither is in TypeScript's DOM.
+interface InstallPrompt extends Event { prompt(): Promise<void> }
+const INSTALL_DISMISSED = 'home-chat-install-dismissed';
+const appleDevice = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+const installed = () => matchMedia('(display-mode: standalone)').matches || (navigator as {standalone?: boolean}).standalone === true;
+let installPrompt: InstallPrompt | undefined;
+const installable = () => !installed() && (appleDevice || installPrompt !== undefined);
 
 let me: Me | undefined;
 let chat: ChatSnapshot | undefined;
@@ -232,9 +242,63 @@ function renderEmpty(): HTMLElement {
     icon('leaf', 'leaf'),
     element('h2', undefined, 'What shall we explore?'),
     element('p', undefined, 'A question, a picture, a half-formed idea. This is your space to make sense of things.'),
+    // Above the suggestions, so a phone shows it without scrolling.
+    ...[installCard()].filter(card => card !== undefined),
     suggestions,
   );
   return empty;
+}
+
+const APPLE_INSTALL_STEPS = 'Tap Share in your browser (in Safari it can be under ···), then Add to Home Screen.';
+
+// The welcome screen's card, until someone installs or chooses "Not now"; the sidebar keeps a quieter way back.
+function installCard(): HTMLElement | undefined {
+  if (!installable() || localStorage.getItem(INSTALL_DISMISSED)) return;
+  const card = element('div', 'install-card');
+  const text = element('div', 'install-text');
+  text.append(element('strong', undefined, 'Keep Home Chat on your Home Screen'),
+    element('span', undefined, installPrompt ? 'It opens like an app, full screen and one tap away.' : APPLE_INSTALL_STEPS));
+  const actions = element('div', 'install-actions');
+  if (installPrompt) {
+    const add = element('button', 'primary', 'Install');
+    add.type = 'button'; add.onclick = () => install().catch(showError);
+    actions.append(add);
+  }
+  const later = element('button', 'ghost', 'Not now');
+  later.type = 'button';
+  later.onclick = () => { localStorage.setItem(INSTALL_DISMISSED, '1'); card.remove(); };
+  actions.append(later);
+  card.append(icon('home'), text, actions);
+  return card;
+}
+
+function renderInstall() {
+  ui.install.replaceChildren();
+  ui.install.hidden = !installable();
+  if (ui.install.hidden) { document.querySelector('.install-card')?.remove(); return; }
+  if (installPrompt) {
+    const add = element('button');
+    add.type = 'button'; add.append(icon('home'), 'Install Home Chat');
+    add.onclick = () => install().catch(showError);
+    ui.install.append(add);
+  } else {
+    const help = element('details');
+    const summary = element('summary');
+    summary.append(icon('home'), 'Add to Home Screen');
+    help.append(summary, element('p', undefined, APPLE_INSTALL_STEPS));
+    ui.install.append(help);
+  }
+  const empty = document.querySelector('.empty');
+  if (empty && !empty.querySelector('.install-card')) { const card = installCard(); if (card) empty.querySelector('.suggestions')?.before(card); }
+}
+
+async function install() {
+  const prompt = installPrompt;
+  if (!prompt) return;
+  // A prompt can be shown once; Chromium offers a new one later if it was declined.
+  installPrompt = undefined;
+  await prompt.prompt();
+  renderInstall();
 }
 
 function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean): HTMLElement {
@@ -512,6 +576,9 @@ ui.loginForm.onsubmit = async event => {
   } catch (error) { showError(error); }
 };
 ui.newChat.onclick = () => newChat().catch(showError);
+addEventListener('beforeinstallprompt', event => { event.preventDefault(); installPrompt = event as InstallPrompt; renderInstall(); });
+addEventListener('appinstalled', () => { installPrompt = undefined; renderInstall(); });
+renderInstall();
 ui.openSidebar.onclick = () => setDrawer(true);
 ui.closeSidebar.onclick = () => setDrawer(false);
 ui.scrim.onclick = () => setDrawer(false);

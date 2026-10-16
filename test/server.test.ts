@@ -34,7 +34,7 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
 }
 
 interface RequestOptions { method?: string; body?: unknown; cookie?: string; csrf?: string; headers?: Record<string, string> }
-interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string> }
+interface TestResponse { status: number; headers: Headers; json(): Promise<any>; text(): Promise<string>; bytes(): Promise<Buffer> }
 
 // Passing `data` from an earlier fixture starts a second app on the same volume, as a container restart would.
 async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<AppOptions, 'access' | 'accessKeys' | 'data'> = {}) {
@@ -51,9 +51,9 @@ async function fixture(ready = true, {access, accessKeys, data: existing}: Pick<
         const chunks: Buffer[] = [];
         response.on('data', (chunk: Buffer) => chunks.push(chunk));
         response.on('end', () => {
-          const text = Buffer.concat(chunks).toString('utf8');
+          const bytes = Buffer.concat(chunks); const text = bytes.toString('utf8');
           const responseHeaders = new Headers(Object.entries(response.headers).map(([key, value]): [string, string] => [key, Array.isArray(value) ? value.join('; ') : value ?? '']));
-          resolve({status: response.statusCode ?? 0, headers: responseHeaders, json: async () => JSON.parse(text), text: async () => text});
+          resolve({status: response.statusCode ?? 0, headers: responseHeaders, json: async () => JSON.parse(text), text: async () => text, bytes: async () => bytes});
         });
       });
       request.on('error', reject);
@@ -174,6 +174,25 @@ test('a crash mid-reply or mid-creation is recovered when the app comes back', a
       await assert.rejects(access(unfinished));
       assert.equal((await (await restarted.request('/api/chats', again)).json()).length, 1);
     } finally { await restarted.app.stop(); }
+  } finally { await f.close(); }
+});
+test('the Home Screen manifest and every icon it names are served', async () => {
+  const f = await fixture();
+  try {
+    const manifest = await f.request('/manifest.webmanifest');
+    assert.equal(manifest.status, 200); assert.match(manifest.headers.get('content-type') ?? '', /^application\/manifest\+json/);
+    const {display, start_url: start, icons} = await manifest.json();
+    assert.equal(display, 'standalone'); assert.equal(start, '/');
+    assert.ok(icons.some((item: {purpose: string}) => item.purpose === 'maskable'));
+    const apple = (await (await f.request('/')).text()).match(/rel="apple-touch-icon" href="([^"]+)"/)?.[1];
+    assert.ok(apple);
+    for (const {src, sizes} of [...icons, {src: apple, sizes: '180x180'}]) {
+      const response = await f.request(src);
+      assert.equal(response.status, 200, src); assert.equal(response.headers.get('content-type'), 'image/png');
+      const {width, height, format} = await sharp(await response.bytes()).metadata();
+      assert.equal(`${width}x${height}`, sizes); assert.equal(format, 'png');
+    }
+    assert.match((await f.request('/')).headers.get('content-security-policy') ?? '', /manifest-src 'self'/);
   } finally { await f.close(); }
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {
