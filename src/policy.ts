@@ -1,15 +1,15 @@
 import { realpath, stat } from 'node:fs/promises';
 import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
-import type { ToolName, User } from './api.d.ts';
+import type { ToolName, User, Weekday } from './api.d.ts';
 
 export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory'] as const satisfies readonly ToolName[]);
-export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
+const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (profile/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
 // Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
 // endpoints are numbered hosts such as wns2-par02p.notify.windows.com. Only the server sends to them, never the model.
-export const PUSH_HOSTS = new Set(['web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com']);
+const PUSH_HOSTS = new Set(['web.push.apple.com', 'fcm.googleapis.com', 'updates.push.services.mozilla.com']);
 export const pushServiceHost = (host: string) => PUSH_HOSTS.has(host) || /^[a-z0-9-]+\.notify\.windows\.com$/.test(host);
 // A memory backstop, not a user-facing limit: the browser shrinks pictures to 2048 px first, and even an
 // incompressible 2048 px PNG, uploaded or re-encoded, stays under this.
@@ -23,9 +23,13 @@ export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
 export const MAX_DOCUMENT_TITLE = 200;
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_FILES = 100;
+// Routines (src/routines.ts), here so the routine tool's schema (profile/routine.ts) states the same limits.
+export const WEEKDAYS: readonly Weekday[] = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
+export const MAX_ROUTINE_TITLE = 80;
+export const MAX_ROUTINE_PROMPT = 4000;
 // What the server tells Pi about a turn. Its notes open the prompt, ahead of USER_PREFIX; the user's text only ever follows
 // it, so it cannot add or imitate a note. profile/extension.ts reads the notes back to set the turn's tools and limits.
-export const USER_PREFIX = 'Message from the user:\n';
+const USER_PREFIX = 'Message from the user:\n';
 export const DEEP_RESEARCH_NOTE = 'Deep research mode is on for this message.';
 const DEEP_RESEARCH_INSTRUCTIONS = DEEP_RESEARCH_NOTE + ` If the message needs research, use deep_research heavily:
 several calls covering different angles, with mode deep-reasoning for ambiguous, conflicting or judgment-heavy questions.
@@ -147,7 +151,7 @@ export async function allowedDocumentPath(path: string, cwd: string): Promise<st
   return full;
 }
 
-export interface DocumentInput { title: string; markdown: string; revises?: string }
+interface DocumentInput { title: string; markdown: string; revises?: string }
 // Checks the tool's input and, without `revises`, a stored document read back by the server.
 export function documentInput(value: unknown): DocumentInput {
   const title = field(value, 'title'); const markdown = field(value, 'markdown'); const revises = field(value, 'revises');

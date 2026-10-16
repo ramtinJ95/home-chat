@@ -1,16 +1,17 @@
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
+import { MAX_NOTE } from '../src/memory.ts';
 import { callServer } from './internal.ts';
 
 // The household notes ("About us") live on the server (src/memory.ts). Nothing is saved without the user's yes: the
 // tool asks them itself, after the server has checked that the change can be made.
 const parameters = Type.Object({
   action: StringEnum(['remember', 'forget'] as const),
-  text: Type.String({maxLength: 300,
+  text: Type.String({maxLength: MAX_NOTE,
     description: 'One short fact, e.g. "Vegetarian, but eats fish". To forget a note, copy it exactly as written in About us'}),
   shared: Type.Optional(Type.Boolean({description: 'About the whole household rather than this person, e.g. the city it is in'})),
-  replaces: Type.Optional(Type.String({maxLength: 300, description: 'A note this one updates, copied exactly as written'})),
+  replaces: Type.Optional(Type.String({maxLength: MAX_NOTE, description: 'A note this one updates, copied exactly as written'})),
 });
 
 const reply = (text: string) => ({content: [{type: 'text' as const, text}], details: {}});

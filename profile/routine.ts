@@ -1,15 +1,16 @@
 import { defineTool } from '@earendil-works/pi-coding-agent';
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type } from 'typebox';
+import { MAX_ROUTINE_PROMPT, MAX_ROUTINE_TITLE, WEEKDAYS } from '../src/policy.ts';
 import { callServer } from './internal.ts';
 
 // Routines live on the server (src/routines.ts), so this tool only forwards the call (profile/internal.ts).
-const weekday = StringEnum(['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const);
+const weekday = StringEnum(WEEKDAYS);
 const parameters = Type.Object({
   action: StringEnum(['list', 'create', 'update', 'pause', 'resume', 'delete'] as const),
   id: Type.Optional(Type.String({description: 'The routine to change, from list'})),
-  title: Type.Optional(Type.String({maxLength: 80, description: 'Short name, e.g. "Morning briefing"'})),
-  prompt: Type.Optional(Type.String({maxLength: 4000,
+  title: Type.Optional(Type.String({maxLength: MAX_ROUTINE_TITLE, description: 'Short name, e.g. "Morning briefing"'})),
+  prompt: Type.Optional(Type.String({maxLength: MAX_ROUTINE_PROMPT,
     description: 'Self-contained instructions for every run, written for a run with nobody watching and no earlier context'})),
   schedule: Type.Optional(Type.Object({
     kind: StringEnum(['daily', 'weekdays', 'weekly', 'monthly', 'once'] as const),

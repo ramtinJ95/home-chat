@@ -3,7 +3,6 @@
 
 export type User = 'owner' | 'guest';
 export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory';
-export type AssetKind = 'upload' | 'generated' | 'document';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
 export interface Question {
@@ -30,7 +29,7 @@ export interface Message {
 
 // Set on document assets: every version of a document is its own asset, sharing `doc`.
 export interface DocumentInfo { doc: string; title: string; version: number }
-export interface AssetRef { id: string; kind: AssetKind; document?: DocumentInfo }
+export interface AssetRef { id: string; document?: DocumentInfo }
 
 // GET /api/chats/<id>/assets/<asset> for a document; with ?download=1 it is a Markdown file instead.
 export interface DocumentContent { title: string; markdown: string; version: number }
@@ -42,6 +41,8 @@ export interface ChatSnapshot {
   assets: AssetRef[];
   busy: boolean;
   question: Question | null;
+  // The last message and its reply can be asked again, as it was or edited ({replace: true} on POST messages).
+  redoable: boolean;
   // Switched per conversation (POST /api/chats/<id>/research {on}) and kept until switched off.
   deepResearch: boolean;
   // Set when this conversation is where a routine's runs arrive.
@@ -87,7 +88,6 @@ export interface Me {
   codexConfigured: boolean;
   // local: access codes on localhost. access: Cloudflare Access (Google sign-in) on the public hostname.
   mode: 'local' | 'access';
-  tools: readonly ToolName[];
   // Deep research needs an Exa key on the server; without one the app hides the switch.
   deepResearch: boolean;
 }

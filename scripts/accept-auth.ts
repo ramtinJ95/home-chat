@@ -1,5 +1,5 @@
-import { writeFile, mkdir, readFile, rename } from 'node:fs/promises';
-import { randomUUID } from 'node:crypto';
+import { mkdir, readFile } from 'node:fs/promises';
+import { atomicJson } from '../src/files.ts';
 try {
 let input = '';
 for await (const chunk of process.stdin) {
@@ -18,9 +18,7 @@ try { existing = JSON.parse(await readFile('/data/profile/auth.json', 'utf8')); 
 catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Existing credential file is not valid JSON; refusing overwrite'); }
 if (existing && Object.keys(existing).some(key => key !== 'openai-codex')) throw new Error('Unexpected provider in isolated profile; refusing overwrite');
 if (existing && Object.keys(existing).length && process.argv[2] !== '--replace-codex') throw new Error('Credentials already exist in the isolated profile; explicit replacement required');
-const temporary = '/data/profile/auth.json.new-' + randomUUID();
-await writeFile(temporary, JSON.stringify({'openai-codex': credential}), {mode: 0o600, flag: 'wx'});
-await rename(temporary, '/data/profile/auth.json');
+await atomicJson('/data/profile/auth.json', {'openai-codex': credential});
 console.log('Dedicated Codex credential provisioned; no other provider settings copied.');
 } catch (caught) {
   const error = caught as NodeJS.ErrnoException;

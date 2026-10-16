@@ -176,7 +176,6 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .search input:focus { outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
 .sidebar.searching #routines, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
-.search-results { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
 .search-result { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background 140ms; }
 .search-result:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .search-result strong { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
