@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, ToolName, Weekday } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, Weekday } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -63,6 +63,13 @@ const ui = {
   routinesPage: $('#routines-page'),
   routinesClose: $<HTMLButtonElement>('#routines-close'),
   routineCards: $('#routine-cards'),
+  todosEntry: $('#todos-entry'),
+  todosPage: $('#todos-page'),
+  todosClose: $<HTMLButtonElement>('#todos-close'),
+  todoNew: $<HTMLFormElement>('#todo-new'),
+  todoNewTitle: $<HTMLInputElement>('#todo-new-title'),
+  todoNewShared: $<HTMLInputElement>('#todo-new-shared'),
+  todoCards: $('#todo-cards'),
 };
 
 const TOOL_ACTIVITY: Record<ToolName, string> = {
@@ -73,6 +80,7 @@ const TOOL_ACTIVITY: Record<ToolName, string> = {
   deep_research: 'Researching… this can take a few minutes',
   routine: 'Updating your routines…',
   memory: 'Updating About us…',
+  todo: 'Updating your todos…',
 };
 const SUGGESTIONS = [
   {icon: 'compass', title: 'Plan something lovely', prompt: 'Help me plan something lovely for the weekend'},
@@ -766,6 +774,152 @@ function editRoutine(routine: RoutineSummary) {
   title.focus({preventScroll: true});
 }
 
+// Todos: a card per list. Every change saves at once and answers with the list as it is now, which repaints only that
+// list's items and actions, so the add field keeps its focus and text between items.
+const todoCards = new Map<string, {card: HTMLElement; fill: (list: TodoList) => void}>();
+const todoPath = (list: TodoList) => `/api/todos/${encodeURIComponent(list.id)}`;
+
+async function openTodos() {
+  await refreshTodos();
+  setDrawer(false);
+  showSheet(ui.todosPage, ui.todosClose);
+}
+
+async function refreshTodos() {
+  renderTodoCards(await api<TodoList[]>('/api/todos'));
+}
+
+function renderTodoCards(lists: TodoList[]) {
+  for (const id of todoCards.keys()) if (!lists.some(list => list.id === id)) todoCards.delete(id);
+  const cards = lists.map(list => {
+    const known = todoCards.get(list.id);
+    if (known) { known.fill(list); return known.card; }
+    const made = todoCard(list);
+    todoCards.set(list.id, made);
+    return made.card;
+  });
+  if (!cards.length) { ui.todoCards.replaceChildren(element('p', 'routines-empty', 'No lists yet.')); return; }
+  // Cards already in place stay put, so a focused field in one is not taken out of the page and back.
+  ui.todoCards.querySelector('.routines-empty')?.remove();
+  for (const child of [...ui.todoCards.children]) if (!cards.includes(child as HTMLElement)) child.remove();
+  cards.forEach((card, index) => { if (ui.todoCards.children[index] !== card) ui.todoCards.insertBefore(card, ui.todoCards.children[index] ?? null); });
+}
+
+// A change to one list; a list that is gone or no longer shared takes the whole page back to what the server has.
+async function changeTodo(request: Promise<TodoList>): Promise<boolean> {
+  try {
+    const list = await request;
+    todoCards.get(list.id)?.fill(list);
+    return true;
+  } catch (error) {
+    showError(error);
+    await refreshTodos().catch(() => {});
+    return false;
+  }
+}
+
+function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList) => void} {
+  let list = initial;
+  const card = element('article', 'routine-card todo-card');
+  const head = element('div', 'routine-card-head');
+  const title = element('h2');
+  const tag = element('span', 'routine-tag', 'Shared');
+  head.append(title, tag);
+  const items = element('ul', 'todo-items');
+  const add = element('form', 'todo-add');
+  const input = element('input');
+  input.maxLength = 300; input.autocomplete = 'off'; input.enterKeyHint = 'done'; input.required = true;
+  const addButton = element('button', 'icon-button');
+  addButton.type = 'submit';
+  addButton.append(icon('plus'));
+  add.append(input, addButton);
+  add.onsubmit = event => {
+    event.preventDefault();
+    // Cleared at once for the next item; a failed add puts its text back unless something new was typed.
+    const text = input.value;
+    input.value = '';
+    void changeTodo(api<TodoList>(todoPath(list) + '/items', 'POST', {text})).then(added => { if (!added && !input.value) input.value = text; });
+  };
+  const actions = element('div', 'routine-actions');
+  card.append(head, items, add, actions);
+
+  const fill = (next: TodoList) => {
+    // An answer that left the server before the one already shown would take that one's change back off the page.
+    if (next.version < list.version) return;
+    list = next;
+    // Everything below is drawn again, so a focused control gets the focus back afterwards: the same one, or for one
+    // that went away a neighbouring item's or the Rename button. Never the add field, which would open a phone's keyboard.
+    const focused = document.activeElement instanceof HTMLElement && card.contains(document.activeElement) && document.activeElement !== input
+      ? document.activeElement : undefined;
+    const focusedRow = focused?.closest<HTMLElement>('.todo-item');
+    const focusedItem = focusedRow?.dataset.item;
+    const focusedIndex = focusedRow ? [...items.children].indexOf(focusedRow) : -1;
+    const focusedControl = focused?.classList.contains('todo-remove') ? '.todo-remove' : 'input';
+    const focusedAction = focused?.dataset.action;
+    title.textContent = list.title;
+    tag.hidden = !list.shared;
+    input.placeholder = `Add to ${list.title}`;
+    input.setAttribute('aria-label', `Add an item to ${list.title}`);
+    addButton.setAttribute('aria-label', `Add to ${list.title}`);
+    // Done items sink below the open ones, each group in the order it was added.
+    const ordered = [...list.items.filter(item => !item.done), ...list.items.filter(item => item.done)];
+    items.replaceChildren(...ordered.map(item => {
+      const row = element('li', item.done ? 'todo-item done' : 'todo-item');
+      row.dataset.item = String(item.id);
+      const label = element('label');
+      const box = element('input');
+      box.type = 'checkbox'; box.checked = item.done;
+      box.onchange = () => changeTodo(api<TodoList>(`${todoPath(list)}/items/${item.id}`, 'PATCH', {done: box.checked}));
+      label.append(box, element('span', undefined, item.text));
+      const remove = element('button', 'icon-button todo-remove');
+      remove.type = 'button';
+      remove.setAttribute('aria-label', `Remove ${item.text}`);
+      remove.append(icon('close'));
+      remove.onclick = () => changeTodo(api<TodoList>(`${todoPath(list)}/items/${item.id}`, 'DELETE'));
+      row.append(label, remove);
+      return row;
+    }));
+    if (!list.items.length) items.replaceChildren(element('li', 'todo-empty', 'Nothing here yet.'));
+    const buttons: HTMLButtonElement[] = [];
+    const button = (action: string, label: string, className = 'ghost') => {
+      const made = element('button', className, label);
+      made.dataset.action = action;
+      return made;
+    };
+    if (list.items.some(item => item.done)) {
+      const clear = button('clear', 'Clear done');
+      clear.onclick = () => changeTodo(api<TodoList>(todoPath(list) + '/clear', 'POST', {}));
+      buttons.push(clear);
+    }
+    const rename = button('rename', 'Rename');
+    rename.onclick = () => {
+      const name = prompt('Name of the list', list.title)?.trim();
+      if (name && name !== list.title) void changeTodo(api<TodoList>(todoPath(list), 'PATCH', {title: name}));
+    };
+    buttons.push(rename);
+    // Only the list's owner shares, unshares or deletes it.
+    if (list.mine) {
+      const share = button('share', list.shared ? 'Make private' : 'Share with the household');
+      share.onclick = () => changeTodo(api<TodoList>(todoPath(list), 'PATCH', {shared: !list.shared}));
+      const remove = button('delete', 'Delete', 'ghost danger');
+      remove.onclick = async () => {
+        if (!confirm(`Delete the list “${list.title}” and everything on it?`)) return;
+        try { await api(todoPath(list), 'DELETE'); } catch (error) { showError(error); }
+        await refreshTodos().catch(showError);
+      };
+      buttons.push(share, remove);
+    }
+    actions.replaceChildren(...buttons);
+    if (!focused) return;
+    const rows = [...items.querySelectorAll<HTMLElement>('.todo-item')];
+    const row = focusedItem === undefined ? undefined : rows.find(each => each.dataset.item === focusedItem) ?? rows[Math.min(focusedIndex, rows.length - 1)];
+    const target = focusedAction ? buttons.find(each => each.dataset.action === focusedAction) : row?.querySelector<HTMLElement>(focusedControl);
+    (target ?? rename).focus();
+  };
+  fill(list);
+  return {card, fill};
+}
+
 function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
   if (chat?.id !== next.id) closeSheet();
@@ -1247,6 +1401,8 @@ navigator.serviceWorker?.addEventListener('message', event => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { connection++; stream?.close(); stream = undefined; }
   else if (onScreen && !stream) connect(onScreen).catch(showError);
+  // Shared lists may have changed on another phone meanwhile.
+  if (!document.hidden && sheet?.node === ui.todosPage) refreshTodos().catch(showError);
 });
 ui.openSidebar.onclick = () => setDrawer(true);
 ui.closeSidebar.onclick = () => setDrawer(false);
@@ -1330,6 +1486,16 @@ ui.imageInput.onchange = async () => {
 ui.readerClose.onclick = closeSheet;
 ui.aboutClose.onclick = closeSheet;
 ui.routinesClose.onclick = closeSheet;
+ui.todosClose.onclick = closeSheet;
+ui.todosEntry.replaceChildren(actionButton('check', 'Todos', openTodos));
+ui.todoNew.onsubmit = async event => {
+  event.preventDefault();
+  try {
+    await api<TodoList>('/api/todos', 'POST', {title: ui.todoNewTitle.value, shared: ui.todoNewShared.checked});
+    ui.todoNewTitle.value = ''; ui.todoNewShared.checked = false;
+    await refreshTodos();
+  } catch (error) { showError(error); }
+};
 addEventListener('popstate', () => {
   if (sheetInHistory()) return;
   // Back with unsaved changes asks first; staying puts the page back in the history.

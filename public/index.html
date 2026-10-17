@@ -58,6 +58,7 @@
       <p id="recent-label" class="section-label">Recent</p>
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
+        <div id="todos-entry" class="sidebar-action"></div>
         <div id="routines-entry" class="sidebar-action"></div>
         <div id="about-entry" class="sidebar-action"></div>
         <div id="install" class="sidebar-action" hidden></div>
@@ -177,6 +178,27 @@
     </div>
   </section>
 
+  <section id="todos-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="todos-title" hidden>
+    <header class="reader-bar">
+      <button id="todos-close" class="icon-button" type="button" aria-label="Back to the conversation">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+    </header>
+    <div class="reader-page about-page">
+      <p class="reader-meta">Yours and the household’s</p>
+      <h1 id="todos-title" class="reader-title">Todos</h1>
+      <p class="about-lede">Tick things off here, or ask in any conversation, like “add milk and eggs to groceries”.
+        Shared lists are for everyone in the household; the others are only yours.</p>
+      <form id="todo-new" class="todo-new">
+        <input id="todo-new-title" maxlength="80" placeholder="New list, like Groceries" aria-label="Name of the new list" required
+          autocomplete="off" enterkeyhint="done">
+        <label class="routine-check"><input id="todo-new-shared" type="checkbox"> Share with the household</label>
+        <button class="primary" type="submit">Make list</button>
+      </form>
+      <div id="todo-cards" class="routine-cards"></div>
+    </div>
+  </section>
+
   <div id="error" class="toast" role="alert" hidden></div>
 
   <svg class="sprite" aria-hidden="true">
@@ -207,6 +229,7 @@
     <symbol id="redo" viewBox="0 0 24 24"><path d="M19 12a7 7 0 1 1-2.05-4.95M19 4.5V8h-3.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="pencil" viewBox="0 0 24 24"><path d="M5 19l1-4L15.5 5.5a2.1 2.1 0 0 1 3 3L9 18l-4 1Zm9-12 3 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="people" viewBox="0 0 24 24"><circle cx="9" cy="8.5" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M3.5 19.5c.5-3.3 2.6-5.3 5.5-5.3s5 2 5.5 5.3M15.5 5.6a3.2 3.2 0 0 1 0 5.8M17.2 14.5c2 .6 3 2.3 3.3 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+    <symbol id="check" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="4" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m8.5 12.5 2.5 2.5 4.5-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
     <symbol id="brush" viewBox="0 0 24 24"><path d="M14 4 20 10l-7.5 7.5-6-6L14 4ZM6.5 11.5 4 20l8.5-2.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
   </svg>
 </body>

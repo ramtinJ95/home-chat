@@ -1,10 +1,10 @@
 # Home Chat
 
 A private, mobile-friendly chat app for everyday questions, web search,
-image generation, documents, deep research, scheduled routines and household notes. It runs a locked-down [Pi Durable](https://www.npmjs.com/package/@earendil-works/pi-durable)
+image generation, documents, deep research, scheduled routines, household notes and todo lists. It runs a locked-down [Pi Durable](https://www.npmjs.com/package/@earendil-works/pi-durable)
 agent against a Codex subscription inside Docker. The model can only use
-seven tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
-`routine`, `memory`), can only reach OpenAI and Exa, and cannot run commands or read
+eight tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
+`routine`, `memory`, `todo`), can only reach OpenAI and Exa, and cannot run commands or read
 files.
 
 It runs in one of two modes:
@@ -164,6 +164,15 @@ Yes or No before anything is saved. The About us page in the sidebar shows the
 notes one per line for editing; it will not overwrite notes that changed after
 it opened. Each list holds up to 30 notes of 300 characters.
 
+**Todos** are lists, each private to the person who made it or shared with the
+household ("Groceries"). Ask in any conversation ("add milk and eggs to
+groceries", "what's left on my errands?") or use the Todos page in the sidebar
+to add, tick off, rename and clear items. Both people can change a shared
+list's items and name; only the person who made it can make it private again
+or delete it. Routine runs can use lists too. Each person can make 30 lists of
+up to 200 items; the page catches up with changes from the other phone when it
+comes back into view.
+
 **Search** in the sidebar looks through the titles and messages of your own
 conversations, ignoring case and accents, and finds messages with every word
 typed. A result opens its conversation at that message, which lights up for
@@ -192,13 +201,14 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 | Path | What it is |
 | --- | --- |
 | `src/server.ts` | HTTP API, sessions, uploads, SSE streaming, turn state |
-| `src/agent/` | Pi Durable in the server process: one SQLite transcript per conversation, the worker behind `ChatWorker`, the Home Chat extension and its seven tools |
+| `src/agent/` | Pi Durable in the server process: one SQLite transcript per conversation, the worker behind `ChatWorker`, the Home Chat extension and its eight tools |
 | `src/chat-worker.ts` | `ChatWorker`, what the server needs from a conversation's worker |
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
 | `src/search.ts` | Search over a person's conversations: matching, snippets and highlight ranges |
+| `src/todos.ts` | Todo lists in `todos.json`, private or shared, and the `todo` tool's actions |
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
@@ -218,7 +228,7 @@ docker run --rm --network none --user 10001:10001 --cap-drop ALL \
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, only the seven tools, Codex signed in
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, only the eight tools, Codex signed in
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
 docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi Durable; uses quota
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
@@ -232,15 +242,15 @@ screenshots to the git-ignored `.local/` folder.
 
 - **Tools.** Every conversation runs with exactly one extension,
   `src/agent/extension.ts`, so the model has `ask`, `web_run`, `imagegen`,
-  `document`, `deep_research`, `routine` and `memory` and nothing else: no
+  `document`, `deep_research`, `routine`, `memory` and `todo` and nothing else: no
   read, write, edit or bash, whatever Pi Durable ships. Every call passes its
   `beforeTool` hook first, which validates the input and applies the
   message's limits: 12 tool calls (30 in deep research mode) and 2 image
   generations. The turn's mode comes from the server, not from the text:
   `deep_research` is refused unless the conversation's switch is on, and
-  `ask`, `routine` and `memory` are refused in a routine run. `routine` and
-  `memory` call the server in its own process, bound to the conversation
-  they run in, which scopes them to its owner. `memory` changes nothing
+  `ask`, `routine` and `memory` are refused in a routine run. `routine`,
+  `memory` and `todo` call the server in its own process, bound to the
+  conversation they run in, which scopes them to its owner. `memory` changes nothing
   without the user's Yes, which the tool asks for itself, and the notes go
   into the instructions marked as facts, not instructions. `document` only writes new files
   under the conversation's `documents/` folder (at most 100, 256 K characters
