@@ -2,16 +2,26 @@ import { randomUUID } from 'node:crypto';
 import { open, readFile, rename, rm } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
+// A new file, on disk before this returns. Its directory is synced too, so the file's name survives a power cut.
+export async function syncedFile(path: string, data: string | Buffer): Promise<void> {
+  const file = await open(path, 'wx', 0o600);
+  try { await file.writeFile(data); await file.sync(); } finally { await file.close(); }
+  await syncDirectory(dirname(path));
+}
+
+async function syncDirectory(path: string) {
+  const directory = await open(path, 'r');
+  try { await directory.sync(); } finally { await directory.close(); }
+}
+
 // Synced around the rename, so a power cut leaves either the old record or the new one, never an empty file.
 export async function atomicJson(path: string, value: unknown): Promise<void> {
   const temporary = path + '.' + randomUUID() + '.tmp';
   try {
-    const file = await open(temporary, 'wx', 0o600);
-    try { await file.writeFile(JSON.stringify(value)); await file.sync(); } finally { await file.close(); }
+    await syncedFile(temporary, JSON.stringify(value));
     await rename(temporary, path);
   } catch (error) { await rm(temporary, {force: true}); throw error; }
-  const directory = await open(dirname(path), 'r');
-  try { await directory.sync(); } finally { await directory.close(); }
+  await syncDirectory(dirname(path));
 }
 
 // Undefined when the file does not exist yet.

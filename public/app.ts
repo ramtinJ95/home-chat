@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, User, Weekday } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Library, LibraryItem, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, User, Weekday } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -54,6 +54,7 @@ const ui = {
   readerClose: $<HTMLButtonElement>('#reader-close'),
   readerCopy: $<HTMLButtonElement>('#reader-copy'),
   readerShare: $<HTMLButtonElement>('#reader-share'),
+  readerLibrary: $<HTMLButtonElement>('#reader-library'),
   readerDownload: $<HTMLAnchorElement>('#reader-download'),
   readerMeta: $('#reader-meta'),
   readerTitle: $('#reader-title'),
@@ -70,6 +71,11 @@ const ui = {
   routinesClose: $<HTMLButtonElement>('#routines-close'),
   routineCards: $('#routine-cards'),
   todosEntry: $('#todos-entry'),
+  libraryEntry: $('#library-entry'),
+  libraryPage: $('#library-page'),
+  libraryClose: $<HTMLButtonElement>('#library-close'),
+  libraryLede: $('#library-lede'),
+  libraryCards: $('#library-cards'),
   todosPage: $('#todos-page'),
   todosClose: $<HTMLButtonElement>('#todos-close'),
   todoNew: $<HTMLFormElement>('#todo-new'),
@@ -541,7 +547,9 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
     download.href = url + '?download=1';
     download.download = 'home-chat.png';
     download.append(icon('download'), 'Download');
-    figure.append(picture, download);
+    const actions = element('div', 'picture-actions');
+    actions.append(download, shareWithButton(() => shareAsset(snapshot.id, id)));
+    figure.append(picture, actions);
     bubble.append(figure);
   }
   if (message.error) bubble.append(element('p', 'failure', message.error));
@@ -567,18 +575,18 @@ function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
     : latest.document.version === info.version ? `Version ${info.version}` : `Updated later · version ${latest.document.version}`;
   text.append(element('strong', undefined, latest.document.title), element('span', undefined, meta));
   card.append(icon('document'), text, element('span', 'document-open', 'Open'));
-  card.onclick = () => openReader(snapshot.id, latest).catch(showError);
+  card.onclick = () => openReader(`/api/chats/${snapshot.id}/assets/${latest.id}`, {share: () => shareAsset(snapshot.id, latest.id)}).catch(showError);
   return card;
 }
 
 // The reader covers the conversation and takes one history entry, so a phone's back gesture closes it.
 // Full-screen pages over the conversation: the reader and About us. One shows at a time, and Back closes it like a page.
-let sheet: {node: HTMLElement; opener?: HTMLElement} | undefined;
+let sheet: {node: HTMLElement; opener?: HTMLElement; parent?: HTMLElement} | undefined;
 const sheetInHistory = () => (history.state as {sheet?: boolean} | null)?.sheet === true;
-function showSheet(node: HTMLElement, focus: HTMLElement) {
+function showSheet(node: HTMLElement, focus: HTMLElement, parent?: HTMLElement) {
   const opener = sheet?.opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
   if (sheet && sheet.node !== node) sheet.node.hidden = true;
-  sheet = {node, opener};
+  sheet = {node, opener, parent};
   node.hidden = false;
   // The conversation underneath is out of reach until the page closes, for the keyboard and screen readers too.
   ui.workspace.inert = true;
@@ -590,6 +598,15 @@ function showSheet(node: HTMLElement, focus: HTMLElement) {
 function hideSheet() {
   if (!sheet) return;
   sheet.node.hidden = true;
+  // A page opened from another page goes back to that one, which takes the history entry again.
+  if (sheet.parent) {
+    sheet = {node: sheet.parent, opener: sheet.opener};
+    sheet.node.hidden = false;
+    history.pushState({sheet: true}, '');
+    // It may have changed while the page over it was open.
+    if (sheet.node === ui.libraryPage) refreshLibrary().catch(showError);
+    return;
+  }
   ui.workspace.inert = false;
   if (sheet.opener?.isConnected) sheet.opener.focus();
   sheet = undefined;
@@ -600,8 +617,9 @@ function closeSheet() {
 }
 
 let readerText = '';
-async function openReader(chatId: string, asset: AssetRef & {document: DocumentInfo}) {
-  const url = `/api/chats/${chatId}/assets/${asset.id}`;
+// `share`: copies it into the Library, offered for a document in a conversation. `parent`: the page it was opened from,
+// which closing it goes back to.
+async function openReader(url: string, {share, parent}: {share?: () => Promise<void>; parent?: HTMLElement} = {}) {
   const content = await api<DocumentContent>(url);
   readerText = `# ${content.title}\n\n${content.markdown}`;
   ui.readerTitle.textContent = content.title;
@@ -621,7 +639,11 @@ async function openReader(chatId: string, asset: AssetRef & {document: DocumentI
   ui.readerContents.hidden = headings.length < 2;
   ui.readerDownload.href = url + '?download=1';
   ui.readerCopy.textContent = 'Copy';
-  showSheet(ui.reader, ui.readerClose);
+  ui.readerClose.setAttribute('aria-label', parent === ui.libraryPage ? 'Back to the Library' : 'Back to the conversation');
+  ui.readerLibrary.hidden = !share;
+  ui.readerLibrary.textContent = `Share with ${otherName()}`;
+  ui.readerLibrary.onclick = share ? () => share().catch(showError) : null;
+  showSheet(ui.reader, ui.readerClose, parent);
 }
 
 // About us: the household notes, one per line, as the server last saved them (`aboutSaved`).
@@ -809,6 +831,87 @@ async function openTodos() {
   showSheet(ui.todosPage, ui.todosClose);
 }
 
+// The Library: copies of documents and pictures shared on their own, for both people. Opening it marks what the other
+// person shared as seen, which clears the dot on its sidebar entry.
+async function openLibrary() {
+  setDrawer(false);
+  showSheet(ui.libraryPage, ui.libraryClose);
+  await refreshLibrary();
+}
+
+// Drawn into the page if it is open, which counts as seeing it; otherwise the sidebar entry shows whether anything is
+// new. `libraryRun` keeps an answer that newer requests overtook from drawing over theirs.
+let libraryRun = 0;
+async function refreshLibrary() {
+  const run = ++libraryRun;
+  const open = () => sheet?.node === ui.libraryPage;
+  let library = await api<Library>(open() ? '/api/library/seen' : '/api/library', open() ? 'POST' : 'GET', open() ? {} : undefined);
+  if (run !== libraryRun) return;
+  // Opened while the plain read was on its way.
+  if (open() && library.unseen) library = await api<Library>('/api/library/seen', 'POST', {});
+  if (run !== libraryRun) return;
+  renderLibraryEntry(library.unseen);
+  if (open()) renderLibrary(library);
+}
+
+function renderLibraryEntry(unseen: boolean) {
+  const open = actionButton('document', 'Library', openLibrary);
+  if (unseen) open.append(unreadDot('Newly shared'));
+  ui.libraryEntry.replaceChildren(open);
+}
+
+function renderLibrary(library: Library) {
+  ui.libraryLede.textContent = `Documents and pictures you and ${otherName()} shared from your conversations, newest first. `
+    + 'The conversations they came from stay as private as they were.';
+  ui.libraryCards.replaceChildren(...(library.items.length ? library.items.map(libraryCard)
+    : [element('p', 'routines-empty', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)]));
+}
+
+function libraryCard(item: LibraryItem): HTMLElement {
+  const url = `/api/library/${item.id}`;
+  const card = element('article', 'routine-card library-card');
+  const name = item.kind === 'picture' ? 'this picture' : `“${item.title}”`;
+  if (item.kind === 'picture') {
+    const picture = element('img');
+    picture.src = url; picture.loading = 'lazy';
+    picture.alt = item.mine ? 'A picture you shared' : `A picture ${nameOf(item.by)} shared`;
+    card.append(picture);
+  } else {
+    card.append(element('h2', undefined, item.title), element('p', 'routine-when', item.version > 1 ? `Document · version ${item.version}` : 'Document'));
+  }
+  card.append(element('p', 'routine-last', item.mine ? `You shared it · ${item.when}` : `From ${nameOf(item.by)} · ${item.when}`));
+  const actions = element('div', 'routine-actions');
+  if (item.kind === 'document') {
+    const open = element('button', 'ghost', 'Open');
+    open.onclick = () => openReader(url, {parent: ui.libraryPage}).catch(showError);
+    actions.append(open);
+  }
+  const download = element('a', 'ghost', 'Download');
+  download.href = url + '?download=1'; download.download = item.kind === 'picture' ? 'home-chat.png' : '';
+  actions.append(download);
+  if (item.mine) {
+    const remove = element('button', 'ghost danger', 'Stop sharing');
+    remove.onclick = async () => {
+      if (!confirm(`Stop sharing ${name}? It will be gone from the Library for both of you.`)) return;
+      try { await api(url, 'DELETE'); await refreshLibrary(); } catch (error) { showError(error); }
+    };
+    actions.append(remove);
+  }
+  card.append(actions);
+  return card;
+}
+
+async function shareAsset(chatId: string, assetId: string) {
+  await api(`/api/chats/${chatId}/assets/${assetId}/share`, 'POST', {});
+  showNotice(`Shared with ${otherName()}. It’s in the Library.`);
+}
+
+function shareWithButton(run: () => Promise<void>): HTMLButtonElement {
+  const button = actionButton('people', `Share with ${otherName()}`, run);
+  button.className = 'download';
+  return button;
+}
+
 async function refreshTodos() {
   renderTodoCards(await api<TodoList[]>('/api/todos'));
 }
@@ -946,7 +1049,7 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
 
 function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
-  if (chat?.id !== next.id) closeSheet();
+  if (chat?.id !== next.id) { if (sheet) sheet.parent = undefined; closeSheet(); }
   if (editing && (editing.chat !== next.id || !canRedo(next))) stopEditing();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
@@ -1069,7 +1172,7 @@ function unreadDot(label = 'New results'): HTMLElement {
 }
 
 async function refreshList(): Promise<ChatSummary[]> {
-  const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines')]);
+  const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
   ui.routines.hidden = !routines.length;
   ui.routineList.replaceChildren(...routines.map(routineRow));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
@@ -1200,7 +1303,7 @@ function listen(id: string) {
   const source = stream = new EventSource(`/api/chats/${id}/events`);
   stream.onmessage = message => {
     const event = JSON.parse(message.data) as StreamEvent;
-    if (event.type !== 'snapshot') shown = '';
+    if (event.type !== 'snapshot' && event.type !== 'library') shown = '';
     switch (event.type) {
       // The stream opens with the snapshot connect just drew, which is not drawn again.
       case 'snapshot': if (update(event.chat)) refreshList().catch(showError); break;
@@ -1208,6 +1311,7 @@ function listen(id: string) {
       case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
+      case 'library': refreshLibrary().catch(showError); break;
       case 'gone': source.close(); stream = undefined; orGone(id, connect(id)).catch(showError); break;
     }
   };
@@ -1561,6 +1665,8 @@ ui.aboutClose.onclick = closeSheet;
 ui.routinesClose.onclick = closeSheet;
 ui.todosClose.onclick = closeSheet;
 ui.todosEntry.replaceChildren(actionButton('check', 'Todos', openTodos));
+renderLibraryEntry(false);
+ui.libraryClose.onclick = closeSheet;
 ui.todoNew.onsubmit = async event => {
   event.preventDefault();
   try {

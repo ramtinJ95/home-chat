@@ -185,6 +185,72 @@ test('documents saved during a reply are attached to it, readable, downloadable 
     assert.deepEqual(state.messages[3].assets, [state.assets[1].id]);
   } finally { await f.close(); }
 });
+test('the Library: a copy of one document or picture for both, kept after its conversation goes, removed only by its sharer', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    const cwd = join(f.data, 'chats', chat.id, 'work');
+    const turn = async (text: string, save: () => Promise<unknown>) => {
+      assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text, assets: []}, ...owner})).status, 202);
+      await delay(40); await save();
+      assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
+      await delay(40);
+      return (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    };
+    const share = (asset: string, who = owner) => f.request(`/api/chats/${chat.id}/assets/${asset}/share`, {method: 'POST', body: {}, ...who});
+    const library = async (who: typeof owner) => (await f.request('/api/library', who)).json();
+    let state = await turn('Plan my weekend', () => saveDocument({title: 'Weekend plan', markdown: 'Market'}, cwd));
+    const first = state.assets[0];
+    assert.equal((await share(first.id, guest)).status, 404);
+    const shared = await share(first.id);
+    assert.equal(shared.status, 201);
+    const item = await shared.json();
+    assert.deepEqual({...item, when: undefined}, {kind: 'document', title: 'Weekend plan', version: 1, id: item.id, by: 'owner', mine: true, when: undefined});
+    assert.deepEqual((await library(guest)).items.map((entry: {id: string; mine: boolean}) => [entry.id, entry.mine]), [[item.id, false]]);
+    assert.equal((await library(guest)).unseen, true); assert.equal((await library(owner)).unseen, false);
+    assert.deepEqual(await (await f.request(`/api/library/${item.id}`, guest)).json(), {title: 'Weekend plan', markdown: 'Market', version: 1});
+    assert.match(await (await f.request(`/api/library/${item.id}?download=1`, guest)).text(), /^# Weekend plan\n\nMarket$/);
+
+    // Sharing the revised document replaces its copy; the conversation itself stays private.
+    state = await turn('Make it a museum day', () => saveDocument({title: 'Weekend plan', markdown: 'Museum', revises: first.document.doc}, cwd));
+    assert.equal((await share(state.assets[1].id)).status, 201);
+    assert.deepEqual((await library(guest)).items.map((entry: {id: string; version: number}) => [entry.id, entry.version]), [[item.id, 2]]);
+    assert.equal((await (await f.request(`/api/library/${item.id}`, guest)).json()).markdown, 'Museum');
+    assert.equal((await f.request(`/api/chats/${chat.id}`, guest)).status, 404);
+
+    const bytes = await sharp({create: {width: 2, height: 2, channels: 3, background: 'red'}}).png().toBuffer();
+    const upload = await (await f.request(`/api/chats/${chat.id}/uploads`, {method: 'POST', body: {mimeType: 'image/png', data: bytes.toString('base64')}, ...owner})).json();
+    const picture = await (await share(upload.id)).json();
+    assert.equal(picture.kind, 'picture');
+    assert.deepEqual((await library(guest)).items.map((entry: {id: string}) => entry.id), [picture.id, item.id]);
+    const copy = await f.request(`/api/library/${picture.id}`, guest);
+    assert.equal(copy.headers.get('content-type'), 'image/png');
+    assert.deepEqual(await copy.bytes(), await (await f.request(`/api/chats/${chat.id}/assets/${upload.id}`, owner)).bytes());
+
+    assert.equal((await (await f.request('/api/library/seen', {method: 'POST', body: {}, ...guest})).json()).unseen, false);
+    assert.equal((await library(guest)).unseen, false);
+    const refused = await f.request(`/api/library/${picture.id}`, {method: 'DELETE', ...guest});
+    assert.equal(refused.status, 403); assert.match((await refused.json()).error, /Only the person who shared this/);
+
+    // The copies outlive the conversation; stopping sharing removes one for both.
+    assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', ...owner})).status, 200);
+    assert.equal((await (await f.request(`/api/library/${item.id}`, guest)).json()).markdown, 'Museum');
+    assert.deepEqual((await (await f.request(`/api/library/${picture.id}`, {method: 'DELETE', ...owner})).json()).items.map((entry: {id: string}) => entry.id), [item.id]);
+    assert.equal((await f.request(`/api/library/${picture.id}`, guest)).status, 404);
+    assert.equal((await readdir(join(f.data, 'library'))).length, 1, 'the removed and the replaced copies are deleted');
+
+    // A copy the list does not name, as an interrupted share leaves, is gone after a restart.
+    await f.app.stop();
+    await writeFile(join(f.data, 'library', 'stray.png'), 'x');
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      assert.equal((await readdir(join(f.data, 'library'))).length, 1);
+      assert.equal((await (await restarted.request(`/api/library/${item.id}`, await restarted.login('guest'))).json()).markdown, 'Museum');
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true, force: true}); }
+});
+
 test('todo lists: private to their owner, shared ones changed by both, and the model works on the conversation owner’s', async () => {
   const f = await fixture();
   try {

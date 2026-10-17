@@ -63,6 +63,7 @@
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
         <div id="todos-entry" class="sidebar-action"></div>
+        <div id="library-entry" class="sidebar-action"></div>
         <div id="routines-entry" class="sidebar-action"></div>
         <div id="about-entry" class="sidebar-action"></div>
         <div id="install" class="sidebar-action" hidden></div>
@@ -134,6 +135,7 @@
       <div class="reader-actions">
         <button id="reader-copy" class="ghost" type="button">Copy</button>
         <button id="reader-share" class="ghost" type="button">Share</button>
+        <button id="reader-library" class="ghost" type="button" hidden></button>
         <a id="reader-download" class="ghost" download>Download</a>
       </div>
     </header>
@@ -204,6 +206,20 @@
         <button class="primary" type="submit">Make list</button>
       </form>
       <div id="todo-cards" class="routine-cards"></div>
+    </div>
+  </section>
+
+  <section id="library-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="library-title" hidden>
+    <header class="reader-bar">
+      <button id="library-close" class="icon-button" type="button" aria-label="Back to the conversation">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+    </header>
+    <div class="reader-page about-page">
+      <p class="reader-meta">Shared with each other</p>
+      <h1 id="library-title" class="reader-title">Library</h1>
+      <p id="library-lede" class="about-lede"></p>
+      <div id="library-cards" class="routine-cards"></div>
     </div>
   </section>
 

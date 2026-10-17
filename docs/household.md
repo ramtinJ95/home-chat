@@ -63,4 +63,17 @@ Each is its own PR, in this order.
 
 ## 3. Shared library
 
-To be planned after step 2.
+- **What.** A document or picture from any conversation either person can see, shared on its own: the conversation
+  stays as private as it was. Shared items are listed on one Library page for both, newest first.
+- **A copy, not a link.** Sharing copies the document or picture into the library, so the other person sees exactly
+  what was shared. Deleting the conversation it came from keeps the copy. Sharing the same document again, after the
+  model revised it, replaces your earlier copy instead of adding a second one. In a shared conversation each person's
+  copy is their own, so stopping sharing yours never removes the other person's.
+- **Sharing.** "Share with <name>" on a picture in the thread and in the document reader. Only the person who shared an
+  item can stop sharing it, which removes the copy. The other person can open, copy and download it.
+- **Noticing.** The Library entry in the sidebar gets an unread dot when the other person shared something since this
+  person last opened the page; an open app hears of it at once over its conversation stream, and an open Library page
+  redraws. No push, as for conversations.
+- **Storage.** `library.json` lists the items; each copy is a file under `library/` named by a fresh id, synced to disk
+  before the list points at it. A file the list does not name, left by an interrupted share or removal, is deleted at startup.
+  At most 100 items per person, and the copies count towards the app's storage limit like uploads.
