@@ -250,3 +250,66 @@ test('after a crash, the interrupted turn is stopped and the next message works'
     assert.deepEqual(userTexts(f.requests[0]!), ['Message from the user:\nAsk me something', 'Message from the user:\nHello?']);
   } finally { await f.cleanup(); }
 });
+
+test('tool input is checked before it runs: no private web hosts, no images from outside the conversation', async () => {
+  const f = await fixture();
+  try {
+    const worker = await f.worker();
+    await writeFile(join(f.root, 'chats/chat-1/outside.png'), 'not really a png');
+    f.reply([
+      fauxAssistantMessage([
+        fauxToolCall('web_run', {open: [{ref_id: 'http://192.168.1.10/admin'}]}),
+        fauxToolCall('web_run', {open: [{ref_id: 'http://printer.local/'}]}),
+        fauxToolCall('imagegen', {prompt: 'Make it blue', referenced_image_paths: ['../outside.png']}),
+      ], {stopReason: 'toolUse'}),
+      fauxAssistantMessage('I cannot do that.'),
+    ]);
+    await turn(worker, 'Look at my router');
+    assert.deepEqual(toolResults(f.requests[1]!).map(result => result.match(/Private web destination denied|Image must belong to this conversation/)?.[0]),
+      ['Private web destination denied', 'Private web destination denied', 'Image must belong to this conversation']);
+  } finally { await f.cleanup(); }
+});
+
+test('an uploaded image reaches the model with its message', async () => {
+  const f = await fixture();
+  try {
+    const worker = await f.worker();
+    f.reply([fauxAssistantMessage('A cat.')]);
+    const data = Buffer.from('fake png bytes').toString('base64');
+    const ended = once(worker, 'settled');
+    await worker.prompt('What is this?', [{type: 'image', mimeType: 'image/png', data}]);
+    await ended;
+    const user = f.requests[0]!.find(message => message.role === 'user')!;
+    assert.ok(Array.isArray(user.content));
+    assert.deepEqual(user.content.filter(block => block.type === 'image'), [{type: 'image', mimeType: 'image/png', data}]);
+  } finally { await f.cleanup(); }
+});
+
+test('deep research calls Exa in its mode and gives the model the grounded result', async () => {
+  const f = await fixture();
+  const {fetch: realFetch} = globalThis;
+  const key = process.env.EXA_API_KEY;
+  const sent: {url: string; body: Record<string, unknown>; key: string | null; signal: boolean}[] = [];
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (!url.startsWith('https://api.exa.ai/')) return realFetch(input, init);
+    sent.push({url, body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get('x-api-key'), signal: init?.signal instanceof AbortSignal});
+    return Response.json({requestId: 'req-1', results: [{title: 'Heat pumps', url: 'https://example.org/heat', highlights: ['Efficient in cold climates']}],
+      output: {content: 'Heat pumps work well in Sweden.', grounding: [{field: 'content', confidence: 'high', citations: [{url: 'https://example.org/heat', title: 'Heat pumps'}]}]}});
+  };
+  process.env.EXA_API_KEY = 'exa-test-key';
+  try {
+    const worker = await f.worker();
+    f.reply([fauxAssistantMessage([fauxToolCall('deep_research', {query: 'Heat pumps in Sweden'})], {stopReason: 'toolUse'}), fauxAssistantMessage('Summary.')]);
+    await turn(worker, 'Research heat pumps', {deepResearch: true});
+    assert.deepEqual(sent.map(({url, body, key, signal}) => ({url, query: body.query, type: body.type, key, signal})),
+      [{url: 'https://api.exa.ai/search', query: 'Heat pumps in Sweden', type: 'deep', key: 'exa-test-key', signal: true}]);
+    const result = JSON.parse(toolResults(f.requests[1]!)[0]!);
+    assert.equal(result.synthesizedOutput, 'Heat pumps work well in Sweden.');
+    assert.equal(result.sources[0].url, 'https://example.org/heat');
+  } finally {
+    globalThis.fetch = realFetch;
+    if (key === undefined) delete process.env.EXA_API_KEY; else process.env.EXA_API_KEY = key;
+    await f.cleanup();
+  }
+});

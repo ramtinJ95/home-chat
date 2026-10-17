@@ -51,7 +51,7 @@ Turns:
 - [x] Abort from the app stops the model call and any running tool.
 - [x] Turn limits from `TURN_LIMITS`: 5 minutes and 12 tool calls, or 20 minutes and 30 in deep research; 2 generated
       images per message.
-- [ ] `validateToolInput`: `web_run` refuses private hosts, `imagegen` paths stay within uploads and generated images.
+- [x] `validateToolInput`: `web_run` refuses private hosts, `imagegen` paths stay within uploads and generated images.
 - [x] Provider failures map to the same messages as `providerFailure` (login refresh, usage limit, HTTP status).
 - [x] At most 2 conversations run at once, and a busy server answers 429 as now.
 - [x] Response size limit (100 000 characters) still ends the turn.
@@ -64,14 +64,15 @@ Tools:
 - [ ] `web_run`: search, open and find (live).
 - [ ] `imagegen`: generation and edits from attached or earlier images, saved where `collectGenerated` finds them (live).
 - [x] `document`: create and revise, versions kept, cards and reader unchanged.
-- [ ] `deep_research`: Exa calls with the 90 s timeout, report saved through `document`.
+- [x] `deep_research`: Exa calls in deep research mode, with the stop signal and the 90 s timeout, report saved through
+      `document`. Tested against a stubbed Exa; the timeout itself is not exercised.
 - [x] `routine`: all actions, scoped to the owner. Routine runs have neither `ask` nor `routine`.
 - [x] `memory`: confirm before saving. The household notes join the system prompt before every request.
 - [x] No other tools exist: no read, write, edit or bash, whatever Pi Durable ships.
 
 Conversations:
 
-- [ ] Uploaded images reach the model with the message.
+- [x] Uploaded images reach the model with the message.
 - [x] Regenerate and edit replace the last turn, and survive a restart. Exception: regenerating the first turn after
       the move, for a conversation from before it, answers the existing 409 ("send a new message instead").
 - [x] Existing conversations continue with their earlier text as context.
@@ -89,7 +90,9 @@ Deploy:
 ## Status
 
 2026-10-17: the agent is in `src/agent/` and is the server's default worker on this branch. Ticked items have faux-model
-tests in `test/agent.test.ts` or are covered by the existing server tests. Still open: the live checks, the restart tests, the deploy, and removing the Pi CLI path (`src/rpc.ts` PiWorker, `profile/`, the internal socket).
+tests in `test/agent.test.ts` or are covered by the existing server tests. `check-runtime` and `check-live` run the durable agent, and `login-codex` uses pi-ai's login, writing the same
+`auth.json`. Still open: the live checks, the whole-app restart, the deploy check, and removing the Pi CLI path
+(`src/rpc.ts` PiWorker, `profile/` apart from `instructions.md`, the internal socket).
 
 ## Risks
 
