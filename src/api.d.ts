@@ -107,6 +107,15 @@ export interface TodoItem { id: number; text: string; done: boolean }
 // `version` counts the list's changes, so a page can tell an older answer from a newer one.
 export interface TodoList { id: string; title: string; shared: boolean; mine: boolean; version: number; items: TodoItem[] }
 
+// The Library: copies of documents and pictures either person shared on their own, newest first. POST
+// /api/chats/<id>/assets/<asset>/share copies one in, or replaces the copy of an earlier version of the same document;
+// GET /api/library/<item> reads it (a document as DocumentContent, a picture as PNG, ?download for a file); DELETE
+// removes the sharer's own. `when` is when it was shared, in words.
+export type LibraryContent = {kind: 'picture'} | {kind: 'document'; title: string; version: number};
+export type LibraryItem = LibraryContent & {id: string; by: User; mine: boolean; when: string};
+// `unseen`: the other person shared something since this person last opened the page (POST /api/library/seen).
+export interface Library { items: LibraryItem[]; unseen: boolean }
+
 export interface Me {
   user: User;
   // What the app and the model call each person (HOME_CHAT_OWNER_NAME and HOME_CHAT_GUEST_NAME).
@@ -126,7 +135,9 @@ export type StreamEvent =
   | {type: 'question'; question: Question}
   | {type: 'error'; message: string}
   // Sent just before the stream ends because the conversation was deleted or is no longer shared with this person.
-  | {type: 'gone'};
+  | {type: 'gone'}
+  // Something was shared to the Library or removed from it; sent on every open stream.
+  | {type: 'library'};
 
 export interface ApiError { error: string }
 

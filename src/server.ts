@@ -4,13 +4,14 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/p
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
+import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson, readJson, serialSave } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
+import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
@@ -251,6 +252,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   });
   const memory = await createMemory(join(data, 'memory.json'));
   const todos = await createTodos(join(data, 'todos.json'));
+  const library = await createLibrary(data);
   const recordRun = ({routine, scheduled}: RoutineRun, outcome: 'done' | 'failed' | 'skipped') =>
     routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
   const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
@@ -280,6 +282,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       sse(client.res, event);
     }
   };
+  // Every page with a conversation open has a stream, so this reaches whoever is looking at the app.
+  const emitEverywhere = (event: StreamEvent) => { for (const id of streams.keys()) emit(id, event); };
   const publish = async (chat: Chat) => {
     await save(chat);
     emit(chat.id, {type: 'snapshot', chat: snapshot(chat)});
@@ -765,6 +769,41 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       }
       const parts = path.split('/').filter(Boolean);
       if (parts[0] === 'api' && parts[1] === 'todos') return send(...await todoRoute(session.user, req, parts.slice(2)));
+      // The Library page. Both people see every item; only its sharer removes it.
+      if (parts[0] === 'api' && parts[1] === 'library' && parts.length <= 3) {
+        const route = [req.method, parts[2] === 'seen' ? 'seen' : parts[2] && 'item'].filter(Boolean).join(' ');
+        try {
+          switch (route) {
+            case 'GET': return send(200, library.view(session.user));
+            case 'POST seen': return send(200, await library.seen(session.user));
+            case 'DELETE item': {
+              const left = await library.remove(session.user, parts[2]);
+              emitEverywhere({type: 'library'});
+              return send(200, left);
+            }
+            case 'GET item': {
+              const {item, path} = library.get(session.user, parts[2]);
+              const download = url.searchParams.has('download');
+              if (item.kind === 'picture') {
+                if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${item.id}.png"`);
+                return send(200, await readFile(path), {'Content-Type': 'image/png'});
+              }
+              const {title, markdown} = JSON.parse(await readFile(path, 'utf8')) as {title: string; markdown: string};
+              if (download) {
+                res.setHeader('Content-Disposition', markdownDisposition(title));
+                return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
+              }
+              const content: DocumentContent = {title, markdown, version: item.version};
+              return send(200, content);
+            }
+          }
+        } catch (error) {
+          // Removed meanwhile, between finding the item and reading its copy too.
+          if (error instanceof LibraryMissing || (error as NodeJS.ErrnoException).code === 'ENOENT') throw fail(404, 'This was removed from the Library');
+          if (error instanceof LibraryError) throw fail(403, error.message);
+          throw error;
+        }
+      }
       // The Routines page: its on/off switch, edits and delete. Creating one happens by asking the model.
       if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && ['POST', 'PATCH', 'DELETE'].includes(req.method ?? '')) {
         const routine = routines.get(parts[2]);
@@ -855,6 +894,28 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         heartbeat.unref();
         res.on('close', () => { clearInterval(heartbeat); clients.delete(client); });
         return;
+      }
+      // Copies one document or picture into the Library, for both people, without sharing the conversation.
+      if (parts[3] === 'assets' && parts[5] === 'share' && parts.length === 6 && req.method === 'POST') {
+        const asset = chat.assets.find(item => item.id === parts[4]);
+        if (!asset) throw fail(404, 'Not found');
+        if (await diskUsage(data) > MAX_DATA - 20 * 1024 * 1024) throw fail(413, 'Prototype storage limit reached');
+        let content: LibraryContent; let copy: Buffer | string; let source: string;
+        if (asset.document) {
+          const {title, markdown} = await readDocument(asset.path, workDir(chat));
+          content = {kind: 'document', title, version: asset.document.version};
+          copy = JSON.stringify({title, markdown});
+          source = `${chat.id}/${asset.document.doc}`;
+        } else {
+          content = {kind: 'picture'};
+          copy = await readFile(await allowedImagePath(asset.path, workDir(chat)));
+          source = `${chat.id}/${asset.id}`;
+        }
+        let item;
+        try { item = await library.share(session.user, source, content, copy, stillVisible); }
+        catch (error) { if (error instanceof LibraryError) throw fail(409, error.message); throw error; }
+        emitEverywhere({type: 'library'});
+        return send(201, item);
       }
       if (parts[3] === 'assets' && parts.length === 5 && req.method === 'GET') {
         const asset = chat.assets.find(item => item.id === parts[4]);

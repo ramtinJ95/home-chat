@@ -184,6 +184,15 @@ regenerate or edit it. Only the owner deletes it or makes it private again,
 which closes it on the other phone. A reply to one person shows as unread for
 the other; routine conversations stay private.
 
+**The Library** holds single documents and pictures shared on their own, for
+both people, while the conversation they came from stays private. "Share with
+<name>" on a picture or in the document reader puts a copy there, so deleting
+the conversation keeps it, and sharing a revised document again replaces its
+copy. Only the person who shared an item can stop sharing it, and each
+person's copies are their own. The Library entry
+in the sidebar shows a dot when the other person shared something new. Each
+person can share 100 items.
+
 **Search** in the sidebar looks through the titles and messages of the
 conversations you can see, your own and shared ones, ignoring case and
 accents, and finds messages with every word typed. A result opens its
@@ -219,6 +228,7 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
 | `src/search.ts` | Search over a person's conversations: matching, snippets and highlight ranges |
+| `src/library.ts` | The Library in `library.json`, with copies of shared documents and pictures under `library/` |
 | `src/todos.ts` | Todo lists in `todos.json`, private or shared, and the `todo` tool's actions |
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
