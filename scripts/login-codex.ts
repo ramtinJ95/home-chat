@@ -1,7 +1,7 @@
-import { ModelRuntime } from '@earendil-works/pi-coding-agent';
-const runtime = await ModelRuntime.create({authPath: '/data/profile/auth.json', modelsPath: null, allowModelNetwork: false, refreshOnCreate: false});
+import { codexModels } from '../src/agent/codex.ts';
+const models = codexModels('/data/profile/auth.json');
 try {
-  await runtime.login('openai-codex', 'oauth', {
+  await models.login('openai-codex', 'oauth', {
     signal: AbortSignal.timeout(12 * 60_000),
     prompt: async question => {
       if (question.type === 'select' && question.options.some(option => option.id === 'device_code')) return 'device_code';

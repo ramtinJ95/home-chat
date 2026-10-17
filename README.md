@@ -211,15 +211,15 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/document.test.ts test/memory.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/search.test.ts test/server.test.ts
+  --test test/access.test.ts test/agent.test.ts test/document.test.ts test/memory.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/search.test.ts test/server.test.ts
 ```
 
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # real Pi starts with only the seven tools
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, only the seven tools, Codex signed in
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
-docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi; uses quota
+docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi Durable; uses quota
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
 ```
