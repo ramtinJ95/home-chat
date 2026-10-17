@@ -5,6 +5,9 @@ services:
     image: home-chat-local:0.1.0
     init: true
     restart: "no"
+    # Time to stop running replies and close their files after SIGTERM. Explicit: home-macmini's Docker otherwise
+    # kills the app after 1 s.
+    stop_grace_period: 10s
     read_only: true
     cap_drop: [ALL]
     # For the root entrypoint and init only; setpriv drops them all before the app starts. KILL lets init forward
