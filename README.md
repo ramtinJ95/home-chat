@@ -144,10 +144,12 @@ compose passes it to the app. There are no spending caps on Exa.
 and my day"): the model confirms the plan, then saves a routine with its own
 conversation, where each run arrives with a notification and an unread dot.
 Schedules are daily, weekdays, weekly on chosen days, monthly (days 1 to 28) or
-once, always in Stockholm time, daylight saving included. The sidebar's
-Routines list and the bar at the top of a routine's conversation switch a
-routine off and on and delete it; deleting keeps its past results as an
-ordinary conversation. Saying "pause my briefing" anywhere also works, and on
+once, always in Stockholm time, daylight saving included. The Routines page
+(in the sidebar) lists every routine with its schedule, next and last run and
+task, and switches it off and on, edits its name, task, schedule and deep
+research, or deletes it. The sidebar's Routines list and the bar at the top of
+a routine's conversation switch and delete too; deleting keeps its past results
+as an ordinary conversation. Saying "pause my briefing" anywhere also works, and on
 desktop Edge and Chrome the notification has a Pause button. A run waits while
 its owner has a reply running or both workers are busy, and is skipped with a
 note if it cannot start within 3 hours, for example because the app was down.

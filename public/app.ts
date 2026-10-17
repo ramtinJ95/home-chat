@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineSummary, StreamEvent, ToolName } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, ToolName, Weekday } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -26,7 +26,6 @@ const ui = {
   avatar: $('#avatar'),
   identity: $('#identity'),
   logout: $<HTMLButtonElement>('#logout'),
-  modeBadge: $('#mode-badge'),
   title: $('#chat-title'),
   research: $<HTMLButtonElement>('#research'),
   providerWarning: $('#provider-warning'),
@@ -60,6 +59,10 @@ const ui = {
   aboutForm: $<HTMLFormElement>('#about-form'),
   aboutMine: $<HTMLTextAreaElement>('#about-mine'),
   aboutShared: $<HTMLTextAreaElement>('#about-shared'),
+  routinesEntry: $('#routines-entry'),
+  routinesPage: $('#routines-page'),
+  routinesClose: $<HTMLButtonElement>('#routines-close'),
+  routineCards: $('#routine-cards'),
 };
 
 const TOOL_ACTIVITY: Record<ToolName, string> = {
@@ -611,6 +614,158 @@ async function openAbout() {
   showSheet(ui.about, ui.aboutClose);
 }
 
+// Routines: every routine as a card, to switch, edit, open or delete. One card at a time turns into its edit form,
+// which survives the list being drawn again (`routineEdit`); `saved` is what the form held when it opened.
+const REPEATS: [RoutineSchedule['kind'], string][] = [['daily', 'Every day'], ['weekdays', 'Weekdays'], ['weekly', 'On certain days'],
+  ['monthly', 'Once a month'], ['once', 'Once']];
+const WEEK: [Weekday, string][] = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'], ['thu', 'Thu'], ['fri', 'Fri'], ['sat', 'Sat'], ['sun', 'Sun']];
+const OUTCOMES = {running: 'running now', done: 'done', failed: 'failed', skipped: 'skipped'};
+let routineList: RoutineSummary[] = [];
+let routineEdit: {id: string; form: HTMLFormElement; read: () => RoutineEdit; saved: string} | undefined;
+const nextRun = (routine: RoutineSummary) => routine.next === 'Paused' || routine.next === 'Done' ? routine.next : `Next run: ${routine.next}`;
+const routineEdited = () => sheet?.node === ui.routinesPage && routineEdit !== undefined && JSON.stringify(routineEdit.read()) !== routineEdit.saved;
+
+async function openRoutines(edit?: string) {
+  routineEdit = undefined;
+  renderRoutineCards(await api<RoutineSummary[]>('/api/routines'));
+  setDrawer(false);
+  showSheet(ui.routinesPage, ui.routinesClose);
+  const routine = routineList.find(item => item.id === edit);
+  if (routine) editRoutine(routine);
+}
+
+function renderRoutineCards(list: RoutineSummary[]) {
+  routineList = list;
+  if (routineEdit && !list.some(item => item.id === routineEdit!.id)) routineEdit = undefined;
+  const nodes = list.length ? list.map(item => item.id === routineEdit?.id ? routineEdit.form : routineCard(item))
+    : [element('p', 'routines-empty', 'No routines yet.')];
+  const form = routineEdit?.form.parentNode === ui.routineCards ? routineEdit.form : undefined;
+  if (!form) return ui.routineCards.replaceChildren(...nodes);
+  // Moving the form would take the focus out of it mid-typing, so the cards are put around it instead.
+  for (const child of [...ui.routineCards.children]) if (child !== form) child.remove();
+  const at = nodes.indexOf(form);
+  form.before(...nodes.slice(0, at)); form.after(...nodes.slice(at + 1));
+}
+
+function routineCard(routine: RoutineSummary): HTMLElement {
+  const card = element('article', 'routine-card');
+  const head = element('div', 'routine-card-head');
+  head.append(element('h2', undefined, routine.title), routineSwitch(routine));
+  card.append(head, element('p', 'routine-when', routine.schedule), element('p', 'routine-last', nextRun(routine)));
+  if (routine.lastRun) {
+    const {when, outcome} = routine.lastRun;
+    card.append(element('p', outcome === 'failed' ? 'routine-last failed' : 'routine-last', `Last run: ${when}, ${OUTCOMES[outcome]}`));
+  }
+  card.append(element('p', 'routine-task', routine.prompt));
+  if (routine.deepResearch) card.append(element('span', 'routine-tag', 'Deep research'));
+  const actions = element('div', 'routine-actions');
+  const open = element('button', 'ghost', 'Open conversation');
+  if (routine.unread) open.append(unreadDot());
+  // Opening another conversation closes this page by itself.
+  open.onclick = () => { if (chat?.id === routine.chat) closeSheet(); else openChat(routine.chat).catch(showError); };
+  const edit = element('button', 'ghost', 'Edit');
+  edit.onclick = () => editRoutine(routine);
+  const remove = element('button', 'ghost danger', 'Delete');
+  remove.onclick = () => deleteRoutine(routine).catch(showError);
+  actions.append(open, edit, remove);
+  card.append(actions);
+  return card;
+}
+
+function field(label: string, control: HTMLElement): HTMLLabelElement {
+  const wrap = element('label', 'routine-field');
+  wrap.append(element('span', undefined, label), control);
+  return wrap;
+}
+
+function editRoutine(routine: RoutineSummary) {
+  if (routineEdited() && !confirm('Leave without saving your changes to this routine?')) return;
+  const rule = routine.rule;
+  const form = element('form', 'routine-card routine-form');
+  form.setAttribute('aria-label', `Edit “${routine.title}”`);
+  const title = element('input');
+  title.required = true; title.maxLength = 80; title.value = routine.title;
+  const prompt = element('textarea');
+  prompt.required = true; prompt.maxLength = 4000; prompt.rows = 5; prompt.value = routine.prompt;
+  const repeats = element('select');
+  repeats.append(...REPEATS.map(([kind, label]) => { const option = element('option', undefined, label); option.value = kind; return option; }));
+  repeats.value = rule.kind;
+  const time = element('input');
+  time.type = 'time'; time.required = true; time.value = rule.time;
+  const days = element('fieldset', 'routine-days');
+  days.append(element('legend', undefined, 'On'));
+  const dayBoxes = WEEK.map(([day, label]) => {
+    const chip = element('label', 'day-chip');
+    const box = element('input');
+    box.type = 'checkbox'; box.value = day; box.checked = rule.kind === 'weekly' ? rule.days.includes(day) : day === 'mon';
+    chip.append(box, element('span', undefined, label));
+    days.append(chip);
+    return box;
+  });
+  const dayOfMonth = element('input');
+  dayOfMonth.type = 'number'; dayOfMonth.min = '1'; dayOfMonth.max = '28'; dayOfMonth.inputMode = 'numeric';
+  dayOfMonth.value = String(rule.kind === 'monthly' ? rule.day : 1);
+  const monthly = field('Day of the month (1 to 28)', dayOfMonth);
+  const date = element('input');
+  // No minimum: the server reads the date in its own time zone and refuses one that has passed.
+  date.type = 'date';
+  date.value = rule.kind === 'once' ? rule.date : new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+  const once = field('Date', date);
+  const research = element('input');
+  research.type = 'checkbox'; research.checked = routine.deepResearch;
+  const researchField = element('label', 'routine-check');
+  researchField.append(research, 'Deep research: a thorough, sourced report each run');
+  researchField.hidden = !me?.deepResearch && !routine.deepResearch;
+  // Fields for other kinds of schedule are disabled too, so a leftover value in them cannot block Save.
+  const showRepeats = () => {
+    days.hidden = days.disabled = repeats.value !== 'weekly';
+    monthly.hidden = dayOfMonth.disabled = repeats.value !== 'monthly'; dayOfMonth.required = true;
+    once.hidden = date.disabled = repeats.value !== 'once'; date.required = true;
+  };
+  repeats.onchange = showRepeats;
+  showRepeats();
+  const read = (): RoutineEdit => {
+    const kind = repeats.value as RoutineSchedule['kind'];
+    const schedule: RoutineSchedule = kind === 'weekly' ? {kind, time: time.value, days: dayBoxes.filter(box => box.checked).map(box => box.value as Weekday)}
+      : kind === 'monthly' ? {kind, time: time.value, day: Number(dayOfMonth.value)}
+      : kind === 'once' ? {kind, time: time.value, date: date.value}
+      : {kind, time: time.value};
+    return {title: title.value.trim(), prompt: prompt.value.trim(), rule: schedule, deepResearch: research.checked};
+  };
+  const cancel = element('button', 'ghost', 'Cancel');
+  cancel.onclick = () => { routineEdit = undefined; renderRoutineCards(routineList); };
+  const save = element('button', 'primary', 'Save');
+  save.type = 'submit';
+  const actions = element('div', 'routine-form-actions');
+  actions.append(cancel, save);
+  form.append(field('Name', title), field('What it does each time', prompt), field('Repeats', repeats), days, monthly, once,
+    field('Time', time), researchField, actions);
+  form.onsubmit = async event => {
+    event.preventDefault();
+    if (save.disabled) return;
+    const edit = read();
+    if (edit.rule?.kind === 'weekly' && !edit.rule.days.length) return showError(new Error('Pick at least one day'));
+    save.disabled = true;
+    try {
+      const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(routine.id)}`, 'PATCH', edit);
+      // The form closes, unless another one was opened meanwhile, or this one was changed again while saving: then
+      // those changes stay, unsaved.
+      if (routineEdit?.form === form) {
+        const sent = JSON.stringify(edit);
+        if (JSON.stringify(read()) === sent) routineEdit = undefined; else routineEdit.saved = sent;
+      }
+      if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
+      await refreshList();
+      showNotice(`Saved “${changed.title}”. ${nextRun(changed)}.`);
+    } catch (error) { showError(error); }
+    finally { save.disabled = false; }
+  };
+  routineEdit = {id: routine.id, form, read, saved: JSON.stringify(read())};
+  renderRoutineCards(routineList);
+  form.scrollIntoView({block: 'nearest'});
+  title.focus({preventScroll: true});
+}
+
 function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
   if (chat?.id !== next.id) closeSheet();
@@ -687,10 +842,12 @@ async function deleteRoutine(routine: RoutineSummary) {
 function renderRoutineBar(routine: RoutineSummary | null) {
   ui.routineBar.hidden = !routine;
   if (!routine) return ui.routineBar.replaceChildren();
-  const remove = element('button', 'ghost', 'Delete routine');
+  const edit = element('button', 'ghost', 'Edit');
+  edit.onclick = () => openRoutines(routine.id).catch(showError);
+  const remove = element('button', 'ghost danger', 'Delete routine');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
   const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
-  ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), remove);
+  ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove);
 }
 
 function routineRow(routine: RoutineSummary): HTMLElement {
@@ -728,6 +885,7 @@ async function refreshList(): Promise<ChatSummary[]> {
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines')]);
   ui.routines.hidden = !routines.length;
   ui.routineList.replaceChildren(...routines.map(routineRow));
+  if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
   // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list.
   const list = all.reverse();
   ui.chatList.replaceChildren(...list.filter(item => !item.routine).map(item => {
@@ -914,7 +1072,6 @@ async function enter() {
   ui.login.hidden = true;
   ui.workspace.hidden = false;
   ui.identity.textContent = me.user === 'owner' ? 'Your space' : 'Guest space';
-  ui.modeBadge.textContent = me.mode === 'access' ? 'Private' : 'Local only';
   ui.avatar.textContent = me.user === 'owner' ? 'Y' : 'G';
   ui.providerWarning.hidden = me.codexConfigured;
   // A tapped notification opens /?chat=<id>, with &pause=<routine> from its Pause button; the address goes back to /
@@ -1172,13 +1329,16 @@ ui.imageInput.onchange = async () => {
 
 ui.readerClose.onclick = closeSheet;
 ui.aboutClose.onclick = closeSheet;
+ui.routinesClose.onclick = closeSheet;
 addEventListener('popstate', () => {
   if (sheetInHistory()) return;
-  // Back with unsaved notes asks first; staying puts the page back in the history.
-  if (aboutEdited() && !confirm('Leave without saving your changes to About us?')) { history.pushState({sheet: true}, ''); return; }
+  // Back with unsaved changes asks first; staying puts the page back in the history.
+  const unsaved = aboutEdited() ? 'About us' : routineEdited() ? 'this routine' : '';
+  if (unsaved && !confirm(`Leave without saving your changes to ${unsaved}?`)) { history.pushState({sheet: true}, ''); return; }
   hideSheet();
 });
 addEventListener('keydown', event => { if (event.key === 'Escape' && sheet) closeSheet(); });
+ui.routinesEntry.replaceChildren(actionButton('clock', 'Routines', () => openRoutines()));
 ui.aboutEntry.replaceChildren(actionButton('people', 'About us', openAbout));
 ui.aboutForm.onsubmit = async event => {
   event.preventDefault();

@@ -58,6 +58,7 @@
       <p id="recent-label" class="section-label">Recent</p>
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
+        <div id="routines-entry" class="sidebar-action"></div>
         <div id="about-entry" class="sidebar-action"></div>
         <div id="install" class="sidebar-action" hidden></div>
         <div id="notifications" class="sidebar-action" hidden></div>
@@ -77,7 +78,6 @@
           <svg viewBox="0 0 24 24"><use href="#menu"/></svg>
         </button>
         <h2 id="chat-title" class="chat-title">Your space to think</h2>
-        <span class="badge"><span class="pulse"></span><span id="mode-badge"></span></span>
       </header>
       <div id="routine-bar" class="routine-bar" hidden></div>
       <div id="provider-warning" class="notice" hidden>
@@ -160,6 +160,21 @@
       <p class="about-hint">Everyone who uses Home Chat sees these and can change them.</p>
       <textarea id="about-shared" rows="6" maxlength="10000" placeholder="We live in Stockholm&#10;Two kids, Alva (7) and Leo (4)"></textarea>
     </form>
+  </section>
+
+  <section id="routines-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="routines-title" hidden>
+    <header class="reader-bar">
+      <button id="routines-close" class="icon-button" type="button" aria-label="Back to the conversation">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+    </header>
+    <div class="reader-page about-page">
+      <p class="reader-meta">Runs on its own</p>
+      <h1 id="routines-title" class="reader-title">Routines</h1>
+      <p class="about-lede">Each routine runs at its time, and its result arrives in its own conversation with a notification.
+        To add one, ask in any conversation, like “every weekday at 7:30, give me the weather and my day”.</p>
+      <div id="routine-cards" class="routine-cards"></div>
+    </div>
   </section>
 
   <div id="error" class="toast" role="alert" hidden></div>

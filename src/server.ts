@@ -11,7 +11,7 @@ import { atomicJson, readJson, serialSave } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
-import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, type Routine } from './routines.ts';
+import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
 import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
@@ -221,7 +221,9 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   // Routine runs per owner, for the daily budget. Kept in memory: a restart forgets the day's count.
   const runTimes = new Map<User, number[]>();
   const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
-    schedule: describeSchedule(routine.schedule), next: nextLabel(routine), unread: chats.get(routine.chat)?.unread === true});
+    schedule: describeSchedule(routine.schedule), rule: routine.schedule, prompt: routine.prompt, deepResearch: routine.deepResearch,
+    next: nextLabel(routine), lastRun: routine.lastRun ? {when: whenLabel(new Date(routine.lastRun.at)), outcome: routine.lastRun.outcome} : null,
+    unread: chats.get(routine.chat)?.unread === true});
   // Open copies of a routine's conversation show its new state: the switch at the top of the thread.
   const showRoutine = (routine: Routine) => {
     const chat = chats.get(routine.chat);
@@ -697,8 +699,8 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         return send(201, snapshot(chat));
       }
       const parts = path.split('/').filter(Boolean);
-      // The app's on/off switch and delete; changing a routine otherwise happens by asking the model.
-      if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && (req.method === 'POST' || req.method === 'DELETE')) {
+      // The Routines page: its on/off switch, edits and delete. Creating one happens by asking the model.
+      if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && ['POST', 'PATCH', 'DELETE'].includes(req.method ?? '')) {
         const routine = routines.get(parts[2]);
         if (!routine || routine.owner !== session.user) throw fail(404, 'Not found');
         let changed;
@@ -707,6 +709,11 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
           if (typeof body.enabled !== 'boolean') throw fail(400, 'Invalid setting');
           try { changed = await routines.setEnabled(session.user, routine.id, body.enabled); }
           catch (error) { if (error instanceof RoutineError) throw fail(409, error.message); throw error; }
+        } else if (req.method === 'PATCH') {
+          const body = await jsonBody(req, 32 * 1024);
+          const edit = {title: body.title, prompt: body.prompt, schedule: body.rule, deepResearch: body.deepResearch};
+          try { changed = await routines.update(session.user, routine.id, edit); }
+          catch (error) { if (error instanceof RoutineError) throw fail(400, error.message); throw error; }
         } else changed = await routines.remove(session.user, routine.id);
         showRoutine(changed);
         return send(200, routineSummary(changed));
