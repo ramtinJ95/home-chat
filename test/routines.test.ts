@@ -7,6 +7,11 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { composePrompt, refusedInTurn, ROUTINE_NOTE } from '../src/policy.ts';
 import { createRoutines, cronFor, describeSchedule, nextAfter, parseSchedule, whenLabel, type Routine } from '../src/routines.ts';
 
+// Due runs fire only once their next times are saved, which takes longer on a busy disk than any fixed wait allows.
+async function until(done: () => boolean) {
+  for (const deadline = Date.now() + 5000; !done() && Date.now() < deadline;) await delay(10);
+}
+
 test('schedules become cron patterns read in Stockholm time, daylight saving included', () => {
   assert.equal(cronFor(parseSchedule({kind: 'daily', time: '07:30'})), '30 7 * * *');
   assert.equal(cronFor(parseSchedule({kind: 'weekly', time: '18:05', days: ['sat', 'mon']})), '5 18 * * 1,6');
@@ -70,7 +75,7 @@ test('the store saves routines, runs them when due, and flags runs missed for ho
     await writeFile(path, JSON.stringify([recent, old]));
     const again = await createRoutines(path, due);
     again.start();
-    await delay(50);
+    await until(() => runs.length === 2);
     assert.deepEqual(runs.sort((a, b) => a.id.localeCompare(b.id)), [{id: 'old', late: true}, {id: 'recent', late: false}]);
     // Both moved on to their next run, and that was saved before they ran.
     for (const item of JSON.parse(await readFile(path, 'utf8')) as Routine[]) assert.ok(Date.parse(item.nextRun!) > Date.now());
@@ -90,7 +95,7 @@ test('a run still waiting at a restart runs after it, and one cut off by the res
     const saved: Routine[] = JSON.parse(await readFile(path, 'utf8'));
     await writeFile(path, JSON.stringify([{...saved[0], nextRun: new Date(Date.now() - 60_000).toISOString()}]));
     const second = await createRoutines(path, item => runs.push(item.id));
-    second.start(); await delay(50); second.stop();
+    second.start(); await until(() => runs.length === 1); second.stop();
     assert.deepEqual(runs, [routine.id]);
     assert.ok((JSON.parse(await readFile(path, 'utf8')) as Routine[])[0].pending);
     const third = await createRoutines(path, item => runs.push(item.id));
