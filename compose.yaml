@@ -25,6 +25,9 @@ services:
       NODE_USE_ENV_PROXY: "1"
       # Deep research (Exa). Empty leaves the mode switched off and hidden in the app.
       EXA_API_KEY: ${EXA_API_KEY:-}
+      # What the app and the model call each person. Empty means "the owner" and "the guest".
+      HOME_CHAT_OWNER_NAME: ${HOME_CHAT_OWNER_NAME:-}
+      HOME_CHAT_GUEST_NAME: ${HOME_CHAT_GUEST_NAME:-}
     volumes: ["chat-data:/data"]
     tmpfs: ["/tmp:size=128m,mode=1777", "/run:size=8m,mode=755"]
     networks:

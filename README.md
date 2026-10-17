@@ -173,10 +173,21 @@ or delete it. Routine runs can use lists too. Each person can make 30 lists of
 up to 200 items; the page catches up with changes from the other phone when it
 comes back into view.
 
-**Search** in the sidebar looks through the titles and messages of your own
-conversations, ignoring case and accents, and finds messages with every word
-typed. A result opens its conversation at that message, which lights up for
-a moment. It shows at most 40 results, 5 per conversation.
+**Shared conversations.** A conversation is private until the person who
+started it taps Share in its header; then it is listed under Shared for both,
+and both read, write, answer the model's questions and stop replies in it.
+The model is told who wrote each message, by the names set as
+`HOME_CHAT_OWNER_NAME` and `HOME_CHAT_GUEST_NAME` in `.env` (optional; "the
+owner" and "the guest" without them), and a message's household notes, todo
+lists and routines are its sender's. Only the sender of the last message can
+regenerate or edit it. Only the owner deletes it or makes it private again,
+which closes it on the other phone. A reply to one person shows as unread for
+the other; routine conversations stay private.
+
+**Search** in the sidebar looks through the titles and messages of the
+conversations you can see, your own and shared ones, ignoring case and
+accents, and finds messages with every word typed. A result opens its
+conversation at that message, which lights up for a moment. It shows at most 40 results, 5 per conversation.
 
 Every finished reply can be **copied** (as Markdown) or **shared** as text.
 The last reply can be **regenerated**, and your last message **edited** in

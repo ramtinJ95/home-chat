@@ -41,8 +41,25 @@ Each is its own PR, in this order.
 
 ## 2. Shared conversations
 
-To be planned in detail once todos are merged: sharing in the conversation's menu, a Shared section in the sidebar,
-who-said-what on messages and in the prompt, which notes a turn uses, push to the other person, search, and delete.
+- **Sharing.** A conversation has an owner and is private until the owner shares it from the conversation's header,
+  and private again the same way. Routine conversations can't be shared. Making one private again closes the other
+  person's open view of it at once; it waits while a reply is running.
+- **Who sees what.** A shared conversation is listed for both under Shared in the sidebar, above Recent, and both can
+  open it, send, attach pictures, answer the model's questions, stop a reply and switch deep research. Only the owner
+  deletes it or changes its sharing. Its documents and pictures follow the conversation. Search covers it for both.
+- **Who is speaking.** Every message records its sender (`by`). In a shared conversation the server's note before the
+  message tells the model who wrote it, by name. The user's text still follows the fixed prefix, so it can't pose as
+  that note. The app shows the sender's name on messages in a shared conversation.
+- **Whose things a turn changes.** The turn's sender: their household notes go into the instructions (with the shared
+  ones), and `memory`, `todo` and `routine` act for them. A turn records its sender for this. Only the sender of the
+  last message can regenerate or edit it.
+- **One reply at a time per person.** The rule that a person has at most one reply running counts the turns they sent,
+  so one person's reply in a shared conversation doesn't block the other person elsewhere.
+- **Names.** `HOME_CHAT_OWNER_NAME` and `HOME_CHAT_GUEST_NAME` in `.env`, optional; without them the app and the model
+  say "the owner" and "the guest". `GET /api/me` returns both names.
+- **Notifications.** As now, a finished reply or a waiting question notifies its sender when they are not looking. The
+  other person gets an unread dot on the conversation, not a push: a push for every message in a busy shared
+  conversation would be noise. Unread is kept per person.
 
 ## 3. Shared library
 

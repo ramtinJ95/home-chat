@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, Weekday } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, User, Weekday } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -20,6 +20,8 @@ const ui = {
   search: $<HTMLInputElement>('#search'),
   searchResults: $('#search-results'),
   chatList: $('#chat-list'),
+  shared: $('#shared'),
+  sharedList: $('#shared-list'),
   routines: $('#routines'),
   routineList: $('#routine-list'),
   routineBar: $('#routine-bar'),
@@ -27,6 +29,9 @@ const ui = {
   identity: $('#identity'),
   logout: $<HTMLButtonElement>('#logout'),
   title: $('#chat-title'),
+  sharedBy: $('#shared-by'),
+  share: $<HTMLButtonElement>('#share-chat'),
+  shareLabel: $('#share-label'),
   research: $<HTMLButtonElement>('#research'),
   providerWarning: $('#provider-warning'),
   messages: $('#messages'),
@@ -34,6 +39,7 @@ const ui = {
   editing: $('#editing'),
   cancelEdit: $<HTMLButtonElement>('#cancel-edit'),
   composer: $<HTMLFormElement>('#composer'),
+  privacy: $('#privacy'),
   message: $<HTMLTextAreaElement>('#message'),
   attachments: $('#attachments'),
   imageInput: $<HTMLInputElement>('#image-input'),
@@ -127,6 +133,13 @@ const pushSupported = 'serviceWorker' in navigator && 'PushManager' in window &&
 let pushState: PushState = 'unsupported';
 
 let me: Me | undefined;
+// What the app calls a person: "You" for the one signed in, otherwise their name from .env.
+const nameOf = (user: User) => user === me?.user ? 'You' : me?.names[user] ?? user;
+const otherName = () => me?.names[me.user === 'owner' ? 'guest' : 'owner'] ?? '';
+// Who sent a user message; older ones, from before sharing, are the owner's.
+const senderOf = (snapshot: ChatSnapshot, message: Message) => message.by ?? snapshot.owner;
+// The server says whether the last turn can be redone at all; only the person who sent its message may.
+const canRedo = (snapshot: ChatSnapshot) => snapshot.redoable && senderOf(snapshot, snapshot.messages.at(-2)!) === me?.user;
 let chat: ChatSnapshot | undefined;
 // The snapshot last drawn, as JSON, so the same one coming again is not drawn twice (update). Cleared by anything that
 // changes the page since: stream events, and a dropped stream, after which the next snapshot is drawn in full.
@@ -152,6 +165,12 @@ function toast(text: string, info: boolean) {
 const showError = (error: unknown) => toast(error instanceof Error ? error.message : String(error), false);
 const showNotice = (text: string) => toast(text, true);
 
+// A request the server answered with an error, which carries its status.
+class RequestFailed extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) { super(message); this.status = status; }
+}
+
 async function api<T>(path: string, method = 'GET', body?: unknown, signal?: AbortSignal): Promise<T> {
   let response: Response;
   try {
@@ -168,7 +187,7 @@ async function api<T>(path: string, method = 'GET', body?: unknown, signal?: Abo
   }
   // Errors from Cloudflare itself (e.g. the home machine is offline) are HTML pages, not our JSON.
   const result: unknown = await response.json().catch(() => undefined);
-  if (!response.ok) throw new Error((result as ApiError | undefined)?.error ?? `Home Chat is unavailable right now (HTTP ${response.status})`);
+  if (!response.ok) throw new RequestFailed(response.status, (result as ApiError | undefined)?.error ?? `Home Chat is unavailable right now (HTTP ${response.status})`);
   return result as T;
 }
 
@@ -475,8 +494,8 @@ function messageActions(snapshot: ChatSnapshot, message: Message, index: number)
     bar.append(actionButton('copy', 'Copy', async button => { await copyText(message.text); button.lastChild!.textContent = 'Copied'; }));
     if ('share' in navigator) bar.append(actionButton('share', 'Share', () => shareText({text: message.text}, 'Could not share this reply')));
   }
-  if (snapshot.redoable && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
-  if (snapshot.redoable && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
+  if (canRedo(snapshot) && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
+  if (canRedo(snapshot) && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
   return bar.childElementCount ? bar : undefined;
 }
 
@@ -486,7 +505,12 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
   const article = element('article', `message ${message.role}${fresh ? ' fresh' : ''}`);
   const bubble = element('div', 'bubble');
   const content = element('div', 'content');
-  bubble.append(element('span', 'sr-only', message.role === 'user' ? 'You said' : 'Home Chat said'), content);
+  const from = message.role === 'user' ? nameOf(senderOf(snapshot, message)) : 'Home Chat';
+  bubble.append(element('span', 'sr-only', `${from} said`), content);
+  // Names over the messages wherever more than one person writes.
+  if (message.role === 'user' && (snapshot.shared || senderOf(snapshot, message) !== snapshot.owner)) {
+    article.append(element('p', 'message-from', from));
+  }
   if (message.role === 'assistant') {
     renderMarkdown(content, message.text);
     streaming = {node: content, text: message.text};
@@ -923,12 +947,21 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
 function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
   if (chat?.id !== next.id) closeSheet();
-  if (editing && (editing.chat !== next.id || !next.redoable)) stopEditing();
+  if (editing && (editing.chat !== next.id || !canRedo(next))) stopEditing();
   const sameChat = chat?.id === next.id;
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
   shown = JSON.stringify(next);
   ui.title.textContent = next.title;
+  // The owner shares it or makes it private again; the other person sees whose it is.
+  const mine = next.owner === me?.user;
+  ui.share.hidden = !mine || next.routine !== null;
+  ui.share.setAttribute('aria-pressed', String(next.shared));
+  ui.shareLabel.textContent = next.shared ? 'Shared' : 'Share';
+  ui.share.title = next.shared ? `Shared with ${otherName()}; tap to make it private` : `Share this conversation with ${otherName()}`;
+  ui.sharedBy.hidden = mine;
+  ui.sharedBy.textContent = mine ? '' : `Shared by ${nameOf(next.owner)}`;
+  ui.privacy.textContent = next.shared ? 'Shared' : 'Private';
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
   ui.message.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
@@ -1029,9 +1062,9 @@ function routineRow(routine: RoutineSummary): HTMLElement {
   return row;
 }
 
-function unreadDot(): HTMLElement {
+function unreadDot(label = 'New results'): HTMLElement {
   const dot = element('span', 'unread-dot');
-  dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', 'New results');
+  dot.setAttribute('role', 'img'); dot.setAttribute('aria-label', label);
   return dot;
 }
 
@@ -1040,21 +1073,33 @@ async function refreshList(): Promise<ChatSummary[]> {
   ui.routines.hidden = !routines.length;
   ui.routineList.replaceChildren(...routines.map(routineRow));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
-  // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list.
+  // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list, and
+  // shared ones in theirs.
   const list = all.reverse();
-  ui.chatList.replaceChildren(...list.filter(item => !item.routine).map(item => {
-    const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
-    const open = element('button', 'chat-open', item.title);
-    open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
-    const remove = element('button', 'chat-delete');
-    remove.title = 'Delete conversation';
-    remove.setAttribute('aria-label', `Delete “${item.title}”`);
-    remove.append(icon('trash'));
-    remove.onclick = () => deleteChat(item).catch(showError);
-    row.append(remove, open, ...(item.unread ? [unreadDot()] : []));
-    return row;
-  }));
+  const shared = list.filter(item => item.shared);
+  ui.shared.hidden = !shared.length;
+  ui.sharedList.replaceChildren(...shared.map(chatRow));
+  ui.chatList.replaceChildren(...list.filter(item => !item.routine && !item.shared).map(chatRow));
   return list;
+}
+
+function chatRow(item: ChatSummary): HTMLElement {
+  const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
+  const open = element('button', 'chat-open', item.title);
+  open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
+  // Only the owner deletes it; the other person's row has a mark there instead.
+  const lead = element(item.mine ? 'button' : 'span', item.mine ? 'chat-delete' : 'chat-delete chat-mark');
+  if (item.mine) {
+    lead.title = 'Delete conversation';
+    lead.setAttribute('aria-label', `Delete “${item.title}”`);
+    lead.append(icon('trash'));
+    lead.onclick = () => deleteChat(item).catch(showError);
+  } else {
+    lead.title = `Shared by ${otherName()}`;
+    lead.append(icon('people'));
+  }
+  row.append(lead, open, ...(item.unread ? [unreadDot('New messages')] : []));
+  return row;
 }
 
 // Search: while the box has words in it, the sidebar shows results instead of its lists. `searchRun` drops the answer
@@ -1122,7 +1167,8 @@ async function openAt(id: string, message: number | null) {
 }
 
 async function deleteChat(item: ChatSummary) {
-  if (!confirm(`Delete “${item.title}”? Its messages and pictures will be gone for good.`)) return;
+  const forBoth = item.shared ? `, for ${otherName()} too` : '';
+  if (!confirm(`Delete “${item.title}”? Its messages and pictures will be gone for good${forBoth}.`)) return;
   await api(`/api/chats/${item.id}`, 'DELETE');
   if (item.id === chat?.id) await openLatest(); else await refreshList();
 }
@@ -1151,7 +1197,7 @@ async function connect(id: string) {
 }
 
 function listen(id: string) {
-  stream = new EventSource(`/api/chats/${id}/events`);
+  const source = stream = new EventSource(`/api/chats/${id}/events`);
   stream.onmessage = message => {
     const event = JSON.parse(message.data) as StreamEvent;
     if (event.type !== 'snapshot') shown = '';
@@ -1162,9 +1208,27 @@ function listen(id: string) {
       case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
+      case 'gone': source.close(); stream = undefined; orGone(id, connect(id)).catch(showError); break;
     }
   };
-  stream.onerror = () => { shown = ''; ui.activity.textContent = 'Connection interrupted; reconnecting…'; };
+  stream.onerror = () => {
+    shown = '';
+    ui.activity.textContent = 'Connection interrupted; reconnecting…';
+    // The browser retries a dropped stream by itself, but not one the server refused. If that is because the
+    // conversation is gone for this person, say so; otherwise the page stays as it is, without retrying in a loop.
+    if (source === stream && source.readyState === EventSource.CLOSED) orGone(id, api(`/api/chats/${id}`)).catch(showError);
+  };
+}
+
+// Runs `task` for conversation `id`; if it finds the conversation deleted or no longer shared with this person, says so
+// and opens another one.
+async function orGone(id: string, task: Promise<unknown>) {
+  try { await task; }
+  catch (error) {
+    if (!(error instanceof RequestFailed && error.status === 404) || onScreen !== id) throw error;
+    showNotice('That conversation was deleted or is no longer shared with you.');
+    await openLatest();
+  }
 }
 
 // Regenerate, and edit and resend: the last message goes again, as it was or as edited, in place of the last turn.
@@ -1400,7 +1464,7 @@ navigator.serviceWorker?.addEventListener('message', event => {
 // page is hidden and reopens, with a fresh snapshot, when it is back.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { connection++; stream?.close(); stream = undefined; }
-  else if (onScreen && !stream) connect(onScreen).catch(showError);
+  else if (onScreen && !stream) orGone(onScreen, connect(onScreen)).catch(showError);
   // Shared lists may have changed on another phone meanwhile.
   if (!document.hidden && sheet?.node === ui.todosPage) refreshTodos().catch(showError);
 });
@@ -1447,6 +1511,15 @@ ui.research.onclick = async () => {
   // The stream may bring the same snapshot first.
   try { update(await api<ChatSnapshot>(`/api/chats/${chat.id}/research`, 'POST', {on: !chat.deepResearch})); }
   catch (error) { showError(error); }
+};
+ui.share.onclick = async () => {
+  if (!chat) return;
+  const on = !chat.shared;
+  if (!on && !confirm(`Make “${chat.title}” private again? It will no longer be shared with ${otherName()}.`)) return;
+  try {
+    update(await api<ChatSnapshot>(`/api/chats/${chat.id}/share`, 'POST', {on}));
+    await refreshList();
+  } catch (error) { showError(error); }
 };
 ui.stop.onclick = () => {
   if (chat) api(`/api/chats/${chat.id}/abort`, 'POST', {}).catch(showError);
