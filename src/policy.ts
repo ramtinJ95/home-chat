@@ -4,7 +4,7 @@ import ipaddr from 'ipaddr.js';
 import type { ToolName, User, Weekday } from './api.d.ts';
 
 export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory', 'todo'] as const satisfies readonly ToolName[]);
-const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
+export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (src/agent/tools/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
 // Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
@@ -36,13 +36,16 @@ several calls covering different angles, with mode deep-reasoning for ambiguous,
 Then save one consolidated report with document, sources included, and reply with a short summary. Answer ordinary chat
 normally, without research.`;
 export const ROUTINE_NOTE = 'This is a scheduled routine run, and nobody is watching.';
-// `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30".
-export interface TurnMode { deepResearch?: boolean; routineRun?: string }
+// `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30". `from`: in a shared conversation, the
+// name of the person who sent the message.
+export interface TurnMode { deepResearch?: boolean; routineRun?: string; from?: string }
+export const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
 
-export function composePrompt(message: string, {deepResearch, routineRun}: TurnMode = {}): string {
+export function composePrompt(message: string, {deepResearch, routineRun, from}: TurnMode = {}): string {
   const notes = [
     routineRun && `${ROUTINE_NOTE} It was due ${routineRun} (Stockholm time). The message is the routine's standing task: do it and
 reply with the result. You cannot ask questions, change routines or change the household notes during this run.`,
+    from && `${SHARED_NOTE} This message is from ${from}; the household notes, todo lists and routines you use for it are theirs.`,
     deepResearch && DEEP_RESEARCH_INSTRUCTIONS,
   ].filter(note => typeof note === 'string');
   return notes.map(note => note + '\n').join('') + USER_PREFIX + message;

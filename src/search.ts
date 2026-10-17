@@ -1,8 +1,8 @@
 import { setImmediate as nextTurn } from 'node:timers/promises';
 import type { Message, SearchResult } from './api.d.ts';
 
-// Search over one person's conversations: a message matches when its text has every word of the query, ignoring case
-// and accents ("cafe" finds "Café"). A title that matches when no message does still finds its conversation.
+// Search over the conversations one person can see: a message matches when its text has every word of the query,
+// ignoring case and accents ("cafe" finds "Café"). A title that matches when no message does still finds its conversation.
 export const MAX_QUERY = 200;
 export const MAX_RESULTS = 40;
 const PER_CHAT = 5;

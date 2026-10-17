@@ -13,6 +13,11 @@ test('the rewind recognises the message Pi was given, notes and picture paths in
   assert.equal(carriesText(composePrompt('Hello there'), 'Hello'), false);
   assert.equal(carriesText(composePrompt('Hello'), 'Hello there'), false);
   assert.equal(carriesText('Hello', 'Hello'), false);
+  // In a shared conversation the note names the sender ahead of the user's text, which cannot pose as it.
+  const shared = composePrompt('Add milk', {from: 'Sara'});
+  assert.match(shared, /^This conversation is shared by the household.* This message is from Sara;/);
+  assert.equal(carriesText(shared, 'Add milk'), true);
+  assert.doesNotMatch(composePrompt('Add milk'), /shared/);
 });
 
 test('egress accepts only exact provider hosts on TLS port', () => {

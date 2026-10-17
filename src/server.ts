@@ -14,18 +14,21 @@ import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
-import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
-// `unread`: a routine run arrived while nobody was looking; cleared when its owner opens the conversation.
-interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; unread?: true }
+// `shared`: its owner shares it with the household, and both read and write in it. `unread`: who has not seen a routine
+// run, or in a shared conversation a reply to the other person, that arrived while they were not looking; each is
+// cleared when that person opens the conversation.
+interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true; unread?: User[] }
 interface RoutineRun { routine: Routine; scheduled: Date }
 // What a conversation is busy with, from a message's admission until its reply's end is saved, or during a delete.
-// `run`: the routine run being answered, with nobody watching. `deadline`: the reply's time limit.
-interface Turn { run?: RoutineRun; deadline?: NodeJS.Timeout }
+// `by`: who sent the message, or deletes; a routine run is its owner's. `run`: the routine run being answered, with
+// nobody watching. `deadline`: the reply's time limit.
+interface Turn { by: User; run?: RoutineRun; deadline?: NodeJS.Timeout }
 interface Session { user: User; csrf: string; expires: number }
-interface StreamClient { res: http.ServerResponse; sessionKey: string }
+interface StreamClient { res: http.ServerResponse; sessionKey: string; user: User }
 
 export interface AppOptions {
   data?: string;
@@ -39,6 +42,20 @@ export interface AppOptions {
   pushFetch?: typeof fetch;
   // Whether deep research can run; by default, whether the Exa key is set.
   deepResearch?: boolean;
+  // What the app and the model call each person; by default from the environment (namesFromEnv).
+  names?: Record<User, string>;
+}
+
+// HOME_CHAT_OWNER_NAME and HOME_CHAT_GUEST_NAME, each optional. A set name must be one line of at most 40 characters,
+// since the model is told it before every message in a shared conversation.
+export function namesFromEnv(env: NodeJS.ProcessEnv): Record<User, string> {
+  const name = (key: string, fallback: string) => {
+    const value = env[key]?.trim();
+    if (!value) return fallback;
+    if (value.length > 40 || /\p{Cc}/u.test(value)) throw new Error(`${key} must be one line of at most 40 characters`);
+    return value;
+  };
+  return {owner: name('HOME_CHAT_OWNER_NAME', 'the owner'), guest: name('HOME_CHAT_GUEST_NAME', 'the guest')};
 }
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
@@ -141,7 +158,7 @@ async function loadStaticFiles() {
 }
 
 export async function createApp({data = '/data', workerFactory, authenticatedProvider, access, accessKeys, pushFetch,
-  deepResearch: researchReady = Boolean(process.env.EXA_API_KEY?.trim())}: AppOptions = {}) {
+  deepResearch: researchReady = Boolean(process.env.EXA_API_KEY?.trim()), names = namesFromEnv(process.env)}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
   const deletedDirectory = join(data, 'deleted');
@@ -171,7 +188,21 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const turns = new Map<string, Turn>();
   const occupied = (id: string) => turns.has(id);
   const release = (id: string, turn: Turn) => { if (turns.get(id) === turn) turns.delete(id); };
+  // A person has at most one turn at a time, counting the turns they sent, wherever they are.
+  const userBusy = (user: User) => [...turns.values()].some(turn => turn.by === user);
   const ownChats = (user: User) => [...chats.values()].filter(chat => chat.owner === user);
+  const canSee = (chat: Chat, user: User) => chat.owner === user || chat.shared === true;
+  const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user));
+  // Who sent a user message; older messages, from before sharing, are the owner's.
+  const sender = (chat: Chat, message: Message) => message.by ?? chat.owner;
+  const markUnread = (chat: Chat, user: User) => { if (!chat.unread?.includes(user)) (chat.unread ??= []).push(user); };
+  // True if it changed, so the conversation needs saving.
+  const markRead = (chat: Chat, user: User) => {
+    if (!chat.unread?.includes(user)) return false;
+    chat.unread = chat.unread.filter(other => other !== user);
+    if (!chat.unread.length) delete chat.unread;
+    return true;
+  };
   // The saved switch only counts while Exa is set up, so removing the key turns research off everywhere, visibly.
   const researching = (chat: Chat) => researchReady && chat.deepResearch === true;
   const workDir = (chat: Chat) => join(chatsDirectory, chat.id, 'work');
@@ -194,6 +225,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     }
     const chat: Chat = JSON.parse(record);
     if (chat.id !== id || !isUser(chat.owner)) throw new Error('Invalid conversation record');
+    // Saved before unread was kept per person, when only routine runs, which are the owner's, were marked.
+    if ((chat.unread as unknown) === true) chat.unread = [chat.owner];
     if (chat.replying) {
       delete chat.replying;
       const last = chat.messages.at(-1);
@@ -226,7 +259,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
     schedule: describeSchedule(routine.schedule), rule: routine.schedule, prompt: routine.prompt, deepResearch: routine.deepResearch,
     next: nextLabel(routine), lastRun: routine.lastRun ? {when: whenLabel(new Date(routine.lastRun.at)), outcome: routine.lastRun.outcome} : null,
-    unread: chats.get(routine.chat)?.unread === true});
+    unread: chats.get(routine.chat)?.unread?.includes(routine.owner) === true});
   // Open copies of a routine's conversation show its new state: the switch at the top of the thread.
   const showRoutine = (routine: Routine) => {
     const chat = chats.get(routine.chat);
@@ -235,12 +268,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const snapshot = (chat: Chat): ChatSnapshot => {
     const routine = routines.byChat(chat.id);
     const question = workers.get(chat.id)?.question ?? null;
-    return {id: chat.id, title: chat.title, messages: chat.messages, assets: chat.assets.map(({id, document}) => document ? {id, document} : {id}),
-      busy: chat.replying === true, question, redoable: !chat.replying && !question && !notRedoable(chat), deepResearch: researching(chat),
+    return {id: chat.id, title: chat.title, owner: chat.owner, shared: chat.shared === true, messages: chat.messages,
+      assets: chat.assets.map(({id, document}) => document ? {id, document} : {id}), busy: chat.replying === true, question, redoable: !chat.replying && !question && !notRedoable(chat), deepResearch: researching(chat),
       routine: routine ? routineSummary(routine) : null};
   };
-  // Someone has this conversation open and in view: the app drops its stream while hidden (public/app.ts).
-  const watching = (id: string) => (streams.get(id)?.size ?? 0) > 0;
+  // This person has the conversation open and in view: the app drops its stream while hidden (public/app.ts).
+  const watching = (id: string, user: User) => [...streams.get(id) ?? []].some(client => client.user === user);
   const emit = (id: string, event: StreamEvent) => {
     for (const client of streams.get(id) ?? []) {
       if (client.res.writableLength > 1024 * 1024) { client.res.destroy(); continue; }
@@ -274,19 +307,23 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
 
   async function endTurn(chat: Chat, error?: string) {
     if (stopping) return;
-    const {run, deadline} = turns.get(chat.id) ?? {};
-    clearTimeout(deadline);
+    const turn = turns.get(chat.id);
+    const {run, by = chat.owner} = turn ?? {};
+    clearTimeout(turn?.deadline);
     const last = chat.messages.at(-1);
     if (error && last?.role === 'assistant') last.error = error;
     delete chat.replying;
-    if (run && !watching(chat.id)) chat.unread = true;
+    // Who missed the reply: a routine run's owner, and in a shared conversation the person who did not send the message.
+    for (const user of USERS) {
+      if ((run ? user === by : chat.shared && user !== by) && !watching(chat.id, user)) markUnread(chat, user);
+    }
     // Clients see the turn end now, but the conversation stays occupied until it is saved, so a delete cannot remove the files under the save.
-    const saving: Turn = {};
+    const saving: Turn = {by};
     turns.set(chat.id, saving);
     try { await publish(chat); } finally { release(chat.id, saving); }
     if (run) await recordRun(run, error ? 'failed' : 'done');
-    if (!watching(chat.id)) {
-      push.notify(chat.owner, run
+    if (!watching(chat.id, by)) {
+      push.notify(by, run
         ? {title: run.routine.title, body: error ? 'This run stopped before it finished.' : 'New results are ready.', chat: chat.id, routine: run.routine.id}
         : {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
     }
@@ -294,15 +331,16 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   }
 
   // Admits one turn, for a sent message or a routine run, and hands it to Pi. Throws HttpError if it cannot start.
-  // `replace`: the message takes the place of the last turn (regenerate, or edit and resend), which Pi forgets first.
-  async function startTurn(chat: Chat, text: string, {images = [], attached = [], run, replace = false}:
-    {images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun; replace?: boolean} = {}) {
+  // `by`: who sends it. `replace`: the message takes the place of the last turn (regenerate, or edit and resend), which
+  // Pi forgets first.
+  async function startTurn(chat: Chat, text: string, {by, images = [], attached = [], run, replace = false}:
+    {by: User; images?: PromptImage[]; attached?: StoredAsset[]; run?: RoutineRun; replace?: boolean}) {
     if (occupied(chat.id)) throw new Busy('A message is already running');
-    if (ownChats(chat.owner).some(other => occupied(other.id))) throw new Busy('One active conversation per user');
+    if (userBusy(by)) throw new Busy('One active conversation per user');
     // Nothing else changes the conversation's messages while it is occupied, so this holds until the turn is admitted.
-    const refused = replace && notRedoable(chat);
+    const refused = replace && notRedoable(chat, by);
     if (refused) throw fail(409, refused);
-    const turn: Turn = {run};
+    const turn: Turn = {by, run};
     turns.set(chat.id, turn);
     // Why a turn that was admitted could not start; it is ended once admission is over (below).
     let failed: string | undefined;
@@ -327,7 +365,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       const deepResearch = run ? run.routine.deepResearch && researchReady : researching(chat);
       const due = run && runLabel(run.scheduled);
       // Saved as unknown before Pi gets it, so a restart before Pi confirms it leaves that on record (Message.delivery).
-      const asked: Message = {role: 'user', text, assets: attached.map(item => item.id), delivery: 'unknown', ...(run && {run: runTag(run)})};
+      const asked: Message = {role: 'user', by, text, assets: attached.map(item => item.id), delivery: 'unknown', ...(run && {run: runTag(run)})};
       chat.messages.push(asked, {role: 'assistant', text: '', assets: []});
       if (chat.title === 'New conversation') chat.title = text.slice(0, 55) || 'Picture conversation';
       chat.replying = true;
@@ -342,7 +380,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         turn.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); turn.deadline.unref();
         try {
           await worker.prompt(text + (attached.length ? ATTACHED_NOTE + attached.map(item => item.path).join('\n') : ''), images,
-            {deepResearch, routineRun: due});
+            {deepResearch, routineRun: due, ...(chat.shared && {from: names[by]})});
           delete asked.delivery;
         } catch (error) {
           worker.stop();
@@ -364,12 +402,14 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   }
 
   // Why the last turn cannot be asked again, as it was or edited; undefined when it can. It can when it is a message the
-  // user sent and the reply to it, and Pi confirmed the message.
-  function notRedoable(chat: Chat): string | undefined {
+  // user sent and the reply to it, and Pi confirmed the message. Given `by`, also only when that person sent it; the
+  // snapshot leaves that to the app, which knows who is looking.
+  function notRedoable(chat: Chat, by?: User): string | undefined {
     const [question, answer] = chat.messages.slice(-2);
     if (!(chat.messages.length >= 2 && question.role === 'user' && !question.run && answer.role === 'assistant' && !answer.run)) {
       return 'Only your last message and its reply can be redone';
     }
+    if (by && sender(chat, question) !== by) return 'Only the person who sent the last message can redo it';
     if (question.delivery === 'unknown') return 'This message was cut off before Pi confirmed it, so it cannot be redone; send it again as a new message';
   }
 
@@ -420,7 +460,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         dequeue(run); await skipRun(run, `routines may run ${MAX_RUNS_PER_DAY} times a day`); continue;
       }
       try {
-        await startTurn(chat, routine.prompt, {run});
+        await startTurn(chat, routine.prompt, {by: routine.owner, run});
         dequeue(run);
         today.push(Date.now());
       } catch (error) {
@@ -492,7 +532,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     worker.on('tool', name => emit(chat.id, {type: 'tool', name}));
     worker.on('question', question => {
       emit(chat.id, {type: 'question', question});
-      if (!watching(chat.id)) push.notify(chat.owner, {title: chat.title, body: 'Home Chat has a question for you.', chat: chat.id});
+      const by = turns.get(chat.id)?.by ?? chat.owner;
+      if (!watching(chat.id, by)) push.notify(by, {title: chat.title, body: 'Home Chat has a question for you.', chat: chat.id});
     });
     worker.on('settled', () => {
       clearTimeout(turns.get(chat.id)?.deadline);
@@ -529,9 +570,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const live = (sessionKey: string, session: Session) =>
     session.expires >= Date.now() && (verifyAccess !== undefined || sessions.get(sessionKey) === session);
 
-  // The routine tool's actions, for the owner of the conversation the call comes from. Returns the text the model sees.
-  async function routineAction(chat: Chat, body: Record<string, unknown>): Promise<string> {
-    const owner = chat.owner;
+  // The routine tool's actions, for the person whose turn the call comes from. Returns the text the model sees.
+  async function routineAction(owner: User, body: Record<string, unknown>): Promise<string> {
     const saved = (routine: Routine) => `${describeSchedule(routine.schedule)}. Next run: ${nextLabel(routine)}.`;
     switch (body.action) {
       case 'list': {
@@ -595,19 +635,21 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   }
 
   // What a conversation's tools ask of the server: the household notes for the turn's instructions (routine runs
-  // included), changes to routines and notes, and the todo lists, which routine runs may change too. Fails with an
-  // HttpError whose message the model is shown.
+  // included), changes to routines and notes, and the todo lists, which routine runs may change too. All of them are the
+  // turn's sender's. Fails with an HttpError whose message the model is shown.
   async function serverCall(chat: Chat, path: '/routine' | '/memory' | '/todo', body?: unknown): Promise<string> {
-    if (path === '/memory' && body === undefined) return memory.prompt(chat.owner);
-    if (path !== '/todo' && turns.get(chat.id)?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
+    const turn = turns.get(chat.id);
+    const user = turn?.by ?? chat.owner;
+    if (path === '/memory' && body === undefined) return memory.prompt(user);
+    if (path !== '/todo' && turn?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw fail(400, 'Invalid request');
     const input = body as Record<string, unknown>;
     try {
-      if (path === '/todo') return await todoAction(todos, chat.owner, input);
-      if (path === '/routine') return await routineAction(chat, input);
+      if (path === '/todo') return await todoAction(todos, user, input);
+      if (path === '/routine') return await routineAction(user, input);
       // The memory tool checks a change first, then asks the user, then makes it (src/agent/tools/memory.ts).
-      if (input.check === true) { memory.check(chat.owner, input); return 'OK'; }
-      await memory.apply(chat.owner, input);
+      if (input.check === true) { memory.check(user, input); return 'OK'; }
+      await memory.apply(user, input);
       return input.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.';
     } catch (error) {
       if (error instanceof RoutineError || error instanceof MemoryError || error instanceof TodoError) throw fail(400, error.message);
@@ -659,7 +701,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       const {session, sessionKey} = await authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
-        const me: Me = {user: session.user, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
+        const me: Me = {user: session.user, names, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
           deepResearch: researchReady};
         return send(200, me);
       }
@@ -686,21 +728,22 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
-        const list: ChatSummary[] = ownChats(session.user).map(({id, title, unread}) => ({id, title, unread: unread === true, routine: routines.byChat(id) !== undefined}));
+        const list: ChatSummary[] = visibleChats(session.user).map(({id, title, owner, shared, unread}) => ({id, title,
+          unread: unread?.includes(session.user) === true, routine: routines.byChat(id) !== undefined, shared: shared === true, mine: owner === session.user}));
         return send(200, list);
       }
       if (path === '/api/search' && req.method === 'GET') {
         const query = url.searchParams.get('q') ?? '';
         if (query.length > MAX_QUERY) throw fail(400, `Search for at most ${MAX_QUERY} characters`);
         // Newest first, as the sidebar lists them. A search the app has replaced (its request closed) stops early.
-        const own = ownChats(session.user).reverse();
+        const visible = visibleChats(session.user).reverse();
         const asker = new AbortController();
         res.once('close', () => asker.abort());
         let results: SearchResult[];
-        try { results = await searchChats(own, query, asker.signal); }
+        try { results = await searchChats(visible, query, asker.signal); }
         catch (error) { if (asker.signal.aborted) return; throw error; }
-        // A conversation deleted while the search paused is left out.
-        return send(200, results.filter(result => chats.has(result.chat)));
+        // A conversation deleted, or made private, while the search paused is left out.
+        return send(200, results.filter(result => { const chat = chats.get(result.chat); return chat && canSee(chat, session.user); }));
       }
       if (path === '/api/memory' && req.method === 'GET') return send(200, memory.view(session.user) satisfies MemoryView);
       if (path === '/api/memory' && req.method === 'PUT') {
@@ -743,18 +786,25 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       }
       if (parts[0] !== 'api' || parts[1] !== 'chats' || !ID_PATTERN.test(parts[2] ?? '')) throw fail(404, 'Not found');
       const chat = chats.get(parts[2]);
-      if (!chat || chat.owner !== session.user) throw fail(404, 'Not found');
+      if (!chat || !canSee(chat, session.user)) throw fail(404, 'Not found');
+      // Checked again after every wait in a request that changes the conversation: it may have been deleted, or made
+      // private to the other person, meanwhile.
+      const stillVisible = () => { if (chats.get(chat.id) !== chat || !canSee(chat, session.user)) throw fail(404, 'Not found'); };
       // Method plus the path below the chat, e.g. 'GET', 'GET events', 'POST messages'.
       const route = [req.method, ...parts.slice(3)].join(' ');
-      // Opening a conversation reads its routine results.
-      if ((route === 'GET' || route === 'GET events') && chat.unread) { delete chat.unread; save(chat).catch(() => {}); }
+      // Only its owner deletes it or changes who sees it.
+      if ((route === 'DELETE' || route === 'POST share') && chat.owner !== session.user) {
+        throw fail(403, 'Only the person who started this conversation can do that');
+      }
+      // Opening a conversation reads what arrived in it meanwhile.
+      if ((route === 'GET' || route === 'GET events') && markRead(chat, session.user)) save(chat).catch(() => {});
       if (route === 'GET') return send(200, snapshot(chat));
       if (route === 'DELETE') {
         if (occupied(chat.id)) throw fail(409, 'Stop the current reply before deleting this conversation');
         const routine = routines.byChat(chat.id);
         if (routine) throw fail(409, `This conversation belongs to the routine “${routine.title}”; delete the routine first`);
         // Occupied so no message, upload or second delete starts while the files move.
-        const deleting: Turn = {};
+        const deleting: Turn = {by: session.user};
         turns.set(chat.id, deleting);
         try {
           // Its model transcript is in the directory, open until the worker has stopped, or one it replaced has.
@@ -764,18 +814,39 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
           chats.delete(chat.id); savers.delete(chat.id);
-          for (const client of streams.get(chat.id) ?? []) client.res.end();
+          // Other pages showing it are told why it went; the one deleting it moves on by itself.
+          for (const client of streams.get(chat.id) ?? []) {
+            if (client.sessionKey !== sessionKey) sse(client.res, {type: 'gone'});
+            client.res.end();
+          }
           streams.delete(chat.id);
           await rm(removed, {recursive: true, force: true});
         } finally { release(chat.id, deleting); }
         void drainRuns();
         return send(200, {ok: true});
       }
+      if (route === 'POST share') {
+        const body = await jsonBody(req, 1024);
+        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        if (routines.byChat(chat.id)) throw fail(409, 'A routine’s conversation stays private');
+        // A reply running for the other person would otherwise go on in a conversation they can no longer see.
+        if (!body.on && occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
+        if (body.on) chat.shared = true;
+        else {
+          delete chat.shared;
+          for (const user of USERS) if (user !== chat.owner) markRead(chat, user);
+          for (const client of streams.get(chat.id) ?? []) {
+            if (client.user !== chat.owner) { sse(client.res, {type: 'gone'}); client.res.end(); }
+          }
+        }
+        await publish(chat);
+        return send(200, snapshot(chat));
+      }
       if (route === 'GET events') {
         const clients = streams.get(chat.id) ?? new Set();
         if (clients.size >= 4) throw fail(429, 'Too many open chat streams');
         res.writeHead(200, {'Content-Type': 'text/event-stream', 'Connection': 'keep-alive'});
-        const client = {res, sessionKey}; clients.add(client); streams.set(chat.id, clients);
+        const client = {res, sessionKey, user: session.user}; clients.add(client); streams.set(chat.id, clients);
         sse(res, {type: 'snapshot', chat: snapshot(chat)});
         const heartbeat = setInterval(() => {
           if (!live(sessionKey, session)) return res.end();
@@ -820,7 +891,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         if (normalized.length > MAX_UPLOAD) throw fail(413, 'Decoded picture is too large');
         const id = randomUUID();
         const path = join(workDir(chat), 'uploads', id + '.png');
+        stillVisible();
         await writeFile(path, normalized, {mode: 0o600});
+        // Deleted or made private while the file was written: the picture does not go in.
+        try { stillVisible(); } catch (error) { await rm(path, {force: true}); throw error; }
         chat.assets.push({id, path}); await save(chat);
         const asset: AssetRef = {id};
         return send(201, asset);
@@ -840,22 +914,28 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           const path = await allowedImagePath(asset.path, workDir(chat));
           images.push({type: 'image', mimeType: 'image/png', data: (await readFile(path)).toString('base64')}); attached.push(asset);
         }
-        await startTurn(chat, body.text, {images, attached, replace: body.replace === true});
+        // startTurn occupies the conversation before it waits for anything, and an occupied one cannot be made private.
+        stillVisible();
+        await startTurn(chat, body.text, {by: session.user, images, attached, replace: body.replace === true});
         sent.push(Date.now());
         return send(202, {ok: true});
       }
       if (route === 'POST research') {
         const body = await jsonBody(req, 1024);
         if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        stillVisible();
         if (body.on && !researchReady) throw fail(503, 'Deep research is not set up on this Home Chat');
         // It applies from the next message; changing it during a reply would leave that reply's mode unclear.
         if (occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
         if (body.on) chat.deepResearch = true; else delete chat.deepResearch;
         await publish(chat);
+        // The answer shows the conversation as it is now, which may no longer be this person's to see.
+        stillVisible();
         return send(200, snapshot(chat));
       }
       if (route === 'POST answer') {
         const body = await jsonBody(req, 16_000);
+        stillVisible();
         const worker = workers.get(chat.id);
         if (!worker || typeof body.id !== 'string' || (typeof body.value === 'string' && body.value.length > 8000)) throw fail(400, 'Invalid question response');
         try { worker.answer(body.id, body.value, body.cancelled === true); }
@@ -890,7 +970,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // app stopped in the middle of already says so in its conversation, which is marked unread for its owner.
   for (const routine of routines.start()) {
     const chat = chats.get(routine.chat);
-    if (chat && !chat.unread) { chat.unread = true; await save(chat).catch(() => console.warn('Could not save a conversation')); }
+    if (chat && !chat.unread?.includes(chat.owner)) {
+      markUnread(chat, chat.owner);
+      await save(chat).catch(() => console.warn('Could not save a conversation'));
+    }
   }
   return {server, stop};
 }

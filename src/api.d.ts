@@ -16,6 +16,8 @@ export interface Question {
 
 export interface Message {
   role: 'user' | 'assistant';
+  // Who sent a user message; absent on messages from before conversations could be shared, which are the owner's.
+  by?: User;
   text: string;
   assets: string[];
   error?: string;
@@ -37,11 +39,15 @@ export interface DocumentContent { title: string; markdown: string; version: num
 export interface ChatSnapshot {
   id: string;
   title: string;
+  // Its owner, who alone deletes it and shares it with the household (POST /api/chats/<id>/share {on}) or stops sharing.
+  owner: User;
+  shared: boolean;
   messages: Message[];
   assets: AssetRef[];
   busy: boolean;
   question: Question | null;
-  // The last message and its reply can be asked again, as it was or edited ({replace: true} on POST messages).
+  // The last message and its reply can be asked again, as it was or edited ({replace: true} on POST messages), by the
+  // person who sent that message.
   redoable: boolean;
   // Switched per conversation (POST /api/chats/<id>/research {on}) and kept until switched off.
   deepResearch: boolean;
@@ -49,10 +55,11 @@ export interface ChatSnapshot {
   routine: RoutineSummary | null;
 }
 
-// `unread`: a routine run arrived while nobody was looking. Routine conversations are listed under /api/routines.
-export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean }
+// `unread`: a routine run, or in a shared conversation a reply to the other person, arrived while this person was not
+// looking. Routine conversations are listed under /api/routines. `mine`: this person owns it; the other's are shared.
+export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean; shared: boolean; mine: boolean }
 
-// GET /api/search?q=<words>: the user's own conversations whose title or messages contain every word, newest first.
+// GET /api/search?q=<words>: the conversations the user can see whose title or messages contain every word, newest first.
 // `message` indexes the conversation's messages, or is null for a match in the title only; `marks` are the [start, end)
 // ranges in `snippet` where the words appear.
 export interface SearchResult { chat: string; title: string; message: number | null; snippet: string; marks: [number, number][] }
@@ -102,6 +109,8 @@ export interface TodoList { id: string; title: string; shared: boolean; mine: bo
 
 export interface Me {
   user: User;
+  // What the app and the model call each person (HOME_CHAT_OWNER_NAME and HOME_CHAT_GUEST_NAME).
+  names: Record<User, string>;
   csrf: string;
   codexConfigured: boolean;
   // local: access codes on localhost. access: Cloudflare Access (Google sign-in) on the public hostname.
@@ -115,7 +124,9 @@ export type StreamEvent =
   | {type: 'delta'; text: string}
   | {type: 'tool'; name: ToolName}
   | {type: 'question'; question: Question}
-  | {type: 'error'; message: string};
+  | {type: 'error'; message: string}
+  // Sent just before the stream ends because the conversation was deleted or is no longer shared with this person.
+  | {type: 'gone'};
 
 export interface ApiError { error: string }
 

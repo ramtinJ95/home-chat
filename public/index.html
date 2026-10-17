@@ -55,6 +55,10 @@
         <p id="routines-label" class="section-label">Routines</p>
         <nav id="routine-list" class="chat-list routine-list"></nav>
       </section>
+      <section id="shared" class="routines" aria-labelledby="shared-label" hidden>
+        <p id="shared-label" class="section-label">Shared</p>
+        <nav id="shared-list" class="chat-list shared-list"></nav>
+      </section>
       <p id="recent-label" class="section-label">Recent</p>
       <nav id="chat-list" class="chat-list"></nav>
       <div class="sidebar-actions">
@@ -79,6 +83,10 @@
           <svg viewBox="0 0 24 24"><use href="#menu"/></svg>
         </button>
         <h2 id="chat-title" class="chat-title">Your space to think</h2>
+        <span id="shared-by" class="shared-by" hidden></span>
+        <button id="share-chat" class="research-toggle" type="button" aria-pressed="false" hidden>
+          <svg viewBox="0 0 24 24"><use href="#people"/></svg><span id="share-label">Share</span>
+        </button>
       </header>
       <div id="routine-bar" class="routine-bar" hidden></div>
       <div id="provider-warning" class="notice" hidden>
@@ -113,7 +121,7 @@
             <button id="send" class="send" type="submit" aria-label="Send"><svg viewBox="0 0 24 24"><use href="#arrow"/></svg></button>
           </div>
         </form>
-        <p class="fineprint centered">Private · Web search, images &amp; documents · Check important answers</p>
+        <p class="fineprint centered"><span id="privacy">Private</span> · Web search, images &amp; documents · Check important answers</p>
       </div>
     </main>
   </div>
