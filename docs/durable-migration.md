@@ -61,8 +61,8 @@ Tools:
 - [x] `ask`: select, input and confirm (nothing asked `editor`), "Other/rephrase" with free text, multiple choice with
       "Finish selection", the comment after each prompt, answer and cancel from the app, push when nobody is watching.
       Left out: pi-ask's `delivery: "steer"` (nothing can take an answer after the turn moves on), `handoff` and `help`.
-- [ ] `web_run`: search, open and find (live).
-- [ ] `imagegen`: generation and edits from attached or earlier images, saved where `collectGenerated` finds them (live).
+- [x] `web_run`: search, open and find (live).
+- [x] `imagegen`: generation and edits from attached or earlier images, saved where `collectGenerated` finds them (live).
 - [x] `document`: create and revise, versions kept, cards and reader unchanged.
 - [x] `deep_research`: Exa calls in deep research mode, with the stop signal and the 90 s timeout, report saved through
       `document`. Tested against a stubbed Exa; the timeout itself is not exercised.
@@ -77,22 +77,30 @@ Conversations:
       the move, for a conversation from before it, answers the existing 409 ("send a new message instead").
 - [x] Existing conversations continue with their earlier text as context.
 - [x] Deleting a conversation removes its transcript with its directory, after its worker has closed the file.
-- [ ] Restart mid-reply and mid-question: the reply shows as interrupted and the next message works. The agent half is
-      tested (a process killed while `ask` waits; the next message works); the whole app still needs a live restart.
+- [x] Restart mid-reply and mid-question: the reply shows as interrupted and the next message works. Tested live by
+      restarting the app while a reply streamed and while a question waited.
 
 Deploy:
 
 - [ ] Dockerfile and compose: SQLite on `/data` with the root filesystem read-only, egress through the proxy, pids and
-      memory limits still enough without child processes.
-- [ ] `check-network`, `check-runtime`, `check-live` and `check-browser` pass against the branch (live, headless).
+      memory limits still enough without child processes. SQLite on `/data` and egress pass (`check-runtime`,
+      `check-network`). Init now has `KILL`, so a stop reaches the server (a fix main needs too). A stop while a reply
+      ran was killed 1 s after SIGTERM (Docker's stop timeout on home-macmini, source unknown); compose now sets
+      10 s. Open: confirming that stop, and pids and memory.
+- [x] `check-network`, `check-runtime`, `check-live` and `check-browser` pass against the branch (live, headless).
 - [ ] pi-coding-agent and the `@howaboua/*` add-ons are removed only after the switch-over.
 
 ## Status
 
 2026-10-17: the agent is in `src/agent/` and is the server's default worker on this branch. Ticked items have faux-model
 tests in `test/agent.test.ts` or are covered by the existing server tests. `check-runtime` and `check-live` run the durable agent, and `login-codex` uses pi-ai's login, writing the same
-`auth.json`. Still open: the live checks, the whole-app restart, the deploy check, and removing the Pi CLI path
-(`src/rpc.ts` PiWorker, `profile/` apart from `instructions.md`, the internal socket).
+`auth.json`.
+
+2026-10-17, live on home-macmini (local mode, the real volume, then main restored): the check scripts, the container
+tests, both browser checks, web search with a cited source, an image and its edit, a pre-move conversation continuing
+from its earlier text, and restarts mid-reply and mid-question all passed. Still open: the stop while a reply runs, pids
+and memory, and removing the Pi CLI path (`src/rpc.ts` PiWorker, `profile/` apart from `instructions.md`, the internal
+socket).
 
 ## Risks
 
