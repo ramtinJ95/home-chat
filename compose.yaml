@@ -7,7 +7,9 @@ services:
     restart: "no"
     read_only: true
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP, CHOWN]
+    # For the root entrypoint and init only; setpriv drops them all before the app starts. KILL lets init forward
+    # SIGTERM to the app's UID, so a stop or restart shuts the server down instead of killing it.
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP, CHOWN, KILL]
     security_opt: [no-new-privileges:true]
     ports: ["127.0.0.1:8787:8080"]
     environment:
