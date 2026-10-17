@@ -31,7 +31,8 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   rewind(text: string): Promise<boolean>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
-  stop(): void;
+  // A promise, when the worker's files stay open until it settles.
+  stop(): void | Promise<void>;
 }
 
 // Pi RPC output lines; only the fields this server reads.
@@ -55,7 +56,7 @@ interface Pending { resolve: (value: unknown) => void; reject: (error: Error) =>
 
 const sameTools = (names: string[]) => JSON.stringify([...names].sort()) === JSON.stringify([...ALLOWED_TOOLS].sort());
 
-function providerFailure(value: unknown): string {
+export function providerFailure(value: unknown): string {
   const text = String(value ?? '');
   const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
   if (code) return `Subscription login needs refreshing (${code[0]})`;

@@ -5,14 +5,15 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
-import { PiRejected, PiWorker, type ChatWorker, type PromptImage } from './rpc.ts';
+import { PiRejected, type ChatWorker, type PromptImage } from './rpc.ts';
+import { createAgent } from './agent/agent.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson, readJson, serialSave } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
-import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -27,8 +28,9 @@ interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
 export interface AppOptions {
   data?: string;
-  // `env` goes to Pi: the internal socket and this worker's token for the routine tool.
-  workerFactory?: (directory: string, env: Record<string, string>) => ChatWorker;
+  // `env` goes to the Pi CLI: the internal socket and this worker's token for its routine and memory tools. `call` is
+  // what that socket answers, for a worker whose tools run in this process. By default, Pi Durable (src/agent/).
+  workerFactory?: (directory: string, env: Record<string, string>, call: ServerCall) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
   access?: AccessConfig;
@@ -138,7 +140,7 @@ async function loadStaticFiles() {
   return new Map([...text, ...images]);
 }
 
-export async function createApp({data = '/data', workerFactory = (dir, env) => new PiWorker(dir, env), authenticatedProvider, access, accessKeys, pushFetch,
+export async function createApp({data = '/data', workerFactory, authenticatedProvider, access, accessKeys, pushFetch,
   deepResearch: researchReady = Boolean(process.env.EXA_API_KEY?.trim())}: AppOptions = {}) {
   const chatsDirectory = join(data, 'chats');
   // Deleted conversations are moved here before removal; anything left from an interrupted removal goes at startup.
@@ -147,6 +149,9 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   await mkdir(chatsDirectory, {recursive: true, mode: 0o700});
   await mkdir(deletedDirectory, {mode: 0o700});
   const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
+  const agent = workerFactory ? undefined : createAgent({authPath: join(data, 'profile/auth.json'),
+    instructions: await readFile(new URL('../profile/instructions.md', import.meta.url), 'utf8')});
+  const makeWorker = workerFactory ?? ((directory: string, _env: Record<string, string>, call: ServerCall) => agent!.worker(directory, call));
   const staticFiles = await loadStaticFiles();
   const sessions = new Map<string, Session>();
   const verifyAccess = access && createAccessVerifier(access, accessKeys);
@@ -456,6 +461,8 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
   }
 
   async function workerFor(chat: Chat): Promise<ChatWorker> {
+    // stop() stops the workers it finds; none may start after it.
+    if (stopping) throw fail(503, 'Home Chat is restarting; send the message again in a moment');
     const existing = workers.get(chat.id);
     if (existing && !existing.closed) return existing;
     workers.delete(chat.id);
@@ -465,7 +472,8 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       workers.get(idle)!.stop(); workers.delete(idle);
     }
     const token = randomBytes(32).toString('base64url');
-    const worker = workerFactory(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_INTERNAL_TOKEN: token});
+    const worker = makeWorker(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_INTERNAL_TOKEN: token},
+      (path, body) => serverCall(chat, path, body));
     tokens.set(worker, token);
     const failTurn = (message: string) => {
       emit(chat.id, {type: 'error', message});
@@ -566,6 +574,26 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     }
   }
 
+  // What a conversation's tools ask of the server: the household notes for the turn's instructions (routine runs
+  // included), and changes to routines and notes. Fails with an HttpError whose message the model is shown.
+  async function serverCall(chat: Chat, path: '/routine' | '/memory', body?: unknown): Promise<string> {
+    if (path === '/memory' && body === undefined) return memory.prompt(chat.owner);
+    if (turns.get(chat.id)?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
+    if (typeof body !== 'object' || body === null || Array.isArray(body)) throw fail(400, 'Invalid request');
+    const input = body as Record<string, unknown>;
+    try {
+      if (path === '/routine') return await routineAction(chat, input);
+      // The memory tool checks a change first, then asks the user, then makes it (src/agent/tools/memory.ts).
+      if (input.check === true) { memory.check(chat.owner, input); return 'OK'; }
+      await memory.apply(chat.owner, input);
+      return input.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.';
+    } catch (error) {
+      if (error instanceof RoutineError || error instanceof MemoryError) throw fail(400, error.message);
+      if (error instanceof HttpError) throw error;
+      throw fail(500, 'Home Chat could not save that');
+    }
+  }
+
   // Only this server's own Pi workers reach this: a Unix socket in the data directory, never a network port.
   const internal = http.createServer(async (req, res) => {
     const send = (status: number, value: unknown) => res.writeHead(status, jsonHeaders).end(JSON.stringify(value));
@@ -575,18 +603,10 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
       const id = [...workers].find(([, worker]) => !worker.closed && tokens.get(worker) === token)?.[0];
       const chat = id === undefined ? undefined : chats.get(id);
       if (!chat) return send(401, {error: 'This session cannot reach Home Chat'});
-      // The household notes for the turn's instructions (profile/extension.ts), routine runs included.
-      if (req.url === '/memory' && req.method === 'GET') return send(200, {text: memory.prompt(chat.owner)});
-      if (req.method !== 'POST' || (req.url !== '/routine' && req.url !== '/memory')) return send(404, {error: 'Not found'});
-      if (turns.get(chat.id)?.run) return send(403, {error: 'Routines and household notes cannot be changed during a routine run'});
-      const body = await jsonBody(req, 16_000);
-      if (req.url === '/routine') return send(200, {text: await routineAction(chat, body)});
-      // The memory tool checks a change first, then asks the user, then makes it (profile/memory.ts).
-      if (body.check === true) { memory.check(chat.owner, body); return send(200, {text: 'OK'}); }
-      await memory.apply(chat.owner, body);
-      return send(200, {text: body.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.'});
+      const path = req.url === '/routine' || req.url === '/memory' ? req.url : undefined;
+      if (!path || (req.method !== 'POST' && !(path === '/memory' && req.method === 'GET'))) return send(404, {error: 'Not found'});
+      return send(200, {text: await serverCall(chat, path, req.method === 'POST' ? await jsonBody(req, 16_000) : undefined)});
     } catch (error) {
-      if (error instanceof RoutineError || error instanceof MemoryError) return send(400, {error: error.message});
       if (error instanceof HttpError) return send(error.status, {error: error.message});
       return send(500, {error: 'Home Chat could not save that'});
     }
@@ -734,7 +754,9 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
         const deleting: Turn = {};
         turns.set(chat.id, deleting);
         try {
-          workers.get(chat.id)?.stop(); workers.delete(chat.id);
+          // Its model transcript is in the directory, open until the worker has stopped, or one it replaced has.
+          await workers.get(chat.id)?.stop(); workers.delete(chat.id);
+          await agent?.released(join(chatsDirectory, chat.id));
           // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
@@ -856,7 +878,8 @@ export async function createApp({data = '/data', workerFactory = (dir, env) => n
     internal.close(); internal.closeAllConnections();
     // Keep what has streamed so far; if this save fails, the `replying` flag saved with the message still marks it.
     await Promise.allSettled([...chats.values()].filter(chat => chat.replying).map(save));
-    for (const worker of workers.values()) worker.stop();
+    await Promise.all([...workers.values()].map(worker => worker.stop()));
+    await agent?.close();
     for (const clients of streams.values()) for (const client of clients) client.res.end();
     server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));

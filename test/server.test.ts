@@ -11,7 +11,7 @@ import sharp from 'sharp';
 import { request as httpRequest } from 'node:http';
 import type { Question, User } from '../src/api.d.ts';
 import { PiRejected, type ChatWorker, type WorkerEvents } from '../src/rpc.ts';
-import type { TurnMode } from '../src/policy.ts';
+import type { ServerCall, TurnMode } from '../src/policy.ts';
 import { createApp, type AppOptions } from '../src/server.ts';
 import { documentTool } from '../profile/document.ts';
 import { callServer } from '../profile/internal.ts';
@@ -23,8 +23,9 @@ import { pushKeys, signedToken, withEnv } from './helpers.ts';
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   closed = false;
   question: Question | null = null;
-  // What the server gave Pi for its routine tool.
+  // What the server gave Pi for its routine tool, and the same for tools that run in the server's process.
   env: Record<string, string> = {};
+  call?: ServerCall;
   lastText?: string;
   lastDeep?: boolean;
   lastMode?: TurnMode;
@@ -67,7 +68,7 @@ async function fixture(ready: boolean | (() => Promise<boolean>) = true, {access
     deliveries.push({endpoint, headers: init.headers as Record<string, string>});
     return new Response(null, {status: pushStatus});
   }) as typeof fetch;
-  const app = await createApp({data, workerFactory: (_directory, env) => { worker.env = env; return worker; }, authenticatedProvider: typeof ready === 'function' ? ready : async () => ready, access, accessKeys, pushFetch, deepResearch});
+  const app = await createApp({data, workerFactory: (_directory, env, call) => { worker.env = env; worker.call = call; return worker; }, authenticatedProvider: typeof ready === 'function' ? ready : async () => ready, access, accessKeys, pushFetch, deepResearch});
   await new Promise<void>(resolve => app.server.listen(0, '127.0.0.1', resolve));
   const host = access?.host ?? '127.0.0.1:8787';
   const origin = (access ? 'https://' : 'http://') + host;
@@ -388,6 +389,7 @@ test('routines are set up by the model, listed and switched in the app, and kept
     assert.match(created, /^Saved “Morning briefing”: Every day at 07:30\. Next run: (Today|Tomorrow) 07:30\./);
     await assert.rejects(() => callRoutine({...f.worker.env, HOME_CHAT_INTERNAL_TOKEN: 'forged'}, {action: 'list'}), /cannot reach Home Chat/);
     await assert.rejects(() => callRoutine(f.worker.env, {action: 'create', title: 'Hourly', prompt: 'x', schedule: {kind: 'hourly', time: '07:00'}}), /schedule.kind/);
+    assert.match(await f.worker.call!('/routine', {action: 'list'}), /“Morning briefing” \(id /);
     const [routine] = await (await f.request('/api/routines', owner)).json();
     assert.equal(routine.title, 'Morning briefing'); assert.equal(routine.schedule, 'Every day at 07:30'); assert.equal(routine.unread, false);
     assert.deepEqual(await (await f.request('/api/routines', guest)).json(), []);
@@ -440,6 +442,8 @@ test('a due routine runs unattended in its own conversation, is marked unread, a
       // Nobody can confirm a note during the run, but the run is still told the notes.
       await assert.rejects(() => callMemory(restarted.worker.env, {action: 'remember', text: 'Early riser'}, true), /during a routine run/);
       assert.equal(await withEnv(restarted.worker.env, () => callServer('/memory')), '');
+      await assert.rejects(() => restarted.worker.call!('/memory', {action: 'remember', text: 'Early riser'}), /during a routine run/);
+      assert.equal(await restarted.worker.call!('/memory'), '');
       restarted.worker.answer('question-1', 'One');
       await delay(40);
       const again = await restarted.login('owner');
