@@ -1,9 +1,10 @@
 import { request } from 'node:http';
+import type { ServerCall } from '../src/policy.ts';
 
 // Routines and the household notes live on the server, so the tools that change them, and the extension reading the
 // notes, call it: over a Unix socket the server listens on for its own workers, with the token it gave this Pi
 // process. The server checks everything, scopes it to the conversation's owner, and answers with text for the model.
-export function callServer(path: '/routine' | '/memory', body?: unknown): Promise<string> {
+export const callServer: ServerCall = (path, body) => {
   const socketPath = process.env.HOME_CHAT_INTERNAL_SOCKET; const token = process.env.HOME_CHAT_INTERNAL_TOKEN;
   if (!socketPath || !token) return Promise.reject(new Error('Home Chat is not available in this session'));
   return new Promise((resolve, reject) => {
@@ -23,4 +24,4 @@ export function callServer(path: '/routine' | '/memory', body?: unknown): Promis
     outgoing.on('error', reject);
     outgoing.end(body === undefined ? undefined : JSON.stringify(body));
   });
-}
+};

@@ -1,10 +1,9 @@
-import { defineTool } from '@earendil-works/pi-coding-agent';
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type, type Static } from 'typebox';
 
 // Exa deep research, adapted from the owner's Pi extension (~/.pi/agent/extensions/exa-deep-research.ts). The key comes
 // only from EXA_API_KEY, which compose passes to the app; requests leave through the egress proxy, which allows api.exa.ai.
-// Calls outside deep research mode are refused (profile/extension.ts).
+// Calls outside deep research mode are refused (src/agent/extension.ts).
 const EXA_SEARCH_URL = 'https://api.exa.ai/search';
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_SOURCES = 8;
@@ -27,7 +26,7 @@ type Mode = keyof typeof modes;
 
 const categories = ['company', 'research paper', 'news', 'personal site', 'people', 'financial report'] as const;
 
-const parameters = Type.Object({
+export const parameters = Type.Object({
   query: Type.String({minLength: 1, maxLength: 2000}),
   mode: Type.Optional(StringEnum(['deep', 'deep-reasoning'] as const, {
     default: 'deep', description: 'deep by default; deep-reasoning for ambiguity, conflicting evidence, high stakes or judgment-heavy tradeoffs',
@@ -42,7 +41,7 @@ const parameters = Type.Object({
   additionalQueries: Type.Optional(Type.Array(Type.String(), {maxItems: 10})),
   userLocation: Type.Optional(Type.String({minLength: 2, maxLength: 2, description: 'two-letter country code'})),
 });
-type Params = Static<typeof parameters>;
+export type Params = Static<typeof parameters>;
 
 interface ExaResult { title?: string; url?: string; publishedDate?: string | null; author?: string | null; highlights?: string[] }
 interface ExaGrounding { field?: string; confidence?: string; citations?: {url?: string; title?: string}[] }
@@ -81,7 +80,7 @@ function failure(status: number, body: ExaResponse | undefined, text: string): s
   return `Exa request failed (${detail}).`;
 }
 
-async function research(params: Params, signal?: AbortSignal) {
+export async function research(params: Params, signal?: AbortSignal) {
   const apiKey = process.env.EXA_API_KEY?.trim();
   if (!apiKey) throw new Error('Deep research is not set up on this Home Chat (no Exa key)');
   const query = params.query.trim();
@@ -158,10 +157,4 @@ async function research(params: Params, signal?: AbortSignal) {
   };
 }
 
-export const deepResearchTool = defineTool({
-  name: 'deep_research',
-  label: 'Deep Research',
-  description: 'Run Exa deep research: a grounded, multi-source web synthesis with citations. Takes up to a minute or two per call.',
-  parameters,
-  execute: (_id, params, signal) => research(params, signal),
-});
+export const description = 'Run Exa deep research: a grounded, multi-source web synthesis with citations. Takes up to a minute or two per call.';

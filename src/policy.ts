@@ -5,7 +5,7 @@ import type { ToolName, User, Weekday } from './api.d.ts';
 
 export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory'] as const satisfies readonly ToolName[]);
 const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
-// OpenAI for the model, and Exa for deep_research (profile/deep-research.ts).
+// OpenAI for the model, and Exa for deep_research (src/agent/tools/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
 // Browser push services: Apple (Safari), Google (Chrome, Android), Mozilla (Firefox), and Microsoft (Edge), whose
 // endpoints are numbered hosts such as wns2-par02p.notify.windows.com. Only the server sends to them, never the model.
@@ -85,6 +85,9 @@ export const REWIND_COMMAND = 'home-chat-rewind';
 export const REWIND_PREFIX = 'HOME_CHAT_REWIND:';
 
 export interface ToolPolicy { registered: string[]; active: string[] }
+// How a tool reaches the server for routines and the household notes: over the internal socket from the Pi CLI
+// (profile/internal.ts), or directly in the server's own process (src/agent/). GET for /memory when `body` is absent.
+export type ServerCall = (path: '/routine' | '/memory', body?: unknown) => Promise<string>;
 
 export function isAllowedTool(name: string): name is ToolName {
   return (ALLOWED_TOOLS as readonly string[]).includes(name);
