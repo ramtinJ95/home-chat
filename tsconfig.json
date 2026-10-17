@@ -1,5 +1,5 @@
 {
-  // Server, Pi profile, scripts and tests. Node runs these .ts files directly (type stripping), so tsc only checks.
+  // Server, scripts and tests. Node runs these .ts files directly (type stripping), so tsc only checks.
   "compilerOptions": {
     "target": "esnext",
     "module": "nodenext",
@@ -12,5 +12,5 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true
   },
-  "include": ["src", "profile", "scripts", "test"]
+  "include": ["src", "scripts", "test"]
 }

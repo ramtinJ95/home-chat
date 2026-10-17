@@ -1,9 +1,0 @@
-{
-  "executionMode": "normal",
-  "voiceFeaturesOnly": false,
-  "prompt": {"heavySystemPromptOverwrite": false, "currentTimeReminderMinutes": 0},
-  "tools": {"autoReasoning": false, "viewImageFallback": false},
-  "ui": {"statusLine": false, "backgroundShellWidget": false},
-  "compaction": {"contextManagement": "off", "responsesCompaction": false},
-  "openai": {"forceCachedWebSockets": false, "cacheKeepalive": false, "cacheDiagnostics": "off"}
-}

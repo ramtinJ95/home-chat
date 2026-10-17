@@ -5,9 +5,14 @@ services:
     image: home-chat-local:0.1.0
     init: true
     restart: "no"
+    # Time to stop running replies and close their files after SIGTERM. Explicit: home-macmini's Docker otherwise
+    # kills the app after 1 s.
+    stop_grace_period: 10s
     read_only: true
     cap_drop: [ALL]
-    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP, CHOWN]
+    # For the root entrypoint and init only; setpriv drops them all before the app starts. KILL lets init forward
+    # SIGTERM to the app's UID, so a stop or restart shuts the server down instead of killing it.
+    cap_add: [NET_ADMIN, SETUID, SETGID, SETPCAP, CHOWN, KILL]
     security_opt: [no-new-privileges:true]
     ports: ["127.0.0.1:8787:8080"]
     environment:
@@ -18,7 +23,6 @@ services:
       ALL_PROXY: http://172.30.91.2:3128
       NO_PROXY: ""
       NODE_USE_ENV_PROXY: "1"
-      PI_SKIP_VERSION_CHECK: "1"
       # Deep research (Exa). Empty leaves the mode switched off and hidden in the app.
       EXA_API_KEY: ${EXA_API_KEY:-}
     volumes: ["chat-data:/data"]
