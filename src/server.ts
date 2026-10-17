@@ -1,11 +1,11 @@
 import http from 'node:http';
 import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, mkdir, readdir, stat, rename, copyFile, rm, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
-import { PiRejected, type ChatWorker, type PromptImage } from './rpc.ts';
+import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson, readJson, serialSave } from './files.ts';
@@ -28,9 +28,8 @@ interface StreamClient { res: http.ServerResponse; sessionKey: string }
 
 export interface AppOptions {
   data?: string;
-  // `env` goes to the Pi CLI: the internal socket and this worker's token for its routine and memory tools. `call` is
-  // what that socket answers, for a worker whose tools run in this process. By default, Pi Durable (src/agent/).
-  workerFactory?: (directory: string, env: Record<string, string>, call: ServerCall) => ChatWorker;
+  // `call` is how the worker's routine and memory tools reach the server. By default, Pi Durable (src/agent/).
+  workerFactory?: (directory: string, call: ServerCall) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
   access?: AccessConfig;
@@ -151,7 +150,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
   const agent = workerFactory ? undefined : createAgent({authPath: join(data, 'profile/auth.json'),
     instructions: await readFile(new URL('../profile/instructions.md', import.meta.url), 'utf8')});
-  const makeWorker = workerFactory ?? ((directory: string, _env: Record<string, string>, call: ServerCall) => agent!.worker(directory, call));
+  const makeWorker = workerFactory ?? ((directory: string, call: ServerCall) => agent!.worker(directory, call));
   const staticFiles = await loadStaticFiles();
   const sessions = new Map<string, Session>();
   const verifyAccess = access && createAccessVerifier(access, accessKeys);
@@ -164,8 +163,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
   const workers = new Map<string, ChatWorker>();
-  // Each worker's token for the internal socket, which tells it the conversation a call comes from.
-  const tokens = new WeakMap<ChatWorker, string>();
   const streams = new Map<string, Set<StreamClient>>();
   // A conversation in `turns` is occupied. Clients see a reply running while `chat.replying` is set, which is shorter: a
   // message being admitted comes before, and the save of its end after. Each step removes only the entry it set, so
@@ -222,7 +219,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const recordRun = ({routine, scheduled}: RoutineRun, outcome: 'done' | 'failed' | 'skipped') =>
     routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
   const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
-  const internalSocket = join(data, 'internal.sock');
   // Routine runs per owner, for the daily budget. Kept in memory: a restart forgets the day's count.
   const runTimes = new Map<User, number[]>();
   const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
@@ -471,10 +467,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       if (!idle) throw new Busy('Both chat workers are busy', 429);
       workers.get(idle)!.stop(); workers.delete(idle);
     }
-    const token = randomBytes(32).toString('base64url');
-    const worker = makeWorker(join(chatsDirectory, chat.id), {HOME_CHAT_INTERNAL_SOCKET: internalSocket, HOME_CHAT_INTERNAL_TOKEN: token},
-      (path, body) => serverCall(chat, path, body));
-    tokens.set(worker, token);
+    const worker = makeWorker(join(chatsDirectory, chat.id), (path, body) => serverCall(chat, path, body));
     const failTurn = (message: string) => {
       emit(chat.id, {type: 'error', message});
       return endTurn(chat, message);
@@ -594,26 +587,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     }
   }
 
-  // Only this server's own Pi workers reach this: a Unix socket in the data directory, never a network port.
-  const internal = http.createServer(async (req, res) => {
-    const send = (status: number, value: unknown) => res.writeHead(status, jsonHeaders).end(JSON.stringify(value));
-    try {
-      const token = String(req.headers.authorization ?? '').replace(/^Bearer /, '');
-      // A token is good while its worker is the conversation's current one.
-      const id = [...workers].find(([, worker]) => !worker.closed && tokens.get(worker) === token)?.[0];
-      const chat = id === undefined ? undefined : chats.get(id);
-      if (!chat) return send(401, {error: 'This session cannot reach Home Chat'});
-      const path = req.url === '/routine' || req.url === '/memory' ? req.url : undefined;
-      if (!path || (req.method !== 'POST' && !(path === '/memory' && req.method === 'GET'))) return send(404, {error: 'Not found'});
-      return send(200, {text: await serverCall(chat, path, req.method === 'POST' ? await jsonBody(req, 16_000) : undefined)});
-    } catch (error) {
-      if (error instanceof HttpError) return send(error.status, {error: error.message});
-      return send(500, {error: 'Home Chat could not save that'});
-    }
-  });
-  await rm(internalSocket, {force: true});
-  await new Promise<void>((resolve, reject) => { internal.once('error', reject); internal.listen(internalSocket, () => resolve()); });
-  await chmod(internalSocket, 0o600);
 
   const server = http.createServer(async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -875,7 +848,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const stop = async () => {
     stopping = true;
     routines.stop();
-    internal.close(); internal.closeAllConnections();
     // Keep what has streamed so far; if this save fails, the `replying` flag saved with the message still marks it.
     await Promise.allSettled([...chats.values()].filter(chat => chat.replying).map(save));
     await Promise.all([...workers.values()].map(worker => worker.stop()));
@@ -896,7 +868,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
 if (import.meta.main) {
   const mode = process.env.HOME_CHAT_MODE;
   if (mode !== 'local' && mode !== 'access') throw new Error('Set HOME_CHAT_MODE to local or access');
-  await copyFile('/app/profile/pi-codex-conversion.json', '/data/profile/pi-codex-conversion.json');
   const app = await createApp(mode === 'access' ? {access: accessConfigFromEnv(process.env)} : {});
   app.server.listen(8080, '0.0.0.0', () => console.log(`Home Chat ready in ${mode} mode; provider login is checked separately`));
   process.once('SIGTERM', () => { void app.stop(); });

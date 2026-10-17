@@ -20,6 +20,6 @@ COPY --from=build /app/public/app.js /app/public/theme.js /app/public/sw.js ./pu
 COPY profile ./profile
 COPY --chmod=755 scripts ./scripts
 COPY test ./test
-ENV HOME=/data/home PI_CODING_AGENT_DIR=/data/profile NODE_ENV=production
+ENV HOME=/data/home NODE_ENV=production
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["node", "src/server.ts"]

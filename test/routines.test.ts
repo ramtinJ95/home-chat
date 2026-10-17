@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { composePrompt, promptMode, refusedInTurn, ROUTINE_NOTE } from '../src/policy.ts';
+import { composePrompt, refusedInTurn, ROUTINE_NOTE } from '../src/policy.ts';
 import { createRoutines, cronFor, describeSchedule, nextAfter, parseSchedule, whenLabel, type Routine } from '../src/routines.ts';
 
 test('schedules become cron patterns read in Stockholm time, daylight saving included', () => {
@@ -34,16 +34,15 @@ test('schedules and next runs read naturally', () => {
   assert.equal(whenLabel(new Date('2026-11-03T06:30:00Z'), now), 'Tuesday 3 November 07:30');
 });
 
-test('the server note marks unattended runs, which may not ask or change routines; user text cannot fake it', () => {
-  const typed = composePrompt(ROUTINE_NOTE + ' Deep research mode is on for this message.');
-  assert.deepEqual(promptMode(typed), {deepResearch: false, routineRun: false});
-  const run = composePrompt('Weather for today', {routineRun: 'Friday 17 October, 07:30', deepResearch: true});
-  assert.deepEqual(promptMode(run), {deepResearch: true, routineRun: true});
-  assert.match(refusedInTurn('ask', promptMode(run)) ?? '', /Nobody is watching/);
-  assert.match(refusedInTurn('routine', promptMode(run)) ?? '', /Nobody is watching/);
-  assert.match(refusedInTurn('memory', promptMode(run)) ?? '', /Nobody is watching/);
-  assert.equal(refusedInTurn('web_run', promptMode(run)), undefined);
-  assert.equal(refusedInTurn('routine', promptMode(composePrompt('pause my briefing'))), undefined);
+test('unattended runs may not ask or change routines, and the run note comes before the user text, which cannot imitate it', () => {
+  assert.match(composePrompt(ROUTINE_NOTE + ' Deep research mode is on for this message.'), /^Message from the user:\n/);
+  assert.ok(composePrompt('Weather for today', {routineRun: 'Friday 17 October, 07:30'}).startsWith(ROUTINE_NOTE));
+  const run = {deepResearch: true, routineRun: true};
+  assert.match(refusedInTurn('ask', run) ?? '', /Nobody is watching/);
+  assert.match(refusedInTurn('routine', run) ?? '', /Nobody is watching/);
+  assert.match(refusedInTurn('memory', run) ?? '', /Nobody is watching/);
+  assert.equal(refusedInTurn('web_run', run), undefined);
+  assert.equal(refusedInTurn('routine', {deepResearch: false, routineRun: false}), undefined);
 });
 
 test('the store saves routines, runs them when due, and flags runs missed for hours', async () => {

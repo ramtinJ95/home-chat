@@ -21,7 +21,7 @@ Main is deployed throughout. The branch replaces the worker only once the checkl
   Pi Durable can't delete a conversation, so a shared file would keep deleted transcripts; with one file per
   conversation, deleting its directory deletes the transcript, as it did Pi's session file (chosen 2026-10-17). No
   more child process per conversation, internal Unix socket or per-worker token.
-- **Same seam.** A `DurableWorker` implements the existing `ChatWorker` interface (`src/rpc.ts`), so `server.ts`
+- **Same seam.** A `DurableWorker` implements the existing `ChatWorker` interface (now `src/chat-worker.ts`), so `server.ts`
   changes as little as possible in phase 1. A link document in the conversation's file names the durable conversation
   it continues.
 - **Tools call the server directly.** `routine`, `memory` and `document` become `defineTool` tools that call server
@@ -84,11 +84,12 @@ Deploy:
 
 - [ ] Dockerfile and compose: SQLite on `/data` with the root filesystem read-only, egress through the proxy, pids and
       memory limits still enough without child processes. SQLite on `/data` and egress pass (`check-runtime`,
-      `check-network`). Init now has `KILL`, so a stop reaches the server (a fix main needs too). A stop while a reply
-      ran was killed 1 s after SIGTERM (Docker's stop timeout on home-macmini, source unknown); compose now sets
-      10 s. Open: confirming that stop, and pids and memory.
+      `check-network`). Init now has `KILL`, so a stop reaches the server (a fix main needs too). Docker on home-macmini
+      kills a container 1 s after SIGTERM unless told otherwise (source unknown), so compose sets 10 s; a stop while a
+      reply runs or a question waits then exits cleanly in about 3.4 s. Open: pids and memory.
 - [x] `check-network`, `check-runtime`, `check-live` and `check-browser` pass against the branch (live, headless).
-- [ ] pi-coding-agent and the `@howaboua/*` add-ons are removed only after the switch-over.
+- [x] The Pi CLI path is gone before the switch-over, in the same PR (chosen 2026-10-17): `PiWorker`, the internal
+      socket and its tokens, `profile/` apart from `instructions.md`, pi-coding-agent and the `@howaboua/*` add-ons.
 
 ## Status
 
@@ -98,9 +99,8 @@ tests in `test/agent.test.ts` or are covered by the existing server tests. `chec
 
 2026-10-17, live on home-macmini (local mode, the real volume, then main restored): the check scripts, the container
 tests, both browser checks, web search with a cited source, an image and its edit, a pre-move conversation continuing
-from its earlier text, and restarts mid-reply and mid-question all passed. Still open: the stop while a reply runs, pids
-and memory, and removing the Pi CLI path (`src/rpc.ts` PiWorker, `profile/` apart from `instructions.md`, the internal
-socket).
+from its earlier text, and restarts mid-reply and mid-question all passed. Then the Pi CLI path was removed. Still
+open: pids and memory, measured after the switch-over.
 
 ## Risks
 

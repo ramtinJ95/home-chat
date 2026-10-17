@@ -9,7 +9,7 @@ import type { ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
 import { carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
-import { PiRejected, providerFailure, type ChatWorker, type PromptImage, type WorkerEvents } from '../rpc.ts';
+import { PiRejected, providerFailure, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
 import { context, type ChatStore, type HomeAgent } from './agent.ts';
 import type { ChatHost } from './extension.ts';
 

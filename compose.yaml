@@ -23,7 +23,6 @@ services:
       ALL_PROXY: http://172.30.91.2:3128
       NO_PROXY: ""
       NODE_USE_ENV_PROXY: "1"
-      PI_SKIP_VERSION_CHECK: "1"
       # Deep research (Exa). Empty leaves the mode switched off and hidden in the app.
       EXA_API_KEY: ${EXA_API_KEY:-}
     volumes: ["chat-data:/data"]

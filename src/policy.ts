@@ -17,18 +17,18 @@ export const MAX_UPLOAD = 20 * 1024 * 1024;
 export const MAX_DATA = 512 * 1024 * 1024;
 export const ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export const LOCAL_HOSTS = new Set(['127.0.0.1:8787', 'localhost:8787']);
-// Documents the `document` tool saves (profile/document.ts): one file per version in the conversation's `documents/`.
+// Documents the `document` tool saves (src/agent/tools/document.ts): one file per version in the conversation's `documents/`.
 export const DOCUMENT_ID = /^doc_[0-9a-f]{32}$/;
 export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
 export const MAX_DOCUMENT_TITLE = 200;
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_FILES = 100;
-// Routines (src/routines.ts), here so the routine tool's schema (profile/routine.ts) states the same limits.
+// Routines (src/routines.ts), here so the routine tool's schema (src/agent/tools/routine.ts) states the same limits.
 export const WEEKDAYS: readonly Weekday[] = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
 export const MAX_ROUTINE_TITLE = 80;
 export const MAX_ROUTINE_PROMPT = 4000;
-// What the server tells Pi about a turn. Its notes open the prompt, ahead of USER_PREFIX; the user's text only ever follows
-// it, so it cannot add or imitate a note. profile/extension.ts reads the notes back to set the turn's tools and limits.
+// What the server tells the model about a turn. Its notes open the prompt, ahead of USER_PREFIX; the user's text only
+// ever follows it, so it cannot add or imitate a note. The tools and limits follow the turn's TurnMode, not the text.
 const USER_PREFIX = 'Message from the user:\n';
 export const DEEP_RESEARCH_NOTE = 'Deep research mode is on for this message.';
 const DEEP_RESEARCH_INSTRUCTIONS = DEEP_RESEARCH_NOTE + ` If the message needs research, use deep_research heavily:
@@ -59,12 +59,6 @@ export function carriesText(prompt: string, text: string): boolean {
   return body === text || body.startsWith(text + ATTACHED_NOTE);
 }
 
-export function promptMode(prompt: string): {deepResearch: boolean; routineRun: boolean} {
-  const start = prompt.indexOf(USER_PREFIX);
-  const notes = start === -1 ? '' : prompt.slice(0, start);
-  return {deepResearch: notes.includes(DEEP_RESEARCH_NOTE), routineRun: notes.includes(ROUTINE_NOTE)};
-}
-
 // Research costs money per call, so it needs the conversation's switch; an unattended run has nobody to answer a
 // question or confirm a note, and routines never make routines.
 export function refusedInTurn(tool: string, mode: {deepResearch: boolean; routineRun: boolean}): string | undefined {
@@ -77,16 +71,8 @@ export const TURN_LIMITS = Object.freeze({
   normal: {toolCalls: 12, minutes: 5},
   deep: {toolCalls: 30, minutes: 20},
 });
-// profile/extension.ts reports the tools Pi registered as a notify message with this prefix; src/rpc.ts checks it.
-export const POLICY_PREFIX = 'HOME_CHAT_POLICY:';
-// The extension's private command that takes Pi back to before the last message, for regenerate and edit (src/rpc.ts
-// rewind); it answers with a notify message with this prefix: rewound, unchanged or cancelled.
-export const REWIND_COMMAND = 'home-chat-rewind';
-export const REWIND_PREFIX = 'HOME_CHAT_REWIND:';
-
-export interface ToolPolicy { registered: string[]; active: string[] }
-// How a tool reaches the server for routines and the household notes: over the internal socket from the Pi CLI
-// (profile/internal.ts), or directly in the server's own process (src/agent/). GET for /memory when `body` is absent.
+// How a tool reaches the server for routines and the household notes, in the server's own process (src/server.ts
+// serverCall). Reads the notes when `body` is absent.
 export type ServerCall = (path: '/routine' | '/memory', body?: unknown) => Promise<string>;
 
 export function isAllowedTool(name: string): name is ToolName {

@@ -1,7 +1,7 @@
 # Home Chat
 
 A private, mobile-friendly chat app for everyday questions, web search,
-image generation, documents, deep research, scheduled routines and household notes. It runs a locked-down [Pi](https://www.npmjs.com/package/@earendil-works/pi-coding-agent)
+image generation, documents, deep research, scheduled routines and household notes. It runs a locked-down [Pi Durable](https://www.npmjs.com/package/@earendil-works/pi-durable)
 agent against a Codex subscription inside Docker. The model can only use
 seven tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
 `routine`, `memory`), can only reach OpenAI and Exa, and cannot run commands or read
@@ -73,7 +73,7 @@ volume, so they survive restarts, rebuilds and `docker compose down`;
 `docker compose down -v` deletes all of them. A reply that is still
 streaming when the app stops keeps the text saved so far (within about two
 seconds after a crash) and is marked as interrupted. Deleting a conversation
-in the sidebar removes its messages, pictures and Pi session for good; it is
+in the sidebar removes its messages, pictures and model transcript for good; it is
 refused while a reply is still running.
 
 ## Public deployment
@@ -172,9 +172,9 @@ a moment. It shows at most 40 results, 5 per conversation.
 Every finished reply can be **copied** (as Markdown) or **shared** as text.
 The last reply can be **regenerated**, and your last message **edited** in
 the composer and sent again; either way it replaces that turn, pictures
-included, and Pi forgets the old one too. Pi goes back through a private
-command of the extension that moves to just before that message in its
-session tree, and labels the move, so it is still in effect after a restart.
+included, and the model forgets the old one too: the conversation continues
+in a fork that ends just before that message, and the conversation's file
+records the fork, so it is still in effect after a restart.
 
 ## Develop
 
@@ -186,13 +186,14 @@ directly with no build step. Only the browser scripts are compiled
 npm ci
 npm run typecheck   # server + browser
 npm run build       # public/app.js, public/theme.js
-npm test            # builds, then runs test/*.test.ts with a fake Pi worker
+npm test            # builds, then runs test/*.test.ts (faux model, fake worker for the server)
 ```
 
 | Path | What it is |
 | --- | --- |
 | `src/server.ts` | HTTP API, sessions, uploads, SSE streaming, turn state |
-| `src/rpc.ts` | `PiWorker`: one Pi process per conversation over JSON RPC |
+| `src/agent/` | Pi Durable in the server process: one SQLite transcript per conversation, the worker behind `ChatWorker`, the Home Chat extension and its seven tools |
+| `src/chat-worker.ts` | `ChatWorker`, what the server needs from a conversation's worker |
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
@@ -201,7 +202,7 @@ npm test            # builds, then runs test/*.test.ts with a fake Pi worker
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
 | `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
-| `profile/` | Pi extension that filters tool registration and adds the household notes to the system prompt each turn, the `document`, `deep_research`, `routine` and `memory` tools, and the instructions |
+| `profile/instructions.md` | The model's instructions |
 | `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), the `sw.ts` service worker that shows notifications, the Home Screen manifest, and `icon.svg`, which the server renders into the app icons |
 | `scripts/` | Container entrypoint, login helpers and environment checks |
 
@@ -229,24 +230,23 @@ screenshots to the git-ignored `.local/` folder.
 
 ## Security model
 
-- **Tools.** Pi starts with no built-in tools, extensions, skills or context
-  files. `profile/extension.ts` drops every tool registration except `ask`,
-  `web_run`, `imagegen` and its own `document`, `deep_research`, `routine` and `memory`, and validates tool input twice: at Pi's
-  `tool_call` hook and in the execute wrapper. The server refuses a worker
-  whose registered and active tools don't match exactly. Each message allows
-  12 tool calls (30 in deep research mode) and 2 image generations.
-  The server's notes open each message, ahead of the user's text, which
-  cannot imitate them: `deep_research` is refused unless the deep research
-  note is there, and `ask`, `routine` and `memory` are refused in a routine run.
-  `routine` and `memory` reach the server only through a Unix socket in the data
-  directory (mode 600, never a network port), with a token per Pi process
-  that scopes them to the conversation's owner. `memory` changes nothing
+- **Tools.** Every conversation runs with exactly one extension,
+  `src/agent/extension.ts`, so the model has `ask`, `web_run`, `imagegen`,
+  `document`, `deep_research`, `routine` and `memory` and nothing else: no
+  read, write, edit or bash, whatever Pi Durable ships. Every call passes its
+  `beforeTool` hook first, which validates the input and applies the
+  message's limits: 12 tool calls (30 in deep research mode) and 2 image
+  generations. The turn's mode comes from the server, not from the text:
+  `deep_research` is refused unless the conversation's switch is on, and
+  `ask`, `routine` and `memory` are refused in a routine run. `routine` and
+  `memory` call the server in its own process, bound to the conversation
+  they run in, which scopes them to its owner. `memory` changes nothing
   without the user's Yes, which the tool asks for itself, and the notes go
   into the instructions marked as facts, not instructions. `document` only writes new files
   under the conversation's `documents/` folder (at most 100, 256 K characters
   each), and the server reads them back through the same path check.
-- **Input.** Browser text is always prefixed before reaching Pi, so it can
-  never act as a slash command. Model output is rendered with DOM text nodes
+- **Input.** Browser text always follows the server's notes for the turn
+  and a fixed prefix, so it can never pose as one of those notes. Model output is rendered with DOM text nodes
   only, under a strict CSP. The browser shrinks pictures to 2048 px before
   upload; the server then decodes them, strips metadata, limits them to
   2048 px and re-encodes them as PNG.

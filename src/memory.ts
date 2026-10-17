@@ -1,12 +1,12 @@
 import type { MemoryView, User } from './api.d.ts';
 import { atomicJson, readJson } from './files.ts';
 
-// "About us": short notes about the household that the model is told in every conversation (profile/extension.ts).
+// "About us": short notes about the household that the model is told in every conversation (src/agent/extension.ts).
 // Each person has their own notes, and the shared ones belong to everyone: either user can read and change them.
 export const MAX_NOTE = 300;
 export const MAX_NOTES = 30;
 
-// The memory tool's change (profile/memory.ts), unchecked.
+// The memory tool's change (src/agent/tools/memory.ts), unchecked.
 interface ModelChange { action?: unknown; text?: unknown; shared?: unknown; replaces?: unknown }
 interface Saved { version: number; people: Partial<Record<User, string[]>>; shared: string[] }
 
