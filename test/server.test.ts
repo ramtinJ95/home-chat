@@ -183,6 +183,35 @@ test('documents saved during a reply are attached to it, readable, downloadable 
     assert.deepEqual(state.messages[3].assets, [state.assets[1].id]);
   } finally { await f.close(); }
 });
+test('todo lists: private to their owner, shared ones changed by both, and the model works on the conversation owner’s', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const made = await f.request('/api/todos', {method: 'POST', body: {title: 'Groceries', shared: true}, ...owner});
+    assert.equal(made.status, 201);
+    const groceries = await made.json();
+    const errands = await (await f.request('/api/todos', {method: 'POST', body: {title: 'Errands'}, ...owner})).json();
+    assert.deepEqual((await (await f.request('/api/todos', guest)).json()).map((list: {title: string; mine: boolean}) => [list.title, list.mine]), [['Groceries', false]]);
+    assert.equal((await f.request(`/api/todos/${errands.id}/items`, {method: 'POST', body: {text: 'Post office'}, ...guest})).status, 404);
+    const added = await (await f.request(`/api/todos/${groceries.id}/items`, {method: 'POST', body: {text: 'Milk'}, ...guest})).json();
+    assert.deepEqual(added.items, [{id: 1, text: 'Milk', done: false}]);
+    const ticked = await (await f.request(`/api/todos/${groceries.id}/items/1`, {method: 'PATCH', body: {done: true}, ...owner})).json();
+    assert.equal(ticked.items[0].done, true);
+    assert.deepEqual((await (await f.request(`/api/todos/${groceries.id}/clear`, {method: 'POST', body: {}, ...guest})).json()).items, []);
+    const refused = await f.request(`/api/todos/${groceries.id}`, {method: 'DELETE', ...guest});
+    assert.equal(refused.status, 400);
+    assert.match((await refused.json()).error, /Only the person who made this list/);
+    assert.equal((await f.request(`/api/todos/${groceries.id}`, {method: 'PATCH', body: {title: 'x'}, cookie: guest.cookie})).status, 403);
+    // The model, in the guest's conversation, sees the guest's lists only.
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...guest})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Add eggs', assets: []}, ...guest})).status, 202);
+    await delay(40);
+    assert.match(await f.worker.call!('/todo', {action: 'add', list: 'groceries', items: ['Eggs']}), /Added to “Groceries”/);
+    await assert.rejects(() => f.worker.call!('/todo', {action: 'show', list: errands.id}), /There is no such list/);
+    assert.equal((await f.request(`/api/todos/${groceries.id}`, {method: 'DELETE', ...owner})).status, 200);
+    assert.deepEqual(await (await f.request('/api/todos', guest)).json(), []);
+  } finally { await f.close(); }
+});
 test('owners delete their idle conversations and everything stored with them', async () => {
   const f = await fixture();
   try {
@@ -433,6 +462,8 @@ test('a due routine runs unattended in its own conversation, is marked unread, a
       await assert.rejects(() => callRoutine(restarted.worker, {action: 'list'}), /during a routine run/);
       // Nobody can confirm a note during the run, but the run is still told the notes.
       await assert.rejects(() => callMemory(restarted.worker, {action: 'remember', text: 'Early riser'}, true), /during a routine run/);
+      // Todo lists stay open to routine runs, e.g. a weekly shopping list.
+      assert.match(await restarted.worker.call!('/todo', {action: 'create', title: 'Weekly shop'}), /^Made the list/);
       assert.equal(await restarted.worker.call!('/memory'), '');
       restarted.worker.answer('question-1', 'One');
       await delay(40);

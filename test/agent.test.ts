@@ -313,3 +313,18 @@ test('deep research calls Exa in its mode and gives the model the grounded resul
     await f.cleanup();
   }
 });
+
+test('todo goes to the server, also in a routine run', async () => {
+  const calls: [string, unknown][] = [];
+  const f = await fixture(async (path, body) => { if (body !== undefined) calls.push([path, body]); return body === undefined ? '' : 'Added to “Groceries”.'; });
+  try {
+    const worker = await f.worker();
+    f.reply([fauxAssistantMessage([fauxToolCall('todo', {action: 'add', list: 'Groceries', items: ['Milk']})], {stopReason: 'toolUse'}), fauxAssistantMessage('Added.')]);
+    const tools: string[] = [];
+    worker.on('tool', name => tools.push(name));
+    await turn(worker, 'Weekly shopping', {routineRun: 'Sunday 19 October, 09:00'});
+    assert.deepEqual(calls, [['/todo', {action: 'add', list: 'Groceries', items: ['Milk']}]]);
+    assert.deepEqual(toolResults(f.requests[1]!), ['Added to “Groceries”.']);
+    assert.deepEqual(tools, ['todo']);
+  } finally { await f.cleanup(); }
+});

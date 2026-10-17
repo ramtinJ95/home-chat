@@ -3,7 +3,7 @@ import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User, Weekday } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory', 'todo'] as const satisfies readonly ToolName[]);
 const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (src/agent/tools/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
@@ -71,9 +71,9 @@ export const TURN_LIMITS = Object.freeze({
   normal: {toolCalls: 12, minutes: 5},
   deep: {toolCalls: 30, minutes: 20},
 });
-// How a tool reaches the server for routines and the household notes, in the server's own process (src/server.ts
+// How a tool reaches the server for routines, the household notes and the todo lists, in the server's own process (src/server.ts
 // serverCall). Reads the notes when `body` is absent.
-export type ServerCall = (path: '/routine' | '/memory', body?: unknown) => Promise<string>;
+export type ServerCall = (path: '/routine' | '/memory' | '/todo', body?: unknown) => Promise<string>;
 
 export function isAllowedTool(name: string): name is ToolName {
   return (ALLOWED_TOOLS as readonly string[]).includes(name);

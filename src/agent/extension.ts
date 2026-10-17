@@ -1,5 +1,5 @@
 // Home Chat's tools, rules and instructions as one Pi Durable extension. Every conversation runs with exactly this
-// extension, so the model has these seven tools and nothing else: no read, write, edit or bash.
+// extension, so the model has these eight tools and nothing else: no read, write, edit or bash.
 import type { Context } from '@earendil-works/chord/context';
 import type { ImageContent, MutableModels } from '@earendil-works/pi-ai';
 import { defineExtension, defineTool, hook, section, ToolTask, type ConversationId } from '@earendil-works/pi-durable';
@@ -11,6 +11,7 @@ import * as document from './tools/document.ts';
 import * as imagegen from './tools/imagegen.ts';
 import * as memory from './tools/memory.ts';
 import * as routine from './tools/routine.ts';
+import * as todo from './tools/todo.ts';
 import * as webRun from './tools/web-run.ts';
 
 // What the tools need from the conversation they run in (src/agent/worker.ts).
@@ -81,6 +82,10 @@ export function homeExtension({models, instructions, hostFor}:
     defineTool({
       name: 'routine', description: routine.description, parameters: routine.parameters,
       async execute(args, api) { return {output: text(await host(api.conversationId).call('/routine', args))}; },
+    }),
+    defineTool({
+      name: 'todo', description: todo.description, parameters: todo.parameters,
+      async execute(args, api) { return {output: text(await host(api.conversationId).call('/todo', args))}; },
     }),
     defineTool({
       name: 'memory', description: memory.description, parameters: memory.parameters,

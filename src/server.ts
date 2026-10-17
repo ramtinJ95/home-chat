@@ -4,12 +4,13 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/p
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, User } from './api.d.ts';
+import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson, readJson, serialSave } from './files.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
+import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
@@ -216,6 +217,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     else { queue.push({routine, scheduled}); void drainRuns(); }
   });
   const memory = await createMemory(join(data, 'memory.json'));
+  const todos = await createTodos(join(data, 'todos.json'));
   const recordRun = ({routine, scheduled}: RoutineRun, outcome: 'done' | 'failed' | 'skipped') =>
     routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
   const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
@@ -567,21 +569,48 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     }
   }
 
+  // The Todos page. Every change answers with the list as it is now, and a list this person cannot see is not found.
+  async function todoRoute(user: User, req: http.IncomingMessage, [list, kind, item, ...rest]: string[]): Promise<[number, unknown]> {
+    const route = [req.method, list && 'list', kind, item && 'item'].filter(Boolean).join(' ');
+    if (rest.length) throw fail(404, 'Not found');
+    const body = () => jsonBody(req, 4_000);
+    const id = Number(item);
+    try {
+      switch (route) {
+        case 'GET': return [200, todos.list(user) satisfies TodoList[]];
+        case 'POST': return [201, await todos.create(user, await body())];
+        case 'PATCH list': return [200, await todos.update(user, list, await body())];
+        case 'DELETE list': return [200, await todos.remove(user, list)];
+        case 'POST list items': return [201, (await todos.add(user, list, [(await body()).text])).list];
+        case 'POST list clear': return [200, await todos.removeItems(user, list)];
+        case 'PATCH list items item': return [200, await todos.edit(user, list, [id], await body())];
+        case 'DELETE list items item': return [200, await todos.removeItems(user, list, [id])];
+        default: throw fail(404, 'Not found');
+      }
+    } catch (error) {
+      if (error instanceof TodoMissing) throw fail(404, 'This list is gone or no longer shared with you');
+      if (error instanceof TodoError) throw fail(400, error.message);
+      throw error;
+    }
+  }
+
   // What a conversation's tools ask of the server: the household notes for the turn's instructions (routine runs
-  // included), and changes to routines and notes. Fails with an HttpError whose message the model is shown.
-  async function serverCall(chat: Chat, path: '/routine' | '/memory', body?: unknown): Promise<string> {
+  // included), changes to routines and notes, and the todo lists, which routine runs may change too. Fails with an
+  // HttpError whose message the model is shown.
+  async function serverCall(chat: Chat, path: '/routine' | '/memory' | '/todo', body?: unknown): Promise<string> {
     if (path === '/memory' && body === undefined) return memory.prompt(chat.owner);
-    if (turns.get(chat.id)?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
+    if (path !== '/todo' && turns.get(chat.id)?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw fail(400, 'Invalid request');
     const input = body as Record<string, unknown>;
     try {
+      if (path === '/todo') return await todoAction(todos, chat.owner, input);
       if (path === '/routine') return await routineAction(chat, input);
       // The memory tool checks a change first, then asks the user, then makes it (src/agent/tools/memory.ts).
       if (input.check === true) { memory.check(chat.owner, input); return 'OK'; }
       await memory.apply(chat.owner, input);
       return input.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.';
     } catch (error) {
-      if (error instanceof RoutineError || error instanceof MemoryError) throw fail(400, error.message);
+      if (error instanceof RoutineError || error instanceof MemoryError || error instanceof TodoError) throw fail(400, error.message);
       if (error instanceof HttpError) throw error;
       throw fail(500, 'Home Chat could not save that');
     }
@@ -692,6 +721,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(201, snapshot(chat));
       }
       const parts = path.split('/').filter(Boolean);
+      if (parts[0] === 'api' && parts[1] === 'todos') return send(...await todoRoute(session.user, req, parts.slice(2)));
       // The Routines page: its on/off switch, edits and delete. Creating one happens by asking the model.
       if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && ['POST', 'PATCH', 'DELETE'].includes(req.method ?? '')) {
         const routine = routines.get(parts[2]);

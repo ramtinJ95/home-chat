@@ -2,7 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory' | 'todo';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
 export interface Question {
@@ -91,6 +91,14 @@ export type RoutineEdit = Partial<Pick<RoutineSummary, 'title' | 'prompt' | 'rul
 // GET /api/memory: the "About us" notes, one line each. PUT /api/memory {version, mine, shared} replaces both lists, and
 // answers 409 if they changed since `version` was read. `shared` is the same for everyone.
 export interface MemoryView { version: number; mine: string[]; shared: string[] }
+
+// GET /api/todos: the lists this person can see, their own and the shared ones, oldest first. POST /api/todos
+// {title, shared} makes one; PATCH /api/todos/<list> {title?, shared?} and DELETE change it (sharing and deleting are for
+// its owner, `mine`). POST /api/todos/<list>/items {text} adds an item, PATCH .../items/<id> {done?, text?} and DELETE
+// change one, and POST /api/todos/<list>/clear removes the done ones. Each answers with the list as it is now.
+export interface TodoItem { id: number; text: string; done: boolean }
+// `version` counts the list's changes, so a page can tell an older answer from a newer one.
+export interface TodoList { id: string; title: string; shared: boolean; mine: boolean; version: number; items: TodoItem[] }
 
 export interface Me {
   user: User;
