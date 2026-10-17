@@ -7,6 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import type { MutableModels, ThinkingLevel } from '@earendil-works/pi-ai';
+import { closeOpenAICodexWebSocketSessions } from '@earendil-works/pi-ai/api/openai-codex-responses';
 import { createRegistry, defineDoc, Harness, ResetEntry, type Conversation, type ConversationId, type EntryId, type Tx } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import type { Message } from '../api.d.ts';
@@ -52,7 +53,7 @@ export interface HomeAgent {
   worker(directory: string, call: ServerCall): DurableWorker;
   // Resolves once the directory's file is not being closed, e.g. by a worker that was replaced.
   released(directory: string): Promise<void>;
-  // Resolves once every file being closed is closed.
+  // Resolves once every file being closed is closed. For when the process is done with the agent.
   close(): Promise<void>;
 }
 
@@ -124,7 +125,12 @@ export function createAgent(options: AgentOptions): HomeAgent {
     open,
     worker: (directory, call) => new DurableWorker(home, directory, call),
     released: async directory => { await closing.get(directory); },
-    close: async () => { await Promise.all(closing.values()); },
+    close: async () => {
+      await Promise.all(closing.values());
+      // pi-ai keeps each session's Codex WebSocket open for 5 minutes after its last request, which would hold the
+      // process past SIGTERM until Docker kills it.
+      closeOpenAICodexWebSocketSessions();
+    },
   };
   return home;
 }
