@@ -65,7 +65,8 @@ export type RoutineSchedule =
   | {kind: 'monthly'; time: string; day: number}
   | {kind: 'once'; time: string; date: string};
 
-// GET /api/routines; POST /api/routines/<id> {enabled} switches one; DELETE removes it and keeps its conversation.
+// GET /api/routines; POST /api/routines/<id> {enabled} switches one; PATCH edits it with a RoutineEdit; DELETE removes
+// it and keeps its conversation.
 export interface RoutineSummary {
   id: string;
   title: string;
@@ -73,10 +74,19 @@ export interface RoutineSummary {
   enabled: boolean;
   // "Every day at 07:30"
   schedule: string;
+  // The schedule `schedule` describes, for editing.
+  rule: RoutineSchedule;
+  // What each run is asked to do.
+  prompt: string;
+  deepResearch: boolean;
   // "Tomorrow 07:30", "Paused" or "Done"
   next: string;
+  // The latest run: when it was due ("Today 07:30") and how it went; null before the first.
+  lastRun: {when: string; outcome: 'running' | 'done' | 'failed' | 'skipped'} | null;
   unread: boolean;
 }
+
+export type RoutineEdit = Partial<Pick<RoutineSummary, 'title' | 'prompt' | 'rule' | 'deepResearch'>>;
 
 // GET /api/memory: the "About us" notes, one line each. PUT /api/memory {version, mine, shared} replaces both lists, and
 // answers 409 if they changed since `version` was read. `shared` is the same for everyone.

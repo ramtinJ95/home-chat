@@ -399,6 +399,14 @@ test('routines are set up by the model, listed and switched in the app, and kept
     assert.equal(paused.next, 'Paused');
     assert.match(await callRoutine(f.worker.env, {action: 'list'}), new RegExp(`“Morning briefing” \\(id ${routine.id}\\): Every day at 07:30; Paused`));
     assert.match(await callRoutine(f.worker.env, {action: 'update', id: routine.id, schedule: {kind: 'weekly', time: '08:00', days: ['sat']}}), /Saturdays at 08:00/);
+    // The Routines page edits a routine directly; it stays paused.
+    const edit = {title: 'Weekend briefing', prompt: 'Weather only', rule: {kind: 'weekly', time: '09:15', days: ['sun', 'sat']}, deepResearch: false};
+    assert.equal((await f.request(`/api/routines/${routine.id}`, {method: 'PATCH', body: edit, ...guest})).status, 404);
+    const bad = await f.request(`/api/routines/${routine.id}`, {method: 'PATCH', body: {rule: {kind: 'weekly', time: '09:15', days: []}}, ...owner});
+    assert.equal(bad.status, 400);
+    const edited = await (await f.request(`/api/routines/${routine.id}`, {method: 'PATCH', body: edit, ...owner})).json();
+    assert.equal(edited.title, 'Weekend briefing'); assert.equal(edited.prompt, 'Weather only'); assert.equal(edited.schedule, 'Sundays and Saturdays at 09:15');
+    assert.deepEqual(edited.rule, {kind: 'weekly', time: '09:15', days: ['sun', 'sat']}); assert.equal(edited.next, 'Paused'); assert.equal(edited.lastRun, null);
     // The routine's conversation goes only after the routine does, and then like any other.
     assert.equal((await f.request(`/api/chats/${routine.chat}`, {method: 'DELETE', ...owner})).status, 409);
     assert.match(await callRoutine(f.worker.env, {action: 'delete', id: routine.id}), /earlier results stay/);
