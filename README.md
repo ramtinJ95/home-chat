@@ -221,7 +221,10 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 
 | Path | What it is |
 | --- | --- |
-| `src/server.ts` | HTTP API, sessions, uploads, SSE streaming, turn state |
+| `src/server.ts` | HTTP API, uploads, SSE streaming, turn state and routine runs |
+| `src/sign-in.ts` | Who a request comes from. Access codes and 8-hour sessions in local mode, or each request's Cloudflare Access identity in public mode |
+| `src/access.ts` | Verifies Cloudflare's signed `Cf-Access-Jwt-Assertion` token against the team's keys |
+| `src/http.ts` | `HttpError` for errors the client sees, `jsonBody` for request bodies, and `recent`, the time window behind the rate limits |
 | `src/agent/` | Pi Durable in the server process: one SQLite transcript per conversation, the worker behind `ChatWorker`, the Home Chat extension and its eight tools |
 | `src/chat-worker.ts` | `ChatWorker`, what the server needs from a conversation's worker |
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
@@ -232,7 +235,7 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 | `src/library.ts` | The Library in `library.json`, with copies of shared documents and pictures under `library/` |
 | `src/todos.ts` | Todo lists in `todos.json`, private or shared, and the `todo` tool's actions |
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
-| `src/files.ts` | Atomic, synced JSON writes shared by every store: conversations, routines, notes, todos, the Library, push and the Codex login |
+| `src/files.ts` | Atomic, synced JSON writes shared by every store: conversations, routines, notes, todos, the Library, push and the Codex login. `jsonStore` runs the notes', todos' and Library's changes one at a time |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/instructions.md` | The model's instructions |
 | `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), the `sw.ts` service worker that shows notifications, the Home Screen manifest, and `icon.svg`, which the server renders into the app icons |
@@ -250,9 +253,8 @@ docker run --rm --network none --user 10001:10001 --cap-drop ALL \
 Checks against the running stack:
 
 ```sh
-docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, only the eight tools, Codex signed in
+docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, Codex signed in
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
-docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi Durable; uses quota
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
 ```
