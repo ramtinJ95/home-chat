@@ -153,8 +153,9 @@ as an ordinary conversation. Saying "pause my briefing" anywhere also works, and
 desktop Edge and Chrome the notification has a Pause button. A run waits while
 its owner has a reply running or both workers are busy, and is skipped with a
 note if it cannot start within 3 hours, for example because the app was down.
-Each person can have 10 routines and 20 runs a day; a run has no `ask` and no
-`routine` tool, and uses deep research only if the routine was set up with it.
+Each person can have 10 routines and 20 runs a day; a run has no `ask`,
+`routine` or `memory` tool, and uses deep research only if the routine was set
+up with it.
 
 **About us** holds short notes the model is told in every conversation: each
 person's own ("vegetarian, but eats fish") and shared ones for the whole
@@ -209,12 +210,12 @@ records the fork, so it is still in effect after a restart.
 
 Everything is TypeScript. Node 26 runs the server, scripts and tests
 directly with no build step. Only the browser scripts are compiled
-(`public/app.ts` and `public/theme.ts` to `.js`).
+(`public/app.ts`, `public/theme.ts` and the `public/sw.ts` service worker to `.js`).
 
 ```sh
 npm ci
 npm run typecheck   # server + browser
-npm run build       # public/app.js, public/theme.js
+npm run build       # public/app.js, public/theme.js, public/sw.js
 npm test            # builds, then runs test/*.test.ts (faux model, fake worker for the server)
 ```
 
@@ -224,14 +225,14 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 | `src/agent/` | Pi Durable in the server process: one SQLite transcript per conversation, the worker behind `ChatWorker`, the Home Chat extension and its eight tools |
 | `src/chat-worker.ts` | `ChatWorker`, what the server needs from a conversation's worker |
 | `src/policy.ts` | Tool allowlist, image-path and URL checks, limits |
-| `src/egress.ts` | CONNECT proxy that only reaches OpenAI and the browser push services on port 443 |
+| `src/egress.ts` | CONNECT proxy that only reaches OpenAI, Exa, the browser push services and, in public mode, the Cloudflare Access team host, on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
 | `src/search.ts` | Search over a person's conversations: matching, snippets and highlight ranges |
 | `src/library.ts` | The Library in `library.json`, with copies of shared documents and pictures under `library/` |
 | `src/todos.ts` | Todo lists in `todos.json`, private or shared, and the `todo` tool's actions |
 | `src/memory.ts` | About us: each person's and the shared household notes in `memory.json`, and their part of the instructions |
-| `src/files.ts` | Atomic, synced JSON writes shared by conversations and push |
+| `src/files.ts` | Atomic, synced JSON writes shared by every store: conversations, routines, notes, todos, the Library, push and the Codex login |
 | `src/api.d.ts` | Request, response and event types shared by server and browser |
 | `profile/instructions.md` | The model's instructions |
 | `public/` | Single-page UI (HTML, CSS, `app.ts`, `theme.ts` for the light/dark choice), the `sw.ts` service worker that shows notifications, the Home Screen manifest, and `icon.svg`, which the server renders into the app icons |
@@ -243,7 +244,7 @@ the same way it ships:
 ```sh
 docker run --rm --network none --user 10001:10001 --cap-drop ALL \
   --security-opt no-new-privileges --entrypoint node home-chat-local:0.1.0 \
-  --test test/access.test.ts test/agent.test.ts test/document.test.ts test/memory.test.ts test/policy.test.ts test/research.test.ts test/routines.test.ts test/search.test.ts test/server.test.ts
+  --test 'test/*.test.ts'
 ```
 
 Checks against the running stack:
@@ -283,8 +284,9 @@ screenshots to the git-ignored `.local/` folder.
   2048 px and re-encodes them as PNG.
 - **Network.** The app container's firewall allows only the egress proxy.
   The proxy allows CONNECT to `chatgpt.com`, `api.openai.com`,
-  `auth.openai.com` and `api.exa.ai` on port 443, and to the browser push services (Apple,
-  Google, Mozilla and Microsoft's `*.notify.windows.com`). Only the server
+  `auth.openai.com` and `api.exa.ai` on port 443, to the browser push services (Apple,
+  Google, Mozilla and Microsoft's `*.notify.windows.com`), and in public mode to
+  the Cloudflare Access team host (`<team>.cloudflareaccess.com`) for its signing keys. Only the server
   sends to the push services, never the model, and it accepts a device's push
   address only on those hosts. Notifications carry the conversation title and
   a short status, encrypted to the device, never the reply. It rejects non-public addresses and connects
