@@ -678,6 +678,16 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
+    // A picture, or a document as the reader shows it; `download` sends either as a file to save.
+    const sendPicture = async (id: string, path: string, download: boolean) => {
+      if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${id}.png"`);
+      return send(200, await readFile(path), {'Content-Type': 'image/png'});
+    };
+    const sendDocument = ({title, markdown}: {title: string; markdown: string}, version: number, download: boolean) => {
+      if (!download) return send(200, {title, markdown, version} satisfies DocumentContent);
+      res.setHeader('Content-Disposition', markdownDisposition(title));
+      return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
+    };
     try {
       // The container health check, from inside the container only; it reveals nothing.
       if (req.url === '/healthz' && req.method === 'GET' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -793,17 +803,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
             case 'GET item': {
               const {item, path} = library.get(session.user, parts[2]);
               const download = url.searchParams.has('download');
-              if (item.kind === 'picture') {
-                if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${item.id}.png"`);
-                return send(200, await readFile(path), {'Content-Type': 'image/png'});
-              }
-              const {title, markdown} = JSON.parse(await readFile(path, 'utf8')) as {title: string; markdown: string};
-              if (download) {
-                res.setHeader('Content-Disposition', markdownDisposition(title));
-                return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
-              }
-              const content: DocumentContent = {title, markdown, version: item.version};
-              return send(200, content);
+              if (item.kind === 'picture') return await sendPicture(item.id, path, download);
+              return sendDocument(JSON.parse(await readFile(path, 'utf8')), item.version, download);
             }
           }
         } catch (error) {
@@ -929,18 +930,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       if (parts[3] === 'assets' && parts.length === 5 && req.method === 'GET') {
         const asset = chat.assets.find(item => item.id === parts[4]);
         if (!asset) throw fail(404, 'Not found');
-        if (asset.document) {
-          const {title, markdown} = await readDocument(asset.path, workDir(chat));
-          if (url.searchParams.has('download')) {
-            res.setHeader('Content-Disposition', markdownDisposition(title));
-            return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
-          }
-          const content: DocumentContent = {title, markdown, version: asset.document.version};
-          return send(200, content);
-        }
-        const path = await allowedImagePath(asset.path, workDir(chat));
-        if (url.searchParams.has('download')) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${asset.id}.png"`);
-        return send(200, await readFile(path), {'Content-Type': 'image/png'});
+        const download = url.searchParams.has('download');
+        if (asset.document) return sendDocument(await readDocument(asset.path, workDir(chat)), asset.document.version, download);
+        return await sendPicture(asset.id, await allowedImagePath(asset.path, workDir(chat)), download);
       }
       if (route === 'POST uploads') {
         if (occupied(chat.id)) throw fail(409, 'Wait for the current message');
