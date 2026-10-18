@@ -875,7 +875,7 @@ function unreadDot(label = 'New results'): HTMLElement {
 async function refreshSidebar(): Promise<ChatSummary[]> {
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
   ui.routines.hidden = !routines.length;
-  ui.routineList.replaceChildren(...routines.map(routineRow));
+  keepSwitchFocus(ui.routineList, () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
   // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list, and
   // shared ones in theirs.
@@ -1145,6 +1145,10 @@ async function openRoutines(edit?: string) {
 }
 
 function renderRoutineCards(list: RoutineSummary[]) {
+  keepSwitchFocus(ui.routineCards, () => drawRoutineCards(list));
+}
+
+function drawRoutineCards(list: RoutineSummary[]) {
   routineList = list;
   if (routineEdit && !list.some(item => item.id === routineEdit!.id)) routineEdit = undefined;
   const nodes = list.length ? list.map(item => item.id === routineEdit?.id ? routineEdit.form : routineCard(item))
@@ -1276,6 +1280,14 @@ function editRoutine(routine: RoutineSummary) {
   title.focus({preventScroll: true});
 }
 
+// Runs `redraw` on `node`. A routine switch in it that had the focus is drawn anew, so the new one gets the focus.
+function keepSwitchFocus(node: HTMLElement, redraw: () => void) {
+  const active = document.activeElement;
+  const id = active instanceof HTMLInputElement && node.contains(active) ? active.dataset.routine : undefined;
+  redraw();
+  if (id && !active!.isConnected) node.querySelector<HTMLInputElement>(`input[data-routine="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
+}
+
 function routineSwitch(routine: RoutineSummary): HTMLElement {
   const label = element('label', 'switch');
   label.title = routine.enabled ? 'Pause this routine' : 'Turn this routine on';
@@ -1284,6 +1296,7 @@ function routineSwitch(routine: RoutineSummary): HTMLElement {
   input.setAttribute('aria-label', `Run “${routine.title}”`);
   // A one-off that has run cannot be switched back on; asking the model gives it a new date.
   input.disabled = routine.next === 'Done';
+  input.dataset.routine = routine.id;
   input.onchange = () => setRoutine(routine.id, input.checked).catch(error => { input.checked = !input.checked; showError(error); });
   label.append(input, element('span'));
   return label;
@@ -1311,7 +1324,7 @@ function renderRoutineBar(routine: RoutineSummary | null) {
   const remove = element('button', 'ghost danger', 'Delete routine');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
   const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
-  ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove);
+  keepSwitchFocus(ui.routineBar, () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
 }
 
 // The Pause button on a routine's notification.
