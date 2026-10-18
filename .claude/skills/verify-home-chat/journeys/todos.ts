@@ -52,7 +52,7 @@ try {
   await phone.locator('#todo-new-shared').check();
   await phone.getByRole('button', {name: 'Make list'}).click();
   await card(phone).waitFor({state: 'visible'});
-  assert.equal(await card(phone).locator('.routine-tag').isVisible(), true, 'The new list is not marked Shared');
+  assert.equal(await card(phone).locator('.pill').isVisible(), true, 'The new list is not marked Shared');
   await add(phone, 'Milk');
   await add(phone, 'Eggs');
   await card(phone).getByRole('checkbox', {name: 'Milk'}).check();

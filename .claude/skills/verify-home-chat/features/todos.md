@@ -34,7 +34,7 @@ The journey script covers `todos-create` (shared), `todos-items` (add and tick),
 
 - **Open.** On the owner's phone, tap `#open-sidebar`, then `#todos-entry button`. `#todos-page` is visible.
 - **Create.** Fill `#todo-new-title`, check `#todo-new-shared`, then tap the "Make list" button. A `.todo-card` with that
-  heading appears and its "Shared" tag (`.routine-tag`) shows.
+  heading appears and its "Shared" tag (`.pill`) shows.
 - **Items.** In the card, fill the textbox "Add an item to <title>" and tap "Add to <title>". A `.todo-item` with the text
   appears. Ticking the checkbox named after the item gives the row the class `todo-item done`.
 - **Stored.** `stack.sh data todos.json` lists the title with `owner: "owner"`, `shared: true` and the items with their

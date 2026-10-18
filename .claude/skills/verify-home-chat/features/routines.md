@@ -29,8 +29,8 @@ Preconditions:
 
 - **Create.** In a new conversation, send `Every weekday at 7:30, tell me one fun fact. Name it Fun fact.` and answer
   any `#question` with the confirming choice. `stack.sh data routines.json` then holds a routine titled `Fun fact`.
-- **List.** Tap `#open-sidebar`, then `#routines-entry button`. `#routine-cards` has a `.routine-card` with the heading
-  `Fun fact` and a `.routine-when` that names weekdays and 07:30.
+- **List.** Tap `#open-sidebar`, then `#routines-entry button`. `#routine-cards` has a `.card` with the heading
+  `Fun fact` and a `.card-detail` that names weekdays and 07:30.
 - **Toggle.** Uncheck the switch "Run “Fun fact”". The card reads "Paused", and `routines.json` has `enabled: false`.
 - **Edit.** Tap "Edit", change the task, then save. The card's `.routine-task` shows the new text.
 - **Delete.** Tap "Delete" and accept the dialog. The card goes away, and the conversation is still in `#chat-list`.
