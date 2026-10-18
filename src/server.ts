@@ -33,7 +33,7 @@ interface StreamClient { res: http.ServerResponse; sessionKey: string; user: Use
 
 export interface AppOptions {
   data?: string;
-  // `call` is how the worker's routine and memory tools reach the server. By default, Pi Durable (src/agent/).
+  // `call` is how the worker's routine, memory and todo tools reach the server. By default, Pi Durable (src/agent/).
   workerFactory?: (directory: string, call: ServerCall) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
