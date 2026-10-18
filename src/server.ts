@@ -523,7 +523,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     worker.on('delta', text => {
       const last = chat.messages.at(-1);
       if (last?.role !== 'assistant') return;
-      if (last.text.length + text.length > 100_000) { worker.stop(); void failTurn('Response size limit reached'); return; }
+      if (last.text.length + text.length > 100_000) { worker.stop('Response size limit reached'); return; }
       last.text += text; emit(chat.id, {type: 'delta', text});
       // Streamed text is saved every few seconds so a crash loses only the last moments of a reply. A failed save here is
       // left to the turn's final save, which reports it.

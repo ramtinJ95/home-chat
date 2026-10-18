@@ -26,26 +26,32 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   lastDeep?: boolean;
   lastMode?: TurnMode;
   async start() {}
+  // From a prompt until it settles; stopping the worker meanwhile fails the turn, as it does the real one.
+  running = false;
   // Fails the next prompt: rejected, as Pi does before it records the message, or timed out, when nobody knows.
   failNext?: 'rejected' | 'timeout';
   async prompt(text: string, _images?: unknown, mode: TurnMode = {}) {
     const failure = this.failNext; this.failNext = undefined;
     if (failure) throw failure === 'rejected' ? new PiRejected('rejected') : new Error('Pi command timed out');
+    this.running = true;
     this.lastText = text; this.lastMode = mode; this.lastDeep = mode.deepResearch === true;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
     setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
   answer(id: string, value: unknown) {
     if (id !== this.question?.id || !this.question.options.includes(value as string)) throw new Error('Invalid answer');
-    this.question = null; this.emit('settled');
+    this.question = null; this.running = false; this.emit('settled');
   }
   // The texts regenerate and edit asked Pi to go back over.
   rewound: string[] = [];
   // What Pi reports: whether its last message carried the text.
   rewindMatches = true;
   async rewind(text: string) { this.rewound.push(text); return this.rewindMatches; }
-  async abort() { this.emit('settled'); }
-  stop() { this.closed = true; }
+  async abort() { this.running = false; this.emit('settled'); }
+  stop(reason = 'The reply was stopped before it finished') {
+    this.closed = true; this.question = null;
+    if (this.running) { this.running = false; this.emit('failure', reason); }
+  }
 }
 
 // `hold`: the body is sent only once it settles, as from a slow connection.
@@ -148,6 +154,26 @@ test('mocked Pi streaming and structured questions stay in their conversation', 
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
     await delay(30);
     assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).busy, false);
+  } finally { await f.close(); }
+});
+test('a reply that grows past the size limit fails its turn once, saying why', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    // The page's stream, which ends at logout with every event it was sent.
+    const stream = f.request(`/api/chats/${chat.id}/events`, owner);
+    await delay(30);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Write a novel', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    f.worker.emit('delta', 'x'.repeat(100_000));
+    await delay(30);
+    const state = await (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    assert.equal(state.busy, false);
+    assert.equal(state.messages[1].error, 'Response size limit reached');
+    await f.request('/api/logout', {method: 'POST', body: {}, ...owner});
+    const events = (await (await stream).text()).split('\n\n').filter(block => block.startsWith('data: ')).map(block => JSON.parse(block.slice(6)));
+    assert.deepEqual(events.filter(event => event.type === 'error'), [{type: 'error', message: 'Response size limit reached'}]);
   } finally { await f.close(); }
 });
 test('documents saved during a reply are attached to it, readable, downloadable and revisable', async () => {

@@ -22,8 +22,8 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   rewind(text: string): Promise<boolean>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
-  // A promise, when the worker's files stay open until it settles.
-  stop(): void | Promise<void>;
+  // A running turn fails, with `reason` when given. A promise, when the worker's files stay open until it settles.
+  stop(reason?: string): void | Promise<void>;
 }
 
 export function providerFailure(value: unknown): string {

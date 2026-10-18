@@ -221,16 +221,16 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     await this.#conversation?.abort(context);
   }
 
-  // Ends this worker: like the Pi CLI process exiting, a running turn fails and its work is aborted. Resolves once the
-  // conversation's file is closed, so its directory can be removed.
-  stop(): Promise<void> {
+  // Ends this worker: like the Pi CLI process exiting, a running turn fails with `reason` and its work is aborted.
+  // Resolves once the conversation's file is closed, so its directory can be removed.
+  stop(reason = 'The reply was stopped before it finished'): Promise<void> {
     if (this.closed) return this.#stopped ?? Promise.resolve();
     this.closed = true;
     this.#dismiss();
     void this.#stream?.stop();
     if (this.#active) {
       this.#active = false; this.#submission = undefined;
-      this.emit('failure', 'The reply was stopped before it finished');
+      this.emit('failure', reason);
     }
     // A file still opening is closed once it is open.
     const store = this.#store ? Promise.resolve(this.#store) : this.#opening;
