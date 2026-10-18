@@ -519,7 +519,6 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
   }
   if (message.role === 'assistant') {
     renderMarkdown(content, message.text);
-    streaming = {node: content, text: message.text};
     const mark = element('div', 'avatar-mark');
     mark.append(icon('leaf'));
     article.append(mark);
@@ -1059,10 +1058,11 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
 }
 
 function renderChat(next: ChatSnapshot) {
-  // Another conversation replaces the page, and any page over it. An edit ends once its turn can no longer be redone.
-  if (chat?.id !== next.id) { if (sheet) sheet.parent = undefined; closeSheet(); }
-  if (editing && (editing.chat !== next.id || !canRedo(next))) stopEditing();
   const sameChat = chat?.id === next.id;
+  // Another conversation replaces the page, and any page over it. An edit ends with its conversation, or once its turn
+  // can no longer be redone.
+  if (!sameChat) { if (sheet) sheet.parent = undefined; closeSheet(); }
+  if (editing && (!sameChat || !canRedo(next))) stopEditing();
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
   shown = JSON.stringify(next);
@@ -1081,10 +1081,13 @@ function renderChat(next: ChatSnapshot) {
   ui.message.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
   renderRoutineBar(next.routine);
   setBusy(next.busy);
-  streaming = undefined;
   ui.messages.replaceChildren(...(next.messages.length
     ? next.messages.map((message, index) => renderMessage(next, message, index >= previousCount, index))
     : [renderEmpty()]));
+  // Deltas extend the last message, as on the server, which only sends them while that is a reply.
+  const last = next.messages.at(-1);
+  const content = ui.messages.lastElementChild?.querySelector<HTMLElement>('.content');
+  streaming = last?.role === 'assistant' && content ? {node: content, text: last.text} : undefined;
   markFound();
   // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
@@ -1365,10 +1368,10 @@ async function regenerate() {
 
 // Editing the last message happens in the composer. `draft` is whatever was there before, given back when the edit
 // ends: sent or cancelled.
-let editing: {chat: string; draft: string} | undefined;
+let editing: {draft: string} | undefined;
 function startEditing() {
   if (!chat) return;
-  editing = {chat: chat.id, draft: editing?.draft ?? ui.message.value};
+  editing = {draft: editing?.draft ?? ui.message.value};
   ui.message.value = chat.messages.at(-2)!.text;
   ui.editing.hidden = false;
   resizeComposer();
@@ -1607,7 +1610,7 @@ ui.composer.onsubmit = async event => {
   const text = ui.message.value;
   const sent = [...attachments];
   try {
-    const edit = editing?.chat === chat.id ? editing : undefined;
+    const edit = editing;
     setBusy(true);
     if (edit) {
       await resend(text, sent.map(item => item.id));
