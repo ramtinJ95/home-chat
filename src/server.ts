@@ -218,15 +218,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   };
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
-    let record;
-    try { record = await readFile(join(chatsDirectory, id, 'chat.json'), 'utf8'); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      // A conversation's directory is made before its first save, and it is only shown to anyone after that save, so a
-      // directory without a record is a creation the app stopped in the middle of.
-      await rm(join(chatsDirectory, id), {recursive: true}); continue;
-    }
-    const chat: Chat = JSON.parse(record);
+    const chat = await readJson<Chat>(join(chatsDirectory, id, 'chat.json'));
+    // A conversation's directory is made before its first save, and it is only shown to anyone after that save, so a
+    // directory without a record is a creation the app stopped in the middle of.
+    if (chat === undefined) { await rm(join(chatsDirectory, id), {recursive: true}); continue; }
     if (chat.id !== id || !isUser(chat.owner)) throw new Error('Invalid conversation record');
     // Saved before unread was kept per person, when only routine runs, which are the owner's, were marked.
     if ((chat.unread as unknown) === true) chat.unread = [chat.owner];
