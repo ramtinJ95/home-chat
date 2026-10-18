@@ -8,7 +8,7 @@ import type { Context } from '@earendil-works/chord/context';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
-import { carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
+import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
 import { PiRejected, providerFailure, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
 import { context, type ChatStore, type HomeAgent } from './agent.ts';
 import type { ChatHost } from './extension.ts';
@@ -180,7 +180,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     const id = randomUUID();
     this.question = {
       id, method: question.method, title: question.title.slice(0, 2000), message: question.message.slice(0, 4000),
-      options: question.options.slice(0, 20).map(option => option.slice(0, 1000)), prefill: question.prefill.slice(0, 4000),
+      options: question.options.slice(0, MAX_QUESTION_OPTIONS).map(option => option.slice(0, 1000)), prefill: question.prefill.slice(0, 4000),
     };
     return new Promise(resolve => {
       this.#pending = {id, resolve};

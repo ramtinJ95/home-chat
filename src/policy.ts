@@ -27,6 +27,9 @@ export const MAX_DOCUMENT_FILES = 100;
 export const WEEKDAYS: readonly Weekday[] = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
 export const MAX_ROUTINE_TITLE = 80;
 export const MAX_ROUTINE_PROMPT = 4000;
+// The most options one question shows in the app (src/agent/worker.ts), here so the ask tool's schema leaves room for the
+// options it adds itself (src/agent/tools/ask.ts).
+export const MAX_QUESTION_OPTIONS = 20;
 // What the server tells the model about a turn. Its notes open the prompt, ahead of USER_PREFIX; the user's text only
 // ever follows it, so it cannot add or imitate a note. The tools and limits follow the turn's TurnMode, not the text.
 const USER_PREFIX = 'Message from the user:\n';

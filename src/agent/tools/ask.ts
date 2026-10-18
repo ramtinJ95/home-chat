@@ -1,5 +1,6 @@
 import { Type, type Static } from 'typebox';
 import type { Question } from '../../api.d.ts';
+import { MAX_QUESTION_OPTIONS } from '../../policy.ts';
 
 // The questions the app shows (Question without its id). Resolves with the answer: the chosen option or typed text, true
 // or false for confirm, undefined when the user dismissed it.
@@ -19,8 +20,9 @@ export const parameters = Type.Object({
     title: Type.String({minLength: 1}),
     body: Type.Optional(Type.String()),
     multiple: Type.Optional(Type.Boolean()),
+    // Other/rephrase and Finish selection follow the choices in the same list.
     choices: Type.Optional(Type.Array(Type.Object({label: Type.String({minLength: 1}), description: Type.Optional(Type.String())},
-      {additionalProperties: false}))),
+      {additionalProperties: false}), {maxItems: MAX_QUESTION_OPTIONS - 2})),
   }, {additionalProperties: false}), {minItems: 1}),
 }, {additionalProperties: false});
 
