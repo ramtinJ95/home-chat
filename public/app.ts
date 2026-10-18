@@ -428,17 +428,21 @@ async function install() {
 
 const base64UrlBytes = (text: string) => Uint8Array.from(atob(text.replaceAll('-', '+').replaceAll('_', '/')), char => char.charCodeAt(0));
 const sameBytes = (a: ArrayBuffer | null, b: Uint8Array) => a !== null && a.byteLength === b.length && new Uint8Array(a).every((byte, i) => byte === b[i]);
+// What subscribing needs: the server's key and this device's service worker.
+const pushSetup = () => Promise.all([api<PushInfo>('/api/push'), navigator.serviceWorker.ready]);
+
+async function dropSubscription(subscription: PushSubscription) {
+  await api('/api/push/subscriptions', 'DELETE', subscription.toJSON());
+  await subscription.unsubscribe();
+}
 
 // Brings the server in line with this device on every load: it may have dropped the subscription, or made new keys.
 async function syncPush() {
   if (!pushSupported) return;
   if (Notification.permission === 'denied') { pushState = 'blocked'; return renderSetup(); }
-  const [{publicKey}, registration] = await Promise.all([api<PushInfo>('/api/push'), navigator.serviceWorker.ready]);
+  const [{publicKey}, registration] = await pushSetup();
   const subscription = await registration.pushManager.getSubscription();
-  if (subscription && !sameBytes(subscription.options.applicationServerKey, base64UrlBytes(publicKey))) {
-    await api('/api/push/subscriptions', 'DELETE', subscription.toJSON());
-    await subscription.unsubscribe();
-  }
+  if (subscription && !sameBytes(subscription.options.applicationServerKey, base64UrlBytes(publicKey))) await dropSubscription(subscription);
   else if (subscription && Notification.permission === 'granted') {
     await api('/api/push/subscriptions', 'POST', subscription.toJSON());
     pushState = 'on'; return renderSetup();
@@ -450,7 +454,7 @@ async function enableNotifications() {
   // Asked first, while the tap still counts as a user gesture: Safari only prompts from one.
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') { pushState = permission === 'denied' ? 'blocked' : 'off'; return renderSetup(); }
-  const [{publicKey}, registration] = await Promise.all([api<PushInfo>('/api/push'), navigator.serviceWorker.ready]);
+  const [{publicKey}, registration] = await pushSetup();
   const subscription = await registration.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: base64UrlBytes(publicKey)});
   await api('/api/push/subscriptions', 'POST', subscription.toJSON());
   pushState = 'on'; renderSetup();
@@ -458,10 +462,7 @@ async function enableNotifications() {
 
 async function disableNotifications() {
   const subscription = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
-  if (subscription) {
-    await api('/api/push/subscriptions', 'DELETE', subscription.toJSON());
-    await subscription.unsubscribe();
-  }
+  if (subscription) await dropSubscription(subscription);
   pushState = 'off'; renderSetup();
 }
 
