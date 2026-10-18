@@ -1,10 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, symlink, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { ATTACHED_NOTE, allowedDestination, carriesText, composePrompt, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
-import { pushKeys } from './helpers.ts';
+import { pushKeys, tempDir } from './helpers.ts';
 
 test('the rewind recognises the message Pi was given, notes and picture paths included, and nothing else', () => {
   const sent = composePrompt('What is this?' + ATTACHED_NOTE + '/work/uploads/a.png', {deepResearch: true});
@@ -55,16 +54,14 @@ test('execution tools are never allowlisted', () => {
   for (const name of ['exec', 'exec_command', 'write_stdin', 'bash', 'read', 'write', 'edit', 'apply_patch', 'view_image', 'browser', 'spawn_agent', 'notebook', 'ask; bash']) assert.throws(() => requireAllowedTool(name));
   for (const name of ['ask', 'web_run', 'imagegen', 'document', 'deep_research']) assert.doesNotThrow(() => requireAllowedTool(name));
 });
-test('image references reject traversal, secrets, sibling conversations and symlinks', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'home-chat-policy-'));
-  try {
-    const cwd = join(root, 'work'); await mkdir(join(cwd, 'uploads'), {recursive: true});
-    await writeFile(join(cwd, 'uploads/ok.png'), 'image'); await writeFile(join(root, 'secret.png'), 'secret');
-    await symlink(join(root, 'secret.png'), join(cwd, 'uploads/link.png'));
-    assert.equal(await allowedImagePath('uploads/ok.png', cwd), join(cwd, 'uploads/ok.png'));
-    for (const path of ['../secret.png', 'uploads/../../secret.png', 'uploads/link.png', '/data/profile/auth.json']) await assert.rejects(() => allowedImagePath(path, cwd));
-    await assert.rejects(() => validateToolInput('imagegen', {referenced_image_paths: ['../secret.png']}, cwd));
-  } finally { await rm(root, {recursive: true}); }
+test('image references reject traversal, secrets, sibling conversations and symlinks', async t => {
+  const root = await tempDir(t, 'home-chat-policy-');
+  const cwd = join(root, 'work'); await mkdir(join(cwd, 'uploads'), {recursive: true});
+  await writeFile(join(cwd, 'uploads/ok.png'), 'image'); await writeFile(join(root, 'secret.png'), 'secret');
+  await symlink(join(root, 'secret.png'), join(cwd, 'uploads/link.png'));
+  assert.equal(await allowedImagePath('uploads/ok.png', cwd), join(cwd, 'uploads/ok.png'));
+  for (const path of ['../secret.png', 'uploads/../../secret.png', 'uploads/link.png', '/data/profile/auth.json']) await assert.rejects(() => allowedImagePath(path, cwd));
+  await assert.rejects(() => validateToolInput('imagegen', {referenced_image_paths: ['../secret.png']}, cwd));
 });
 test('web tool rejects local URLs and non-HTTP schemes', async () => {
   for (const url of ['file:///data/profile/auth.json', 'http://localhost', 'https://host.docker.internal', 'http://100.64.0.1', 'http://[::1]', 'https://example.tailnet-example.ts.net', 'http://user:pass@example.com']) {
@@ -92,17 +89,15 @@ test('documents need a one-line title, bounded text and a well-formed revision i
     await assert.rejects(() => validateToolInput('document', input, '/tmp'), JSON.stringify(input).slice(0, 80));
   }
 });
-test('document reads stay inside the conversation documents directory', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'home-chat-policy-'));
-  try {
-    const cwd = join(root, 'work'); await mkdir(join(cwd, 'documents'), {recursive: true});
-    const name = `doc_${'b'.repeat(32)}_v1.json`;
-    await writeFile(join(cwd, 'documents', name), '{}'); await writeFile(join(cwd, 'documents/notes.json'), '{}');
-    await writeFile(join(root, name), '{}');
-    await symlink(join(root, name), join(cwd, 'documents', `doc_${'c'.repeat(32)}_v1.json`));
-    assert.equal(await allowedDocumentPath('documents/' + name, cwd), join(cwd, 'documents', name));
-    for (const path of ['documents/notes.json', '../' + name, `documents/doc_${'c'.repeat(32)}_v1.json`, 'uploads/x.png']) {
-      await assert.rejects(() => allowedDocumentPath(path, cwd), path);
-    }
-  } finally { await rm(root, {recursive: true}); }
+test('document reads stay inside the conversation documents directory', async t => {
+  const root = await tempDir(t, 'home-chat-policy-');
+  const cwd = join(root, 'work'); await mkdir(join(cwd, 'documents'), {recursive: true});
+  const name = `doc_${'b'.repeat(32)}_v1.json`;
+  await writeFile(join(cwd, 'documents', name), '{}'); await writeFile(join(cwd, 'documents/notes.json'), '{}');
+  await writeFile(join(root, name), '{}');
+  await symlink(join(root, name), join(cwd, 'documents', `doc_${'c'.repeat(32)}_v1.json`));
+  assert.equal(await allowedDocumentPath('documents/' + name, cwd), join(cwd, 'documents', name));
+  for (const path of ['documents/notes.json', '../' + name, `documents/doc_${'c'.repeat(32)}_v1.json`, 'uploads/x.png']) {
+    await assert.rejects(() => allowedDocumentPath(path, cwd), path);
+  }
 });
