@@ -20,7 +20,7 @@ import { pushKeys, signedToken, until } from './helpers.ts';
 class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   closed = false;
   question: Question | null = null;
-  // What the server gave the worker for its routine and memory tools.
+  // What the server gave the worker for its routine, memory and todo tools.
   call?: ServerCall;
   lastText?: string;
   lastMode?: TurnMode;

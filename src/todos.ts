@@ -1,11 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import type { TodoList, User } from './api.d.ts';
-import { atomicJson, readJson } from './files.ts';
+import { jsonStore } from './files.ts';
 
 // Todo lists, in todos.json. A list belongs to the person who made it and is private unless shared, in which case
 // everyone in the household can see it and change its items. Only its owner can share, unshare or delete it.
-export const MAX_LISTS = 30;
-export const MAX_ITEMS = 200;
+const MAX_LISTS = 30;
+const MAX_ITEMS = 200;
 export const MAX_TODO_TEXT = 300;
 export const MAX_LIST_TITLE = 80;
 
@@ -25,20 +25,7 @@ function text(value: unknown, maximum: number, what: string): string {
 }
 
 export async function createTodos(path: string) {
-  let saved = await readJson<Saved>(path) ?? {lists: []};
-  // Changes run one at a time, each on the state the one before it left; a change counts once it is saved.
-  let changing: Promise<unknown> = Promise.resolve();
-  const change = <T>(apply: (next: Saved) => T): Promise<T> => {
-    const run = changing.catch(() => {}).then(async () => {
-      const next: Saved = structuredClone(saved);
-      const result = apply(next);
-      await atomicJson(path, next);
-      saved = next;
-      return result;
-    });
-    changing = run;
-    return run;
-  };
+  const {saved, change} = await jsonStore<Saved>(path, {lists: []});
   const visible = (list: StoredList, user: User) => list.shared || list.owner === user;
   // By id, or for the model also by title, ignoring case; its own list first when two have the same title.
   const find = (state: Saved, user: User, ref: unknown): StoredList => {
@@ -63,8 +50,8 @@ export async function createTodos(path: string) {
     ({id: list.id, title: list.title, shared: list.shared, mine: list.owner === user, version: list.version, items: list.items.map(entry => ({...entry}))});
 
   return {
-    list: (user: User): TodoList[] => saved.lists.filter(list => visible(list, user)).map(list => view(list, user)),
-    get: (user: User, ref: unknown): TodoList => view(find(saved, user, ref), user),
+    list: (user: User): TodoList[] => saved().lists.filter(list => visible(list, user)).map(list => view(list, user)),
+    get: (user: User, ref: unknown): TodoList => view(find(saved(), user, ref), user),
     create: (user: User, input: {title?: unknown; shared?: unknown}) => change(state => {
       const title = text(input.title, MAX_LIST_TITLE, 'A list name');
       if (state.lists.filter(list => list.owner === user).length >= MAX_LISTS) throw new TodoError(`Keep it to ${MAX_LISTS} lists; delete one first`);

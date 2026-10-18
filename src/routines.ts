@@ -45,6 +45,10 @@ const text = (value: unknown, name: string, maximum: number): string => {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new RoutineError(`${name} must be 1 to ${maximum} characters`);
   return value.trim();
 };
+const researchSwitch = (value: unknown): boolean | undefined => {
+  if (value === undefined || typeof value === 'boolean') return value;
+  throw new RoutineError('deepResearch must be true or false');
+};
 
 export function parseSchedule(value: unknown): RoutineSchedule {
   const input = (typeof value === 'object' && value !== null ? value : {}) as Record<string, unknown>;
@@ -91,6 +95,15 @@ export function cronFor(schedule: RoutineSchedule): string {
 // (autumn) runs once.
 export function nextAfter(cron: string, from: Date): Date | null {
   return new Cron(cron, {timezone: TIME_ZONE, paused: true}).nextRun(from);
+}
+
+// A routine's schedule from the model's or the Routines page's input, with its next run after `now`.
+function timing(value: unknown, now: Date): Pick<Routine, 'schedule' | 'cron' | 'nextRun'> {
+  const schedule = parseSchedule(value);
+  const cron = cronFor(schedule);
+  const next = nextAfter(cron, now);
+  if (!next) throw new RoutineError('That time has already passed');
+  return {schedule, cron, nextRun: next.toISOString()};
 }
 
 const ordinal = (day: number) => day + (day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th');
@@ -169,7 +182,8 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
     if (!routine) throw new RoutineError('No routine with that id; list the routines first');
     return routine;
   };
-  // Every change is saved before it counts, and re-arms the timer.
+  // A change takes effect in memory first, then is saved and re-arms the timer. A failed save rejects to the caller, but
+  // the change stays in effect: it goes out with the next save, and reaches the timer at the next re-arm.
   const commit = async () => { await save(); arm(); };
 
   return {
@@ -198,14 +212,11 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       if (routines.filter(routine => routine.owner === owner).length >= MAX_ROUTINES) {
         throw new RoutineError(`There can be at most ${MAX_ROUTINES} routines per person; delete one first`);
       }
-      const schedule = parseSchedule(input.schedule);
-      const cron = cronFor(schedule);
-      const next = nextAfter(cron, now);
-      if (!next) throw new RoutineError('That time has already passed');
-      if (input.deepResearch !== undefined && typeof input.deepResearch !== 'boolean') throw new RoutineError('deepResearch must be true or false');
+      const {schedule, cron, nextRun} = timing(input.schedule, now);
+      const deepResearch = researchSwitch(input.deepResearch);
       return {
         id: randomUUID(), owner, title: text(input.title, 'title', MAX_ROUTINE_TITLE), prompt: text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT), schedule, cron,
-        enabled: true, deepResearch: input.deepResearch === true, nextRun: next.toISOString(),
+        enabled: true, deepResearch: deepResearch === true, nextRun,
       };
     },
     async create(routine: Omit<Routine, 'chat'>, chat: string): Promise<Routine> {
@@ -219,17 +230,9 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       const changed = {...routine};
       if (input.title !== undefined) changed.title = text(input.title, 'title', MAX_ROUTINE_TITLE);
       if (input.prompt !== undefined) changed.prompt = text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT);
-      if (input.deepResearch !== undefined) {
-        if (typeof input.deepResearch !== 'boolean') throw new RoutineError('deepResearch must be true or false');
-        changed.deepResearch = input.deepResearch;
-      }
-      if (input.schedule !== undefined) {
-        changed.schedule = parseSchedule(input.schedule);
-        changed.cron = cronFor(changed.schedule);
-        const next = nextAfter(changed.cron, now);
-        if (!next) throw new RoutineError('That time has already passed');
-        changed.nextRun = next.toISOString();
-      }
+      const deepResearch = researchSwitch(input.deepResearch);
+      if (deepResearch !== undefined) changed.deepResearch = deepResearch;
+      if (input.schedule !== undefined) Object.assign(changed, timing(input.schedule, now));
       Object.assign(routine, changed);
       await commit();
       return routine;

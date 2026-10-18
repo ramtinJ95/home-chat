@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,15 +7,17 @@ import sharp from 'sharp';
 import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
-import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
-import { atomicJson, readJson, serialSave } from './files.ts';
+import { accessConfigFromEnv, type AccessConfig, type AccessKeySource } from './access.ts';
+import { readJson, serialSave } from './files.ts';
+import { HttpError, fail, jsonBody, recent } from './http.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
 import { createPush } from './push.ts';
+import { createSignIn } from './sign-in.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
-import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, IMAGE_DIRECTORY, IMAGE_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -28,12 +30,11 @@ interface RoutineRun { routine: Routine; scheduled: Date }
 // `by`: who sent the message, or deletes; a routine run is its owner's. `run`: the routine run being answered, with
 // nobody watching. `deadline`: the reply's time limit.
 interface Turn { by: User; run?: RoutineRun; deadline?: NodeJS.Timeout }
-interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string; user: User }
 
 export interface AppOptions {
   data?: string;
-  // `call` is how the worker's routine and memory tools reach the server. By default, Pi Durable (src/agent/).
+  // `call` is how the worker's routine, memory and todo tools reach the server. By default, Pi Durable (src/agent/).
   workerFactory?: (directory: string, call: ServerCall) => ChatWorker;
   authenticatedProvider?: () => Promise<boolean>;
   // Set for the public deployment: Cloudflare Access identities replace the local access codes.
@@ -59,14 +60,7 @@ export function namesFromEnv(env: NodeJS.ProcessEnv): Record<User, string> {
   return {owner: name('HOME_CHAT_OWNER_NAME', 'the owner'), guest: name('HOME_CHAT_GUEST_NAME', 'the guest')};
 }
 
-const digest = (text: string) => createHash('sha256').update(text).digest();
 const jsonHeaders = {'Content-Type': 'application/json; charset=utf-8'};
-// Thrown for client-visible failures; any other error becomes a generic 500.
-class HttpError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
-}
-const fail = (status: number, message: string) => new HttpError(status, message);
 // Thrown by startTurn while the conversation, its owner or both workers are busy; a routine run waits and tries again.
 class Busy extends HttpError { constructor(message: string, status = 409) { super(status, message); } }
 // Thrown by startTurn for a turn that was admitted and then failed; its thread already says so.
@@ -76,32 +70,8 @@ class StaleRun extends Error {}
 // How a reply ends when its end, or what its tools wrote, cannot be saved.
 const UNSAVED_REPLY = 'Could not persist the response';
 const MAX_CHATS = 20;
-// The times in `log` for `key` within the last `ms`, for the rate limits. Older ones are dropped from the same list,
-// so a time pushed after a wait still lands in it, however many requests read it meanwhile.
-function recent<K>(log: Map<K, number[]>, key: K, ms: number): number[] {
-  let times = log.get(key);
-  if (!times) log.set(key, times = []);
-  const kept = times.findIndex(time => time > Date.now() - ms);
-  times.splice(0, kept === -1 ? times.length : kept);
-  return times;
-}
 const sse = (res: http.ServerResponse, event: StreamEvent) => res.write('data: ' + JSON.stringify(event) + '\n\n');
 const publicRoot = resolve(fileURLToPath(new URL('../public', import.meta.url)));
-
-async function jsonBody(req: http.IncomingMessage, maximum = 64_000): Promise<Record<string, unknown>> {
-  if (req.headers['content-type'] !== 'application/json') throw fail(415, 'Use application/json');
-  const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > maximum) throw fail(413, 'Request is too large');
-    chunks.push(chunk);
-  }
-  let body: unknown;
-  try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { throw fail(400, 'Invalid JSON'); }
-  if (typeof body !== 'object' || body === null) throw fail(400, 'Invalid JSON');
-  return body as Record<string, unknown>;
-}
 
 async function filesIn(directory: string): Promise<string[]> {
   try { return await readdir(directory); }
@@ -126,19 +96,6 @@ async function diskUsage(directory: string): Promise<number> {
     return entry.isDirectory() ? diskUsage(path) : (await stat(path)).size;
   }));
   return sizes.reduce((total, size) => total + size, 0);
-}
-
-// Only hashes stay in memory; the plaintext codes are scoped to this call.
-async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
-  let access = await readJson<Record<string, unknown>>(path);
-  if (!access) {
-    access = {owner: randomBytes(32).toString('base64url'), guest: randomBytes(32).toString('base64url')};
-    await atomicJson(path, access);
-  }
-  return Object.entries(access).map(([user, token]) => {
-    if (!isUser(user) || typeof token !== 'string') throw new Error('Invalid local access file');
-    return [user, digest(token)];
-  });
 }
 
 async function loadStaticFiles() {
@@ -168,19 +125,14 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   await rm(deletedDirectory, {recursive: true, force: true});
   await mkdir(chatsDirectory, {recursive: true, mode: 0o700});
   await mkdir(deletedDirectory, {mode: 0o700});
-  const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
+  const signIn = await createSignIn(join(data, 'local-access.json'), access, accessKeys);
   const agent = workerFactory ? undefined : createAgent({authPath: join(data, 'profile/auth.json'),
     instructions: await readFile(new URL('../profile/instructions.md', import.meta.url), 'utf8')});
   const makeWorker = workerFactory ?? ((directory: string, call: ServerCall) => agent!.worker(directory, call));
   const staticFiles = await loadStaticFiles();
-  const sessions = new Map<string, Session>();
-  const verifyAccess = access && createAccessVerifier(access, accessKeys);
-  // Access sessions are stateless: the CSRF token is derived from the verified email, so it survives page reloads.
-  const csrfSecret = randomBytes(32);
   const origin = access ? 'https://' + access.host : undefined;
   // Push services want a contact for the sender: the public site, or a placeholder in local mode.
   const push = await createPush(join(data, 'push'), origin ?? 'mailto:home-chat@localhost.invalid', pushFetch);
-  const loginAttempts = new Map<string, number[]>();
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
   const workers = new Map<string, ChatWorker>();
@@ -216,17 +168,13 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     if (!saver) savers.set(chat.id, saver = serialSave(join(chatsDirectory, chat.id, 'chat.json'), () => chat));
     return saver();
   };
+  const forget = (chat: Chat) => { chats.delete(chat.id); savers.delete(chat.id); };
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
-    let record;
-    try { record = await readFile(join(chatsDirectory, id, 'chat.json'), 'utf8'); }
-    catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      // A conversation's directory is made before its first save, and it is only shown to anyone after that save, so a
-      // directory without a record is a creation the app stopped in the middle of.
-      await rm(join(chatsDirectory, id), {recursive: true}); continue;
-    }
-    const chat: Chat = JSON.parse(record);
+    const chat = await readJson<Chat>(join(chatsDirectory, id, 'chat.json'));
+    // A conversation's directory is made before its first save, and it is only shown to anyone after that save, so a
+    // directory without a record is a creation the app stopped in the middle of.
+    if (chat === undefined) { await rm(join(chatsDirectory, id), {recursive: true}); continue; }
     if (chat.id !== id || !isUser(chat.owner)) throw new Error('Invalid conversation record');
     // Saved before unread was kept per person, when only routine runs, which are the owner's, were marked.
     if ((chat.unread as unknown) === true) chat.unread = [chat.owner];
@@ -308,7 +256,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     return chat;
   }
   async function discardChat(chat: Chat) {
-    chats.delete(chat.id); savers.delete(chat.id);
+    forget(chat);
     await rm(join(chatsDirectory, chat.id), {recursive: true, force: true});
   }
 
@@ -496,10 +444,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     const cwd = workDir(chat);
     const found: StoredAsset[] = [];
     const known = (path: string) => chat.assets.some(asset => asset.path === path);
-    const images = join(cwd, '.pi/openai-codex-images');
+    const images = join(cwd, IMAGE_DIRECTORY);
     for (const file of await filesIn(images)) {
       const path = join(images, file);
-      if (!/^ig_[0-9a-f]{32}(?:_\d+)?\.png$/.test(file) || known(path)) continue;
+      if (!IMAGE_FILE.test(file) || known(path)) continue;
       await allowedImagePath(path, cwd);
       found.push({id: randomUUID(), path});
     }
@@ -562,28 +510,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     catch (error) { workers.delete(chat.id); worker.stop(); throw fail(503, (error as Error).message); }
     return worker;
   }
-
-  async function authenticate(req: http.IncomingMessage): Promise<{session: Session; sessionKey: string}> {
-    if (verifyAccess) {
-      const header = req.headers['cf-access-jwt-assertion'];
-      let identity;
-      try { identity = await verifyAccess(typeof header === 'string' ? header : undefined); }
-      catch (error) {
-        if (error instanceof AccessDenied) throw fail(401, error.message);
-        throw fail(503, 'Could not verify the Cloudflare Access sign-in');
-      }
-      const csrf = createHmac('sha256', csrfSecret).update(identity.email).digest('base64url');
-      return {sessionKey: 'access:' + identity.email, session: {user: identity.user, csrf, expires: identity.expires}};
-    }
-    const cookie = String(req.headers.cookie ?? '').split(';').map(x => x.trim()).find(x => x.startsWith('home_chat='))?.slice(10);
-    const sessionKey = digest(cookie ?? '').toString('hex');
-    const session = sessions.get(sessionKey);
-    if (!session || session.expires < Date.now()) { sessions.delete(sessionKey); throw fail(401, 'Sign in required'); }
-    return {session, sessionKey};
-  }
-  // Open streams end when their sign-in does: at logout, or at expiry (the Access token's own expiry under Access).
-  const live = (sessionKey: string, session: Session) =>
-    session.expires >= Date.now() && (verifyAccess !== undefined || sessions.get(sessionKey) === session);
 
   // The routine tool's actions, for the person whose turn the call comes from. Returns the text the model sees.
   async function routineAction(owner: User, body: Record<string, unknown>): Promise<string> {
@@ -652,7 +578,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // What a conversation's tools ask of the server: the household notes for the turn's instructions (routine runs
   // included), changes to routines and notes, and the todo lists, which routine runs may change too. All of them are the
   // turn's sender's. Fails with an HttpError whose message the model is shown.
-  async function serverCall(chat: Chat, path: '/routine' | '/memory' | '/todo', body?: unknown): Promise<string> {
+  async function serverCall(chat: Chat, path: Parameters<ServerCall>[0], body?: unknown): Promise<string> {
     const turn = turns.get(chat.id);
     const user = turn?.by ?? chat.owner;
     if (path === '/memory' && body === undefined) return memory.prompt(user);
@@ -682,6 +608,16 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
+    // A picture, or a document as the reader shows it; `download` sends either as a file to save.
+    const sendPicture = async (id: string, path: string, download: boolean) => {
+      if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${id}.png"`);
+      return send(200, await readFile(path), {'Content-Type': 'image/png'});
+    };
+    const sendDocument = ({title, markdown}: {title: string; markdown: string}, version: number, download: boolean) => {
+      if (!download) return send(200, {title, markdown, version} satisfies DocumentContent);
+      res.setHeader('Content-Disposition', markdownDisposition(title));
+      return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
+    };
     try {
       // The container health check, from inside the container only; it reveals nothing.
       if (req.url === '/healthz' && req.method === 'GET' && ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress ?? '')) {
@@ -696,26 +632,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       const file = req.method === 'GET' ? staticFiles.get(path) : undefined;
       if (file) return send(200, file.body, {'Content-Type': file.type});
       if (path === '/api/login' && req.method === 'POST' && !access) {
-        const ip = req.socket.remoteAddress ?? '';
-        const attempts = recent(loginAttempts, ip, 15 * 60_000);
-        if (attempts.length >= 5) throw fail(429, 'Too many attempts; wait 15 minutes');
-        attempts.push(Date.now());
-        const body = await jsonBody(req, 1024);
-        if (typeof body.code !== 'string' || body.code.length > 128) throw fail(401, 'Invalid access code');
-        const candidate = digest(body.code);
-        const user = accessHashes.find(([, expected]) => timingSafeEqual(candidate, expected))?.[0];
-        if (!user) throw fail(401, 'Invalid access code');
-        loginAttempts.delete(ip);
-        // A browser stops sending a cookie once it expires, so an expired session is never presented again to be removed.
-        for (const [key, held] of sessions) if (held.expires < Date.now()) sessions.delete(key);
-        if (sessions.size >= 16) throw fail(429, 'Too many sessions');
-        const token = randomBytes(32).toString('base64url');
-        const session = {user, csrf: randomBytes(32).toString('base64url'), expires: Date.now() + 8 * 60 * 60_000};
-        sessions.set(digest(token).toString('hex'), session);
-        res.setHeader('Set-Cookie', `home_chat=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`);
+        res.setHeader('Set-Cookie', await signIn.login(req));
         return send(200, {ok: true});
       }
-      const {session, sessionKey} = await authenticate(req);
+      const {session, sessionKey} = await signIn.authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
         const me: Me = {user: session.user, names, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
@@ -738,10 +658,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         // The device stops receiving this user's notifications in the same step, so a shared phone shows nothing after.
         const body = await jsonBody(req, 4_000);
         if (typeof body.pushEndpoint === 'string') await push.unsubscribe(session.user, body.pushEndpoint);
-        // Under Access the browser then leaves through Cloudflare's own logout, which ends the real session.
-        sessions.delete(sessionKey);
+        const cleared = signIn.logout(sessionKey);
         for (const clients of streams.values()) for (const client of clients) if (client.sessionKey === sessionKey) client.res.end();
-        if (!access) res.setHeader('Set-Cookie', 'home_chat=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+        if (cleared) res.setHeader('Set-Cookie', cleared);
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
@@ -797,17 +716,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
             case 'GET item': {
               const {item, path} = library.get(session.user, parts[2]);
               const download = url.searchParams.has('download');
-              if (item.kind === 'picture') {
-                if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${item.id}.png"`);
-                return send(200, await readFile(path), {'Content-Type': 'image/png'});
-              }
-              const {title, markdown} = JSON.parse(await readFile(path, 'utf8')) as {title: string; markdown: string};
-              if (download) {
-                res.setHeader('Content-Disposition', markdownDisposition(title));
-                return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
-              }
-              const content: DocumentContent = {title, markdown, version: item.version};
-              return send(200, content);
+              if (item.kind === 'picture') return await sendPicture(item.id, path, download);
+              return sendDocument(JSON.parse(await readFile(path, 'utf8')), item.version, download);
             }
           }
         } catch (error) {
@@ -842,8 +752,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       // Checked again after every wait in a request that changes the conversation: it may have been deleted, or made
       // private to the other person, meanwhile.
       const stillVisible = () => { if (chats.get(chat.id) !== chat || !canSee(chat, session.user)) throw fail(404, 'Not found'); };
-      // Method plus the path below the chat, e.g. 'GET', 'GET events', 'POST messages'.
-      const route = [req.method, ...parts.slice(3)].join(' ');
+      // Method plus the path below the chat, with `asset` for an asset's id, e.g. 'GET', 'GET events', 'GET assets asset'.
+      const [kind, assetId, ...rest] = parts.slice(3);
+      const route = [req.method, kind, assetId && 'asset', ...rest].filter(Boolean).join(' ');
       // Only its owner deletes it or changes who sees it.
       if ((route === 'DELETE' || route === 'POST share') && chat.owner !== session.user) {
         throw fail(403, 'Only the person who started this conversation can do that');
@@ -865,7 +776,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
-          chats.delete(chat.id); savers.delete(chat.id);
+          forget(chat);
           // Other pages showing it are told why it went; the one deleting it moves on by itself.
           for (const client of streams.get(chat.id) ?? []) {
             if (client.sessionKey !== sessionKey) sse(client.res, {type: 'gone'});
@@ -901,7 +812,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         const client = {res, sessionKey, user: session.user}; clients.add(client); streams.set(chat.id, clients);
         sse(res, {type: 'snapshot', chat: snapshot(chat)});
         const heartbeat = setInterval(() => {
-          if (!live(sessionKey, session)) return res.end();
+          if (!signIn.live(sessionKey, session)) return res.end();
           res.write(': keepalive\n\n');
         }, 15_000);
         heartbeat.unref();
@@ -909,8 +820,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return;
       }
       // Copies one document or picture into the Library, for both people, without sharing the conversation.
-      if (parts[3] === 'assets' && parts[5] === 'share' && parts.length === 6 && req.method === 'POST') {
-        const asset = chat.assets.find(item => item.id === parts[4]);
+      if (route === 'POST assets asset share') {
+        const asset = chat.assets.find(item => item.id === assetId);
         if (!asset) throw fail(404, 'Not found');
         if (await diskUsage(data) > MAX_DATA - 20 * 1024 * 1024) throw fail(413, 'Prototype storage limit reached');
         let content: LibraryContent; let copy: Buffer | string; let source: string;
@@ -930,21 +841,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         emitEverywhere({type: 'library'});
         return send(201, item);
       }
-      if (parts[3] === 'assets' && parts.length === 5 && req.method === 'GET') {
-        const asset = chat.assets.find(item => item.id === parts[4]);
+      if (route === 'GET assets asset') {
+        const asset = chat.assets.find(item => item.id === assetId);
         if (!asset) throw fail(404, 'Not found');
-        if (asset.document) {
-          const {title, markdown} = await readDocument(asset.path, workDir(chat));
-          if (url.searchParams.has('download')) {
-            res.setHeader('Content-Disposition', markdownDisposition(title));
-            return send(200, `# ${title}\n\n${markdown}`, {'Content-Type': 'text/markdown; charset=utf-8'});
-          }
-          const content: DocumentContent = {title, markdown, version: asset.document.version};
-          return send(200, content);
-        }
-        const path = await allowedImagePath(asset.path, workDir(chat));
-        if (url.searchParams.has('download')) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${asset.id}.png"`);
-        return send(200, await readFile(path), {'Content-Type': 'image/png'});
+        const download = url.searchParams.has('download');
+        if (asset.document) return sendDocument(await readDocument(asset.path, workDir(chat)), asset.document.version, download);
+        return await sendPicture(asset.id, await allowedImagePath(asset.path, workDir(chat)), download);
       }
       if (route === 'POST uploads') {
         if (occupied(chat.id)) throw fail(409, 'Wait for the current message');

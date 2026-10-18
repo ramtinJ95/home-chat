@@ -23,6 +23,10 @@ export const DOCUMENT_FILE = /^(doc_[0-9a-f]{32})_v([1-9][0-9]*)\.json$/;
 export const MAX_DOCUMENT_TITLE = 200;
 export const MAX_DOCUMENT_TEXT = 256 * 1024;
 export const MAX_DOCUMENT_FILES = 100;
+// Pictures the imagegen tool saves (src/agent/tools/imagegen.ts) in the conversation's IMAGE_DIRECTORY, one file each; a
+// call that makes several numbers the second and later ones _2, _3 and so on.
+export const IMAGE_DIRECTORY = '.pi/openai-codex-images';
+export const IMAGE_FILE = /^ig_[0-9a-f]{32}(?:_\d+)?\.png$/;
 // Routines (src/routines.ts), here so the routine tool's schema (src/agent/tools/routine.ts) states the same limits.
 export const WEEKDAYS: readonly Weekday[] = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
 export const MAX_ROUTINE_TITLE = 80;
@@ -42,7 +46,7 @@ export const ROUTINE_NOTE = 'This is a scheduled routine run, and nobody is watc
 // `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30". `from`: in a shared conversation, the
 // name of the person who sent the message.
 export interface TurnMode { deepResearch?: boolean; routineRun?: string; from?: string }
-export const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
+const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
 
 export function composePrompt(message: string, {deepResearch, routineRun, from}: TurnMode = {}): string {
   const notes = [
@@ -126,7 +130,7 @@ export function requireAllowedTool(name: string): asserts name is ToolName {
 export async function allowedImagePath(path: unknown, cwd: string): Promise<string> {
   if (typeof path !== 'string') throw new Error('Invalid image reference');
   const full = await realpath(resolve(cwd, path));
-  const roots = [resolve(cwd, 'uploads'), resolve(cwd, '.pi/openai-codex-images')];
+  const roots = [resolve(cwd, 'uploads'), resolve(cwd, IMAGE_DIRECTORY)];
   if (!roots.some(root => full.startsWith(root + sep)) || !full.endsWith('.png')) {
     throw new Error('Image must belong to this conversation');
   }
