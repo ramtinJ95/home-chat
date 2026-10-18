@@ -839,8 +839,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       // Checked again after every wait in a request that changes the conversation: it may have been deleted, or made
       // private to the other person, meanwhile.
       const stillVisible = () => { if (chats.get(chat.id) !== chat || !canSee(chat, session.user)) throw fail(404, 'Not found'); };
-      // Method plus the path below the chat, e.g. 'GET', 'GET events', 'POST messages'.
-      const route = [req.method, ...parts.slice(3)].join(' ');
+      // Method plus the path below the chat, with `asset` for an asset's id, e.g. 'GET', 'GET events', 'GET assets asset'.
+      const [kind, assetId, ...rest] = parts.slice(3);
+      const route = [req.method, kind, assetId && 'asset', ...rest].filter(Boolean).join(' ');
       // Only its owner deletes it or changes who sees it.
       if ((route === 'DELETE' || route === 'POST share') && chat.owner !== session.user) {
         throw fail(403, 'Only the person who started this conversation can do that');
@@ -906,8 +907,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return;
       }
       // Copies one document or picture into the Library, for both people, without sharing the conversation.
-      if (parts[3] === 'assets' && parts[5] === 'share' && parts.length === 6 && req.method === 'POST') {
-        const asset = chat.assets.find(item => item.id === parts[4]);
+      if (route === 'POST assets asset share') {
+        const asset = chat.assets.find(item => item.id === assetId);
         if (!asset) throw fail(404, 'Not found');
         if (await diskUsage(data) > MAX_DATA - 20 * 1024 * 1024) throw fail(413, 'Prototype storage limit reached');
         let content: LibraryContent; let copy: Buffer | string; let source: string;
@@ -927,8 +928,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         emitEverywhere({type: 'library'});
         return send(201, item);
       }
-      if (parts[3] === 'assets' && parts.length === 5 && req.method === 'GET') {
-        const asset = chat.assets.find(item => item.id === parts[4]);
+      if (route === 'GET assets asset') {
+        const asset = chat.assets.find(item => item.id === assetId);
         if (!asset) throw fail(404, 'Not found');
         const download = url.searchParams.has('download');
         if (asset.document) return sendDocument(await readDocument(asset.path, workDir(chat)), asset.document.version, download);
