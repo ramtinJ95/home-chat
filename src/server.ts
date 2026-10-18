@@ -216,6 +216,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     if (!saver) savers.set(chat.id, saver = serialSave(join(chatsDirectory, chat.id, 'chat.json'), () => chat));
     return saver();
   };
+  const forget = (chat: Chat) => { chats.delete(chat.id); savers.delete(chat.id); };
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
     const chat = await readJson<Chat>(join(chatsDirectory, id, 'chat.json'));
@@ -303,7 +304,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     return chat;
   }
   async function discardChat(chat: Chat) {
-    chats.delete(chat.id); savers.delete(chat.id);
+    forget(chat);
     await rm(join(chatsDirectory, chat.id), {recursive: true, force: true});
   }
 
@@ -860,7 +861,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           // One rename takes the conversation out of the chats directory, so a failed removal never leaves half of it to load.
           const removed = join(deletedDirectory, chat.id);
           await rename(join(chatsDirectory, chat.id), removed);
-          chats.delete(chat.id); savers.delete(chat.id);
+          forget(chat);
           // Other pages showing it are told why it went; the one deleting it moves on by itself.
           for (const client of streams.get(chat.id) ?? []) {
             if (client.sessionKey !== sessionKey) sse(client.res, {type: 'gone'});
