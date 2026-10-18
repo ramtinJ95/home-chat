@@ -9,6 +9,7 @@ import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts'
 import { createAgent } from './agent/agent.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
 import { atomicJson, readJson, serialSave } from './files.ts';
+import { HttpError, fail, jsonBody, recent } from './http.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
@@ -61,12 +62,6 @@ export function namesFromEnv(env: NodeJS.ProcessEnv): Record<User, string> {
 
 const digest = (text: string) => createHash('sha256').update(text).digest();
 const jsonHeaders = {'Content-Type': 'application/json; charset=utf-8'};
-// Thrown for client-visible failures; any other error becomes a generic 500.
-class HttpError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
-}
-const fail = (status: number, message: string) => new HttpError(status, message);
 // Thrown by startTurn while the conversation, its owner or both workers are busy; a routine run waits and tries again.
 class Busy extends HttpError { constructor(message: string, status = 409) { super(status, message); } }
 // Thrown by startTurn for a turn that was admitted and then failed; its thread already says so.
@@ -76,32 +71,8 @@ class StaleRun extends Error {}
 // How a reply ends when its end, or what its tools wrote, cannot be saved.
 const UNSAVED_REPLY = 'Could not persist the response';
 const MAX_CHATS = 20;
-// The times in `log` for `key` within the last `ms`, for the rate limits. Older ones are dropped from the same list,
-// so a time pushed after a wait still lands in it, however many requests read it meanwhile.
-function recent<K>(log: Map<K, number[]>, key: K, ms: number): number[] {
-  let times = log.get(key);
-  if (!times) log.set(key, times = []);
-  const kept = times.findIndex(time => time > Date.now() - ms);
-  times.splice(0, kept === -1 ? times.length : kept);
-  return times;
-}
 const sse = (res: http.ServerResponse, event: StreamEvent) => res.write('data: ' + JSON.stringify(event) + '\n\n');
 const publicRoot = resolve(fileURLToPath(new URL('../public', import.meta.url)));
-
-async function jsonBody(req: http.IncomingMessage, maximum = 64_000): Promise<Record<string, unknown>> {
-  if (req.headers['content-type'] !== 'application/json') throw fail(415, 'Use application/json');
-  const chunks: Buffer[] = []; let size = 0;
-  for await (const chunk of req as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > maximum) throw fail(413, 'Request is too large');
-    chunks.push(chunk);
-  }
-  let body: unknown;
-  try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
-  catch { throw fail(400, 'Invalid JSON'); }
-  if (typeof body !== 'object' || body === null) throw fail(400, 'Invalid JSON');
-  return body as Record<string, unknown>;
-}
 
 async function filesIn(directory: string): Promise<string[]> {
   try { return await readdir(directory); }
