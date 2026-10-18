@@ -837,6 +837,22 @@ test('local access-code guessing is rate limited', async () => {
     assert.equal((await f.request('/api/login', {method: 'POST', body: {code: 'wrong'}})).status, 429);
   } finally { await f.close(); }
 });
+test('sign-ins that expired stop counting toward the limit on open sessions', async t => {
+  const f = await fixture();
+  try {
+    t.mock.timers.enable({apis: ['Date'], now: Date.now()});
+    const codes: Record<User, string> = JSON.parse(await readFile(join(f.data, 'local-access.json'), 'utf8'));
+    const signIn = () => f.request('/api/login', {method: 'POST', body: {code: codes.owner}});
+    for (let i = 0; i < 16; i++) assert.equal((await signIn()).status, 200);
+    assert.equal((await signIn()).status, 429);
+    // Eight hours on, every one of them has expired, and the browsers that held them no longer send their cookies.
+    t.mock.timers.tick(8 * 60 * 60_000 + 1);
+    const again = await signIn();
+    assert.equal(again.status, 200);
+    const cookie = (again.headers.get('set-cookie') ?? '').split(';')[0];
+    assert.equal((await f.request('/api/me', {cookie})).status, 200);
+  } finally { await f.close(); }
+});
 
 test('Cloudflare Access mode admits only verified, listed Google accounts over the public hostname', async () => {
   const {publicKey, privateKey} = generateKeyPairSync('rsa', {modulusLength: 2048});

@@ -695,6 +695,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         const user = accessHashes.find(([, expected]) => timingSafeEqual(candidate, expected))?.[0];
         if (!user) throw fail(401, 'Invalid access code');
         loginAttempts.delete(ip);
+        // A browser stops sending a cookie once it expires, so an expired session is never presented again to be removed.
+        for (const [key, held] of sessions) if (held.expires < Date.now()) sessions.delete(key);
         if (sessions.size >= 16) throw fail(429, 'Too many sessions');
         const token = randomBytes(32).toString('base64url');
         const session = {user, csrf: randomBytes(32).toString('base64url'), expires: Date.now() + 8 * 60 * 60_000};
