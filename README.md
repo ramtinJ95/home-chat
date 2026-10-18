@@ -255,6 +255,7 @@ Checks against the running stack:
 ```sh
 docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, Codex signed in
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
+docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi Durable; uses quota
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
 ```
@@ -274,7 +275,8 @@ screenshots to the git-ignored `.local/` folder.
   `deep_research` is refused unless the conversation's switch is on, and
   `ask`, `routine` and `memory` are refused in a routine run. `routine`,
   `memory` and `todo` call the server in its own process, bound to the
-  conversation they run in, which scopes them to its owner. `memory` changes nothing
+  conversation they run in, which scopes them to the person whose message the turn answers (the routine's owner in a
+  routine run). `memory` changes nothing
   without the user's Yes, which the tool asks for itself, and the notes go
   into the instructions marked as facts, not instructions. `document` only writes new files
   under the conversation's `documents/` folder (at most 100, 256 K characters
