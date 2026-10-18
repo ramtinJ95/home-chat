@@ -7,7 +7,7 @@ import { whenLabel } from './routines.ts';
 
 // The Library, in library.json with the copies under library/. Every item is a copy, so it outlives the conversation
 // it came from, and both people see every item; only the person who shared one removes it.
-export const MAX_SHARED = 100;
+const MAX_SHARED = 100;
 
 // `source`: the conversation and the document or picture in it, so a later version of the same document replaces its
 // copy. `file`: the copy, named afresh by every share and written before the list points at it.

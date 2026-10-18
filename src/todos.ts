@@ -4,8 +4,8 @@ import { atomicJson, readJson } from './files.ts';
 
 // Todo lists, in todos.json. A list belongs to the person who made it and is private unless shared, in which case
 // everyone in the household can see it and change its items. Only its owner can share, unshare or delete it.
-export const MAX_LISTS = 30;
-export const MAX_ITEMS = 200;
+const MAX_LISTS = 30;
+const MAX_ITEMS = 200;
 export const MAX_TODO_TEXT = 300;
 export const MAX_LIST_TITLE = 80;
 

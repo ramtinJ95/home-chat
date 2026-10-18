@@ -42,7 +42,7 @@ export const ROUTINE_NOTE = 'This is a scheduled routine run, and nobody is watc
 // `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30". `from`: in a shared conversation, the
 // name of the person who sent the message.
 export interface TurnMode { deepResearch?: boolean; routineRun?: string; from?: string }
-export const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
+const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
 
 export function composePrompt(message: string, {deepResearch, routineRun, from}: TurnMode = {}): string {
   const notes = [
