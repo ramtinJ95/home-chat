@@ -10,6 +10,7 @@ import type { Question } from '../src/api.d.ts';
 import { createAgent } from '../src/agent/agent.ts';
 import type { DurableWorker } from '../src/agent/worker.ts';
 import { ALLOWED_TOOLS, type ServerCall, type TurnMode } from '../src/policy.ts';
+import { withEnv } from './helpers.ts';
 
 type Reply = AssistantMessage | ((messages: Message[]) => AssistantMessage);
 
@@ -296,17 +297,15 @@ test('an uploaded image reaches the model with its message', async t => {
 test('deep research calls Exa in its mode and gives the model the grounded result', async t => {
   const f = await fixture(t);
   const {fetch: realFetch} = globalThis;
-  const key = process.env.EXA_API_KEY;
   const sent: {url: string; body: Record<string, unknown>; key: string | null; signal: boolean}[] = [];
-  globalThis.fetch = async (input, init) => {
+  t.mock.method(globalThis, 'fetch', async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (!url.startsWith('https://api.exa.ai/')) return realFetch(input, init);
     sent.push({url, body: JSON.parse(String(init?.body)), key: new Headers(init?.headers).get('x-api-key'), signal: init?.signal instanceof AbortSignal});
     return Response.json({requestId: 'req-1', results: [{title: 'Heat pumps', url: 'https://example.org/heat', highlights: ['Efficient in cold climates']}],
       output: {content: 'Heat pumps work well in Sweden.', grounding: [{field: 'content', confidence: 'high', citations: [{url: 'https://example.org/heat', title: 'Heat pumps'}]}]}});
-  };
-  process.env.EXA_API_KEY = 'exa-test-key';
-  try {
+  });
+  await withEnv({EXA_API_KEY: 'exa-test-key'}, async () => {
     const worker = await f.worker();
     f.reply([fauxAssistantMessage([fauxToolCall('deep_research', {query: 'Heat pumps in Sweden'})], {stopReason: 'toolUse'}), fauxAssistantMessage('Summary.')]);
     await turn(worker, 'Research heat pumps', {deepResearch: true});
@@ -315,10 +314,7 @@ test('deep research calls Exa in its mode and gives the model the grounded resul
     const result = JSON.parse(toolResults(f.requests[1]!)[0]!);
     assert.equal(result.synthesizedOutput, 'Heat pumps work well in Sweden.');
     assert.equal(result.sources[0].url, 'https://example.org/heat');
-  } finally {
-    globalThis.fetch = realFetch;
-    if (key === undefined) delete process.env.EXA_API_KEY; else process.env.EXA_API_KEY = key;
-  }
+  });
 });
 
 test('todo goes to the server, also in a routine run', async t => {
