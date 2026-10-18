@@ -2,7 +2,8 @@
 
 Agreed on 2026-10-16. Eight features, each in its own PR: the Home Screen app, push notifications, documents and the
 reader, deep research, routines, About us, search, and small conveniences. Home Chat is for non-technical people on
-phones first. The model sets things up through conversation and questions, and the interface only shows and stops them.
+phones first. The model sets things up through conversation and questions. The interface was to only show and stop
+them; routines have since become editable in the app as well.
 
 All eight PRs are merged and deployed. The [README](../README.md) describes how each feature works now.
 

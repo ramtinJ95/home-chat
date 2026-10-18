@@ -40,9 +40,9 @@ offered exactly the eight tools in `ALLOWED_TOOLS`, and a routine run refuses `a
 In the container, SQLite runs on `/data` under the read-only root filesystem, and egress goes through the proxy
 (`check-runtime`, `check-network`). Init has `KILL`, so a stop reaches the server. Docker on home-macmini kills a
 container 1 s after SIGTERM unless told otherwise, so compose sets `stop_grace_period: 10s`. A stop while a reply runs
-or a question waits then exits cleanly in about 3.4 s. The pids and memory limits are enough. On home-macmini, in the 11 hours after
-the 2026-10-17 22:51 UTC restart, the container's cgroup peaked at 133 MiB of its 2 GiB and 28 of its 128 pids. How much
-the app was used in that window is not recorded.
+or a question waits then exits cleanly in about 3.4 s. On home-macmini, in the 11 hours after the 2026-10-17 22:51 UTC
+restart, the container's cgroup peaked at 133 MiB of its 2 GiB and 28 of its 128 pids. How much the app was used in
+that window is not recorded, so this shows room under that use, not that the limits hold under heavy use.
 
 On 2026-10-17 on home-macmini, the check scripts, the container tests, both browser checks, web search, an image and its
 edit, and restarts mid-reply and mid-question passed live. The same PR then removed the Pi CLI path: `PiWorker`, the
