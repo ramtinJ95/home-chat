@@ -4,16 +4,6 @@ Started 2026-10-17 on `feat/pi-durable`. The spike on `spike/pi-durable` (74b1b3
 Codex login through pi-ai, `web_run` and `imagegen` against the Codex endpoints, `ask` waiting on a person, and a
 transcript that survives a crash.
 
-## Order of work
-
-1. **Parity.** Pi Durable replaces the Pi CLI worker. Every feature in the checklist below behaves as it does today,
-   tested, before anything new is built on it.
-2. **Household features.** Todos, and conversations that are either private or shared between the two of us, including
-   sharing a conversation or an artifact from the app.
-3. **Calendar and email, last.** The providers aren't chosen yet. This phase blocks nothing before it.
-
-Main is deployed throughout. The branch replaces the worker only once the checklist passes.
-
 ## Phase 1 decisions
 
 - **In-process harness, one file per conversation.** Each conversation keeps its model transcript in its own SQLite
@@ -39,68 +29,24 @@ Main is deployed throughout. The branch replaces the worker only once the checkl
 - **Codex login stays in `auth.json`.** It keeps today's shape (one credential per provider id), read by the spike's
   `FileCredentialStore`. `scripts/login-codex.ts` moves from pi-coding-agent's `ModelRuntime` to pi-ai's login.
 
-## Parity checklist
+## Shipped
 
-Each item gets a test with pi-ai's faux provider unless marked live.
+Phase 1, parity, shipped in #17. Pi Durable replaced the Pi CLI worker, and every feature kept its behaviour, with one
+exception. In a conversation started before the move, regenerating the first turn made after the move answers 409 ("send
+a new message instead"). Faux-model tests in `test/agent.test.ts` and the server tests check the rest. The model is
+offered exactly the eight tools in `ALLOWED_TOOLS`, and a routine run refuses `ask`, `routine` and `memory`.
 
-Turns:
+In the container, SQLite runs on `/data` under the read-only root filesystem, and egress goes through the proxy
+(`check-runtime`, `check-network`). Init has `KILL`, so a stop reaches the server. Docker on home-macmini kills a
+container 1 s after SIGTERM unless told otherwise, so compose sets `stop_grace_period: 10s`. A stop while a reply runs
+or a question waits then exits cleanly in about 3.4 s. PIDS_MEMORY_RESULT
 
-- [x] Streaming text reaches the client as deltas and is saved every 2 s, including text already in the first partial
-      and the final tail that only arrives in `message_end` (the spike missed it).
-- [x] Tool status labels: `tool` events for all seven tools in `ALLOWED_TOOLS`, no others.
-- [x] Abort from the app stops the model call and any running tool.
-- [x] Turn limits from `TURN_LIMITS`: 5 minutes and 12 tool calls, or 20 minutes and 30 in deep research; 2 generated
-      images per message.
-- [x] `validateToolInput`: `web_run` refuses private hosts, `imagegen` paths stay within uploads and generated images.
-- [x] Provider failures map to the same messages as `providerFailure` (login refresh, usage limit, HTTP status).
-- [x] At most 2 conversations run at once, and a busy server answers 429 as now.
-- [x] Response size limit (100 000 characters) still ends the turn.
+On 2026-10-17 on home-macmini, the check scripts, the container tests, both browser checks, web search, an image and its
+edit, and restarts mid-reply and mid-question passed live. The same PR then removed the Pi CLI path: `PiWorker`, the
+internal socket and its tokens, and pi-coding-agent.
 
-Tools:
-
-- [x] `ask`: select, input and confirm (nothing asked `editor`), "Other/rephrase" with free text, multiple choice with
-      "Finish selection", the comment after each prompt, answer and cancel from the app, push when nobody is watching.
-      Left out: pi-ask's `delivery: "steer"` (nothing can take an answer after the turn moves on), `handoff` and `help`.
-- [x] `web_run`: search, open and find (live).
-- [x] `imagegen`: generation and edits from attached or earlier images, saved where `collectGenerated` finds them (live).
-- [x] `document`: create and revise, versions kept, cards and reader unchanged.
-- [x] `deep_research`: Exa calls in deep research mode, with the stop signal and the 90 s timeout, report saved through
-      `document`. Tested against a stubbed Exa; the timeout itself is not exercised.
-- [x] `routine`: all actions, scoped to the owner. Routine runs have neither `ask` nor `routine`.
-- [x] `memory`: confirm before saving. The household notes join the system prompt before every request.
-- [x] No other tools exist: no read, write, edit or bash, whatever Pi Durable ships.
-
-Conversations:
-
-- [x] Uploaded images reach the model with the message.
-- [x] Regenerate and edit replace the last turn, and survive a restart. Exception: regenerating the first turn after
-      the move, for a conversation from before it, answers the existing 409 ("send a new message instead").
-- [x] Existing conversations continue with their earlier text as context.
-- [x] Deleting a conversation removes its transcript with its directory, after its worker has closed the file.
-- [x] Restart mid-reply and mid-question: the reply shows as interrupted and the next message works. Tested live by
-      restarting the app while a reply streamed and while a question waited.
-
-Deploy:
-
-- [ ] Dockerfile and compose: SQLite on `/data` with the root filesystem read-only, egress through the proxy, pids and
-      memory limits still enough without child processes. SQLite on `/data` and egress pass (`check-runtime`,
-      `check-network`). Init now has `KILL`, so a stop reaches the server (a fix main needs too). Docker on home-macmini
-      kills a container 1 s after SIGTERM unless told otherwise (source unknown), so compose sets 10 s; a stop while a
-      reply runs or a question waits then exits cleanly in about 3.4 s. Open: pids and memory.
-- [x] `check-network`, `check-runtime` and `check-browser` pass against the branch (live, headless).
-- [x] The Pi CLI path is gone before the switch-over, in the same PR (chosen 2026-10-17): `PiWorker`, the internal
-      socket and its tokens, `profile/` apart from `instructions.md`, pi-coding-agent and the `@howaboua/*` add-ons.
-
-## Status
-
-2026-10-17: the agent is in `src/agent/` and is the server's default worker on this branch. Ticked items have faux-model
-tests in `test/agent.test.ts` or are covered by the existing server tests. `check-runtime` runs the durable agent, and `login-codex` uses pi-ai's login, writing the same
-`auth.json`.
-
-2026-10-17, live on home-macmini (local mode, the real volume, then main restored): the check scripts, the container
-tests, both browser checks, web search with a cited source, an image and its edit, a pre-move conversation continuing
-from its earlier text, and restarts mid-reply and mid-question all passed. Then the Pi CLI path was removed. Still
-open: pids and memory, measured after the switch-over.
+Phase 2, the household features, shipped in #18 to #20 (`docs/household.md`). Phase 3, calendar and email, has not
+started.
 
 ## Risks
 
