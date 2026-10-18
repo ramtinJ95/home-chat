@@ -14,10 +14,11 @@ transcript that survives a crash.
 - **Same seam.** A `DurableWorker` implements the existing `ChatWorker` interface (now `src/chat-worker.ts`), so `server.ts`
   changes as little as possible in phase 1. A link document in the conversation's file names the durable conversation
   it continues.
-- **Tools call the server directly.** `routine`, `memory` and `document` become `defineTool` tools that call server
-  functions in-process instead of going through `callServer` (`profile/internal.ts`).
-- **Mode per turn is passed, not parsed.** Today `profile/extension.ts` reads the turn's notes back out of the prompt
-  to decide which tools are refused. Now the server passes `TurnMode` to the tools directly. The note text stays in the
+- **Tools call the server directly.** `routine`, `memory` and `todo` are `defineTool` tools that call server functions
+  in-process (`src/agent/extension.ts`), where the Pi CLI went through an internal socket. `document` writes its own
+  files.
+- **Mode per turn is passed, not parsed.** The Pi CLI extension read the turn's notes back out of the prompt to decide
+  which tools are refused. Now the server passes `TurnMode` to the tools directly. The note text stays in the
   prompt because the model needs it, but enforcement stops depending on it.
 - **Regenerate and edit fork.** Instead of tree navigation in the same session file, the conversation forks at the
   entry before the last user message, and the chat's mapping moves to the fork.
@@ -39,7 +40,9 @@ offered exactly the eight tools in `ALLOWED_TOOLS`, and a routine run refuses `a
 In the container, SQLite runs on `/data` under the read-only root filesystem, and egress goes through the proxy
 (`check-runtime`, `check-network`). Init has `KILL`, so a stop reaches the server. Docker on home-macmini kills a
 container 1 s after SIGTERM unless told otherwise, so compose sets `stop_grace_period: 10s`. A stop while a reply runs
-or a question waits then exits cleanly in about 3.4 s. PIDS_MEMORY_RESULT
+or a question waits then exits cleanly in about 3.4 s. The pids and memory limits are enough. On home-macmini, in the 11 hours after
+the 2026-10-17 22:51 UTC restart, the container's cgroup peaked at 133 MiB of its 2 GiB and 28 of its 128 pids. How much
+the app was used in that window is not recorded.
 
 On 2026-10-17 on home-macmini, the check scripts, the container tests, both browser checks, web search, an image and its
 edit, and restarts mid-reply and mid-question passed live. The same PR then removed the Pi CLI path: `PiWorker`, the
