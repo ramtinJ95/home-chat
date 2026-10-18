@@ -61,7 +61,7 @@ test('the store saves routines, runs them when due, and flags runs missed for ho
   assert.equal(store.list('owner')[0].enabled, false);
   await store.setEnabled('owner', routine.id, true);
   await store.update('owner', routine.id, {schedule: {kind: 'weekdays', time: '08:00'}});
-  assert.equal(routine.cron, '0 8 * * 1-5');
+  assert.equal(store.get(routine.id)?.cron, '0 8 * * 1-5');
   store.stop();
   // One run due a minute ago and one due five hours ago, as after the app was down.
   const saved: Routine[] = JSON.parse(await readFile(path, 'utf8'));
@@ -104,17 +104,21 @@ test('a run still waiting at a restart runs after it, and one cut off by the res
 });
 
 test('a run that ends only clears its own occurrence, not a newer one waiting behind it', async t => {
-  const store = await createRoutines(join(await tempDir(t, 'home-chat-routines-'), 'routines.json'), () => {});
-  const routine = await store.create(store.prepare('owner', {title: 'Reminder', prompt: 'Remind me', schedule: {kind: 'daily', time: '07:00'}}), 'chat-1');
+  const fired: Routine[] = [];
+  const store = await createRoutines(join(await tempDir(t, 'home-chat-routines-'), 'routines.json'), routine => fired.push(routine));
+  const {id} = await store.create(store.prepare('owner', {title: 'Reminder', prompt: 'Remind me', schedule: {kind: 'daily', time: '07:00'}}), 'chat-1');
   // The 07:00 run is still going when the routine, rescheduled to a one-off at 07:01, comes due again.
   const older = new Date('2026-10-17T05:00:00Z'); const newer = new Date('2026-10-17T05:01:00Z');
-  await store.started(routine, older);
-  Object.assign(routine, {pending: newer.toISOString(), nextRun: null});
+  await store.started(store.get(id)!, older);
+  await store.update('owner', id, {schedule: {kind: 'once', time: '07:01', date: '2026-10-17'}}, new Date('2026-10-17T05:00:30Z'));
+  await until(() => fired.length === 1, 'the one-off comes due');
+  const [routine] = fired;
+  assert.equal(store.get(id)?.pending, newer.toISOString());
   await store.finished(routine, older, 'done');
-  assert.equal(routine.pending, newer.toISOString());
-  assert.equal(routine.enabled, true);
+  assert.equal(store.get(id)?.pending, newer.toISOString());
+  assert.equal(store.get(id)?.enabled, true);
   await store.finished(routine, newer, 'done');
-  assert.equal(routine.pending, undefined);
-  assert.equal(routine.enabled, false);
+  assert.equal(store.get(id)?.pending, undefined);
+  assert.equal(store.get(id)?.enabled, false);
   store.stop();
 });

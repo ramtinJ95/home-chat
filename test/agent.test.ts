@@ -10,7 +10,8 @@ import type { Question } from '../src/api.d.ts';
 import { createAgent } from '../src/agent/agent.ts';
 import type { DurableWorker } from '../src/agent/worker.ts';
 import { ALLOWED_TOOLS, type ServerCall, type TurnMode } from '../src/policy.ts';
-import { withEnv } from './helpers.ts';
+import { createMemory } from '../src/memory.ts';
+import { tempDir, withEnv } from './helpers.ts';
 
 type Reply = AssistantMessage | ((messages: Message[]) => AssistantMessage);
 
@@ -149,17 +150,32 @@ test('a routine run cannot ask, deep research needs its mode, and a message has 
 });
 
 test('memory saves only after the user confirms, through the server', async t => {
-  const calls: [string, unknown][] = [];
-  const f = await fixture(t, async (path, body) => { calls.push([path, body]); return body === undefined ? '' : 'Saved under About us.'; });
+  // The server's side of the tool, as src/server.ts has it: a change is checked first, then made.
+  const memory = await createMemory(join(await tempDir(t, 'home-chat-memory-'), 'memory.json'));
+  const f = await fixture(t, async (path, body) => {
+    if (path !== '/memory' || body === undefined) return '';
+    if ((body as {check?: boolean}).check === true) { memory.check('owner', body as never); return 'OK'; }
+    await memory.apply('owner', body as never);
+    return 'Saved under About us.';
+  });
   const worker = await f.worker();
-  f.reply([fauxAssistantMessage([fauxToolCall('memory', {action: 'remember', text: 'Vegetarian'})], {stopReason: 'toolUse'}), fauxAssistantMessage('Noted.')]);
-  let asked: Question | undefined;
-  await turn(worker, 'I am vegetarian', {}, question => { asked = question; return true; });
-  assert.equal(asked?.method, 'confirm');
-  assert.equal(asked?.title, 'Remember this about you?');
-  assert.deepEqual(calls.filter(([, body]) => body !== undefined).map(([path, body]) => [path, (body as {check?: boolean}).check === true]),
-    [['/memory', true], ['/memory', false]]);
-  assert.deepEqual(toolResults(f.requests[1]!), ['Saved under About us.']);
+  const suggest = (change = {action: 'remember', text: 'Vegetarian'}) =>
+    f.reply([fauxAssistantMessage([fauxToolCall('memory', change)], {stopReason: 'toolUse'}), fauxAssistantMessage('Noted.')]);
+  const asked: Question[] = [];
+  // A change that cannot be made fails before the user is asked.
+  suggest({action: 'forget', text: 'Never said'});
+  await turn(worker, 'Forget what I never said', {}, question => { asked.push(question); return true; });
+  assert.match(toolResults(f.requests.at(-1)!).at(-1)!, /no such note/);
+  assert.equal(asked.length, 0);
+  suggest();
+  await turn(worker, 'I am vegetarian', {}, question => { asked.push(question); return false; });
+  assert.match(toolResults(f.requests.at(-1)!).at(-1)!, /said no, so nothing changed/);
+  assert.deepEqual(memory.view('owner'), {version: 0, mine: [], shared: []});
+  suggest();
+  await turn(worker, 'Really, I am vegetarian', {}, question => { asked.push(question); return true; });
+  assert.deepEqual(asked.map(({method, title}) => [method, title]), [['confirm', 'Remember this about you?'], ['confirm', 'Remember this about you?']]);
+  assert.equal(toolResults(f.requests.at(-1)!).at(-1), 'Saved under About us.');
+  assert.deepEqual(memory.view('owner'), {version: 1, mine: ['Vegetarian'], shared: []});
 });
 
 test('regenerate forks before the last message, and the fork is what continues after a restart', async t => {
