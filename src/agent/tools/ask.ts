@@ -6,9 +6,8 @@ import { MAX_QUESTION_OPTIONS } from '../../policy.ts';
 // or false for confirm, undefined when the user dismissed it.
 export type Dialog = (question: Omit<Question, 'id'>) => Promise<string | boolean | undefined>;
 
-// The same questions as @howaboua/pi-ask asked through the Pi CLI, which the app was built around: a choice list with
-// "Other/rephrase", repeated picks for multiple choice, and an optional comment after each prompt. Its steering and
-// handoff deliveries are left out; nothing here can take an answer after the turn moves on.
+// Each prompt is free text or a choice list with "Other/rephrase" (picked from repeatedly for multiple choice), followed
+// by an optional comment.
 const OTHER = 'Other/rephrase';
 const REPHRASE = 'User asked for rephrase, split, or follow-up.';
 

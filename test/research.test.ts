@@ -26,13 +26,13 @@ test('deep_research sends the Exa request with the environment key and reports f
     assert.equal((calls[0].init.headers as Record<string, string>)['x-api-key'], 'test-key');
     const body = JSON.parse(String(calls[0].init.body));
     assert.equal(body.type, 'deep-reasoning'); assert.deepEqual(body.includeDomains, ['energy.gov']);
-    const output = JSON.parse((result.content[0] as {text: string}).text);
+    const output = JSON.parse((result.output[0] as {text: string}).text);
     assert.equal(output.synthesizedOutput, 'Synthesis');
     assert.deepEqual(output.sources[0].highlights, ['A quote']);
     assert.doesNotMatch(JSON.stringify(result), /test-key/);
     // A huge synthesis is shortened, and the sources still come through.
     reply = () => new Response(JSON.stringify({output: {content: 'x'.repeat(100_000)}, results: [{title: 'Kept', url: 'https://example.com/kept'}]}));
-    const long = JSON.parse(((await run({query: 'heat pumps'})).content[0] as {text: string}).text);
+    const long = JSON.parse(((await run({query: 'heat pumps'})).output[0] as {text: string}).text);
     assert.equal(long.synthesizedOutput.length, 40_001);
     assert.equal(long.sources[0].title, 'Kept');
     reply = () => new Response(JSON.stringify({error: 'bad key'}), {status: 401});

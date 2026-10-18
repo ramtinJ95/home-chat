@@ -1,11 +1,11 @@
 // Pi Durable inside the server process. Each Home Chat conversation keeps its model transcript in its own SQLite file,
 // chats/<id>/agent.sqlite, so deleting the conversation's directory deletes the transcript too (Pi Durable itself cannot
 // delete a conversation). A file is open only while its conversation has a worker: one Harness per worker.
-// Regenerate and edit continue in a fork, which the file's link document points at. src/agent/worker.ts gives the server
-// the same ChatWorker it had with the Pi CLI.
+// Regenerate and edit continue in a fork, which the file's link document points at. Each worker (src/agent/worker.ts)
+// is the server's ChatWorker for one conversation.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
+import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
 import type { MutableModels, ThinkingLevel } from '@earendil-works/pi-ai';
 import { closeOpenAICodexWebSocketSessions } from '@earendil-works/pi-ai/api/openai-codex-responses';
 import { createRegistry, defineDoc, Harness, ResetEntry, type Conversation, type ConversationId, type EntryId, type Tx } from '@earendil-works/pi-durable';
@@ -15,8 +15,6 @@ import type { ServerCall } from '../policy.ts';
 import { codexModels } from './codex.ts';
 import { homeExtension, type ChatHost } from './extension.ts';
 import { DurableWorker } from './worker.ts';
-
-export const context = BACKGROUND_CONTEXT;
 
 // The durable conversation the Home Chat conversation continues.
 const ChatLink = defineDoc<{conversation: number | null}>({kind: 'home-chat.link', version: 1, scope: 'session', initial: () => ({conversation: null})});
@@ -47,9 +45,11 @@ export interface ChatStore {
   close(running?: Conversation): Promise<void>;
 }
 
+// Opens a conversation's file. `host` is the worker whose conversation the file holds; its tools and policy work
+// through it.
+export type OpenStore = (directory: string, host: (conversation: ConversationId) => ChatHost | undefined) => Promise<ChatStore>;
+
 export interface HomeAgent {
-  // `host` is the worker whose conversation the file holds; its tools and policy work through it.
-  open(directory: string, host: (conversation: ConversationId) => ChatHost | undefined): Promise<ChatStore>;
   worker(directory: string, call: ServerCall): DurableWorker;
   // Resolves once the directory's file is not being closed, e.g. by a worker that was replaced.
   released(directory: string): Promise<void>;
@@ -68,7 +68,7 @@ export function createAgent(options: AgentOptions): HomeAgent {
   // A file is opened only after the previous Harness on it has closed: one process, one owner at a time.
   const closing = new Map<string, Promise<void>>();
 
-  async function open(directory: string, host: (conversation: ConversationId) => ChatHost | undefined): Promise<ChatStore> {
+  const open: OpenStore = async (directory, host) => {
     await closing.get(directory);
     const registry = createRegistry();
     const home = homeExtension({models, instructions: options.instructions, hostFor: host});
@@ -119,11 +119,10 @@ export function createAgent(options: AgentOptions): HomeAgent {
         return closed;
       },
     };
-  }
+  };
 
-  const home: HomeAgent = {
-    open,
-    worker: (directory, call) => new DurableWorker(home, directory, call),
+  return {
+    worker: (directory, call) => new DurableWorker(open, directory, call),
     released: async directory => { await closing.get(directory); },
     close: async () => {
       await Promise.all(closing.values());
@@ -132,7 +131,6 @@ export function createAgent(options: AgentOptions): HomeAgent {
       closeOpenAICodexWebSocketSessions();
     },
   };
-  return home;
 }
 
 async function seedText(path: string): Promise<string | undefined> {

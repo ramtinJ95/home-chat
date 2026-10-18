@@ -71,9 +71,9 @@ export function carriesText(prompt: string, text: string): boolean {
 
 // Research costs money per call, so it needs the conversation's switch; an unattended run has nobody to answer a
 // question or confirm a note, and routines never make routines.
-export function refusedInTurn(tool: string, mode: {deepResearch: boolean; routineRun: boolean}): string | undefined {
+export function refusedInTurn(tool: string, mode: TurnMode): string | undefined {
   if (tool === 'deep_research' && !mode.deepResearch) return 'Deep research is off for this conversation; the user can switch it on';
-  if (mode.routineRun && (tool === 'ask' || tool === 'routine' || tool === 'memory')) {
+  if (mode.routineRun !== undefined && (tool === 'ask' || tool === 'routine' || tool === 'memory')) {
     return 'Nobody is watching this routine run, so it cannot ask questions, change routines or change the household notes';
   }
 }

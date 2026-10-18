@@ -49,7 +49,7 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   rewindMatches = true;
   async rewind(text: string) { this.rewound.push(text); return this.rewindMatches; }
   async abort() { this.running = false; this.emit('settled'); }
-  stop(reason = 'The reply was stopped before it finished') {
+  async stop(reason = 'The reply was stopped before it finished') {
     this.closed = true; this.question = null;
     if (this.running) { this.running = false; this.emit('failure', reason); }
   }

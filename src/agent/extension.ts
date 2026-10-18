@@ -74,10 +74,7 @@ export function homeExtension({models, instructions, hostFor}:
     }),
     defineTool({
       name: 'deep_research', description: deepResearch.description, parameters: deepResearch.parameters,
-      async execute(args, _api, context) {
-        const {content, details} = await deepResearch.research(args, context.abortSignal);
-        return {output: content, details};
-      },
+      async execute(args, _api, context) { return deepResearch.research(args, context.abortSignal); },
     }),
     defineTool({
       name: 'routine', description: routine.description, parameters: routine.parameters,
@@ -118,7 +115,7 @@ export function homeExtension({models, instructions, hostFor}:
         const chat = hostFor(api.conversationId);
         if (!chat) return {block: 'Home Chat is not available in this conversation right now'};
         const {turn} = chat;
-        const refused = refusedInTurn(call.name, {deepResearch: turn.mode.deepResearch === true, routineRun: turn.mode.routineRun !== undefined});
+        const refused = refusedInTurn(call.name, turn.mode);
         if (refused) return {block: refused};
         try { await validateToolInput(call.name, call.arguments, chat.cwd); }
         catch (error) { return {block: (error as Error).message}; }

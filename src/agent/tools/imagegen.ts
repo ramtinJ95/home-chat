@@ -17,7 +17,7 @@ export const parameters = Type.Object({
   num_last_images_to_include: Type.Optional(Type.Union([Type.Integer({description: 'Smallest recent edit count', minimum: 1, maximum: 5}), Type.Null()])),
 }, {additionalProperties: false});
 
-// `recent(n)`: the conversation's newest n images, oldest first, or fewer when it has fewer.
+// `recent(n)`: the conversation's newest n images (ChatHost.recentImages), or fewer when it has fewer.
 export async function imagegen(models: MutableModels, cwd: string, turnId: string, args: Static<typeof parameters>,
   recent: (count: number) => Promise<ImageContent[]>, signal?: AbortSignal) {
   const paths = args.referenced_image_paths ?? [];

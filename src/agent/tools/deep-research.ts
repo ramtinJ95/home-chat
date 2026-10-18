@@ -1,9 +1,8 @@
 import { StringEnum } from '@earendil-works/pi-ai';
 import { Type, type Static } from 'typebox';
 
-// Exa deep research, adapted from the owner's Pi extension (~/.pi/agent/extensions/exa-deep-research.ts). The key comes
-// only from EXA_API_KEY, which compose passes to the app; requests leave through the egress proxy, which allows api.exa.ai.
-// Calls outside deep research mode are refused (src/agent/extension.ts).
+// Exa deep research. The key comes only from EXA_API_KEY, which compose passes to the app; requests leave through the
+// egress proxy, which allows api.exa.ai. Calls outside deep research mode are refused (src/agent/extension.ts).
 const EXA_SEARCH_URL = 'https://api.exa.ai/search';
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_SOURCES = 8;
@@ -152,7 +151,7 @@ export async function research(params: Params, signal?: AbortSignal) {
     warnings,
   };
   return {
-    content: [{type: 'text' as const, text: JSON.stringify(output, null, 2)}],
+    output: [{type: 'text' as const, text: JSON.stringify(output, null, 2)}],
     details: {mode, requestId: parsed.requestId ?? null, resultCount: results.length},
   };
 }
