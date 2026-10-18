@@ -6,8 +6,8 @@ import { atomicJson, readJson } from '../files.ts';
 
 const CODEX_BASE = 'https://chatgpt.com/backend-api/codex';
 
-// The shape the Pi CLI wrote and scripts/accept-auth.ts writes: one credential per provider id. A token refresh rewrites
-// the file; changes take turns, so two refreshes never overwrite each other.
+// The file scripts/accept-auth.ts writes: one credential per provider id. A token refresh rewrites the file; changes
+// take turns, so two refreshes never overwrite each other.
 export class FileCredentialStore implements CredentialStore {
   readonly path: string;
   #chain: Promise<unknown> = Promise.resolve();

@@ -1,8 +1,8 @@
 // Pi Durable inside the server process. Each Home Chat conversation keeps its model transcript in its own SQLite file,
 // chats/<id>/agent.sqlite, so deleting the conversation's directory deletes the transcript too (Pi Durable itself cannot
 // delete a conversation). A file is open only while its conversation has a worker: one Harness per worker.
-// Regenerate and edit continue in a fork, which the file's link document points at. src/agent/worker.ts gives the server
-// the same ChatWorker it had with the Pi CLI.
+// Regenerate and edit continue in a fork, which the file's link document points at. Each worker (src/agent/worker.ts)
+// is the server's ChatWorker for one conversation.
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';

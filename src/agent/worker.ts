@@ -1,5 +1,5 @@
-// One Home Chat conversation on Pi Durable, behind the ChatWorker interface the server used with the Pi CLI: it turns
-// the conversation's events into deltas, tool labels, questions and the turn's end.
+// One Home Chat conversation on Pi Durable, behind the server's ChatWorker interface: it turns the conversation's events
+// into deltas, tool labels, questions and the turn's end.
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdir } from 'node:fs/promises';
@@ -124,7 +124,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   #finish(record: SubmissionRecord) {
     if (!this.#active || record.id !== this.#submission) return;
     this.#endTurn(); this.#ended.clear();
-    // Stopped from the app: the turn ends with what it has, as it did with the Pi CLI.
+    // Stopped from the app: the turn ends with what it has.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
     else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
@@ -214,7 +214,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     pending?.resolve(undefined);
   }
 
-  // ChatHost: images in the model's context, user uploads and tool results alike, newest last.
+  // ChatHost: images in the model's context, user uploads and tool results alike.
   async recentImages(count: number, at: Context): Promise<ImageContent[]> {
     const {messages} = await this.#require().context(at);
     const images: ImageContent[] = [];
@@ -230,8 +230,8 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     await this.#conversation?.abort(context);
   }
 
-  // Ends this worker: like the Pi CLI process exiting, a running turn fails with `reason` and its work is aborted.
-  // Resolves once the conversation's file is closed, so its directory can be removed.
+  // Ends this worker: a running turn fails with `reason` and its work is aborted. Resolves once the conversation's file
+  // is closed, so its directory can be removed.
   stop(reason = 'The reply was stopped before it finished'): Promise<void> {
     if (this.closed) return this.#stopped ?? Promise.resolve();
     this.closed = true;
