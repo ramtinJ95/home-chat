@@ -1317,10 +1317,12 @@ function listen(id: string) {
   };
   stream.onerror = () => {
     shown = '';
-    ui.activity.textContent = 'Connection interrupted; reconnecting…';
-    // The browser retries a dropped stream by itself, but not one the server refused. If that is because the
-    // conversation is gone for this person, say so; otherwise the page stays as it is, without retrying in a loop.
-    if (source === stream && source.readyState === EventSource.CLOSED) orGone(id, api(`/api/chats/${id}`)).catch(showError);
+    // The browser retries a dropped stream by itself, but not one the server refused, such as a fifth open stream on one
+    // conversation. If that is because the conversation is gone for this person, say so; otherwise the page stays as it
+    // is, without retrying in a loop, and says it is no longer updating.
+    const refused = source === stream && source.readyState === EventSource.CLOSED;
+    ui.activity.textContent = refused ? 'Disconnected; reopen this conversation' : 'Connection interrupted; reconnecting…';
+    if (refused) orGone(id, api(`/api/chats/${id}`)).catch(showError);
   };
 }
 
