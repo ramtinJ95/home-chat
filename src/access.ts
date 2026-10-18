@@ -57,9 +57,11 @@ const REFRESH_INTERVAL = 60_000;
 const CLOCK_SKEW = 30;
 
 function decodePart(part: string): Record<string, unknown> {
-  const value: unknown = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new AccessDenied('Malformed Access token');
-  return value as Record<string, unknown>;
+  try {
+    const value: unknown = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'));
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
+  } catch {}
+  throw new AccessDenied('Malformed Access token');
 }
 
 export function createAccessVerifier(config: AccessConfig, source: AccessKeySource = fetchAccessKeys(config.team)) {
@@ -100,9 +102,8 @@ export function createAccessVerifier(config: AccessConfig, source: AccessKeySour
     const parts = token.split('.');
     if (parts.length !== 3) throw new AccessDenied('Malformed Access token');
     const [encodedHeader, encodedPayload, signature] = parts;
-    let header, payload;
-    try { header = decodePart(encodedHeader); payload = decodePart(encodedPayload); }
-    catch { throw new AccessDenied('Malformed Access token'); }
+    const header = decodePart(encodedHeader);
+    const payload = decodePart(encodedPayload);
     if (header.alg !== 'RS256' || typeof header.kid !== 'string') throw new AccessDenied('Unsupported Access token');
     const key = await keyFor(header.kid);
     if (!verify('RSA-SHA256', Buffer.from(`${encodedHeader}.${encodedPayload}`), key, Buffer.from(signature, 'base64url'))) {
