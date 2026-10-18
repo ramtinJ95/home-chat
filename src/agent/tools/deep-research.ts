@@ -152,7 +152,7 @@ export async function research(params: Params, signal?: AbortSignal) {
     warnings,
   };
   return {
-    content: [{type: 'text' as const, text: JSON.stringify(output, null, 2)}],
+    output: [{type: 'text' as const, text: JSON.stringify(output, null, 2)}],
     details: {mode, requestId: parsed.requestId ?? null, resultCount: results.length},
   };
 }

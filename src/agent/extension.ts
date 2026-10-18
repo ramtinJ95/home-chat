@@ -74,10 +74,7 @@ export function homeExtension({models, instructions, hostFor}:
     }),
     defineTool({
       name: 'deep_research', description: deepResearch.description, parameters: deepResearch.parameters,
-      async execute(args, _api, context) {
-        const {content, details} = await deepResearch.research(args, context.abortSignal);
-        return {output: content, details};
-      },
+      async execute(args, _api, context) { return deepResearch.research(args, context.abortSignal); },
     }),
     defineTool({
       name: 'routine', description: routine.description, parameters: routine.parameters,
