@@ -95,7 +95,7 @@ svg { width: 20px; height: 20px; flex: none; }
   background: var(--paper); font-size: 1rem;
 }
 /* A focused text field shows it with its border instead of the outline. */
-.search input:focus, #about-form textarea:focus, .routine-field :focus, .todo-new input:focus, .todo-add input:focus {
+.search input:focus, #about-form textarea:focus, .routine-field :focus, .todo-new input:not([type]):focus, .todo-add input:focus {
   outline: none; border-color: color-mix(in srgb, var(--accent) 45%, var(--line));
 }
 /* A checkbox and its label, on the Routines and Todos pages. */
