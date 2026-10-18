@@ -581,12 +581,15 @@ function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
 
 // The reader covers the conversation and takes one history entry, so a phone's back gesture closes it.
 // Full-screen pages over the conversation: the reader and About us. One shows at a time, and Back closes it like a page.
-let sheet: {node: HTMLElement; opener?: HTMLElement; parent?: HTMLElement} | undefined;
+// `opener` gets the focus back when the last page closes; `from`, what opened a page over its `parent`, when it closes
+// back to that one.
+let sheet: {node: HTMLElement; opener?: HTMLElement; parent?: HTMLElement; from?: HTMLElement} | undefined;
 const sheetInHistory = () => (history.state as {sheet?: boolean} | null)?.sheet === true;
 function showSheet(node: HTMLElement, focus: HTMLElement, parent?: HTMLElement) {
-  const opener = sheet?.opener ?? (document.activeElement instanceof HTMLElement ? document.activeElement : undefined);
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
+  const opener = sheet?.opener ?? focused;
   if (sheet && sheet.node !== node) sheet.node.hidden = true;
-  sheet = {node, opener, parent};
+  sheet = {node, opener, parent, from: parent && focused};
   node.hidden = false;
   // The conversation underneath is out of reach until the page closes, for the keyboard and screen readers too.
   ui.workspace.inert = true;
@@ -600,9 +603,11 @@ function hideSheet() {
   sheet.node.hidden = true;
   // A page opened from another page goes back to that one, which takes the history entry again.
   if (sheet.parent) {
+    const {from} = sheet;
     sheet = {node: sheet.parent, opener: sheet.opener};
     sheet.node.hidden = false;
     history.pushState({sheet: true}, '');
+    if (from?.isConnected) from.focus();
     // It may have changed while the page over it was open.
     if (sheet.node === ui.libraryPage) refreshLibrary().catch(showError);
     return;
@@ -863,13 +868,19 @@ function renderLibraryEntry(unseen: boolean) {
 function renderLibrary(library: Library) {
   ui.libraryLede.textContent = `Documents and pictures you and ${otherName()} shared from your conversations, newest first. `
     + 'The conversations they came from stay as private as they were.';
+  // The cards are drawn again, so a focused button or link gets the focus back on its item's new card, as when the
+  // reader closes back to this page.
+  const focused = document.activeElement instanceof HTMLElement && ui.libraryCards.contains(document.activeElement) ? document.activeElement : undefined;
+  const item = focused?.closest<HTMLElement>('.library-card')?.dataset.item;
   ui.libraryCards.replaceChildren(...(library.items.length ? library.items.map(libraryCard)
     : [element('p', 'routines-empty', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)]));
+  if (item) [...ui.libraryCards.querySelectorAll<HTMLElement>(`[data-item="${item}"] .ghost`)].find(control => control.textContent === focused?.textContent)?.focus();
 }
 
 function libraryCard(item: LibraryItem): HTMLElement {
   const url = `/api/library/${item.id}`;
   const card = element('article', 'routine-card library-card');
+  card.dataset.item = item.id;
   const name = item.kind === 'picture' ? 'this picture' : `“${item.title}”`;
   if (item.kind === 'picture') {
     const picture = element('img');
