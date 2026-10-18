@@ -247,7 +247,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const routines = await createRoutines(join(data, 'routines.json'), (routine, scheduled, late) => {
     // A newer run of the same routine replaces one still waiting.
     for (const waiting of queue.filter(item => item.routine === routine)) dequeue(waiting);
-    if (late) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
+    // A paused routine's run goes in line however late, to be dropped there without a note.
+    if (late && routine.enabled) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
     else { queue.push({routine, scheduled}); void drainRuns(); }
   });
   const memory = await createMemory(join(data, 'memory.json'));

@@ -705,6 +705,34 @@ test('a routine paused while its run waits in line does not run', async () => {
     } finally { await restarted.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
 });
+test('a paused routine’s run still waiting at a restart is settled without a note, even once its next time has passed', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Set up a routine', assets: []}, ...owner});
+    await delay(40);
+    await callRoutine(f.worker, {action: 'create', title: 'Briefing', prompt: 'News', schedule: {kind: 'daily', time: '07:30'}});
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    await f.app.stop();
+    // Its run came due five hours ago and waited, it was paused, and the app was down past its next time.
+    const path = join(f.data, 'routines.json');
+    const [routine] = JSON.parse(await readFile(path, 'utf8'));
+    Object.assign(routine, {enabled: false, pending: new Date(Date.now() - 5 * 60 * 60_000).toISOString(), nextRun: new Date(Date.now() - 60 * 60_000).toISOString()});
+    await writeFile(path, JSON.stringify([routine]));
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      assert.equal(restarted.worker.lastText, undefined);
+      const [after] = JSON.parse(await readFile(path, 'utf8'));
+      assert.equal(after.pending, undefined);
+      assert.equal(after.lastRun.outcome, 'skipped');
+      const again = await restarted.login('owner');
+      assert.deepEqual((await (await restarted.request(`/api/chats/${routine.chat}`, again)).json()).messages, []);
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
 test('the last turn can be regenerated or edited and sent again, and only the last turn', async () => {
   const f = await fixture();
   try {

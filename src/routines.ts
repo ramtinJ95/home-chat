@@ -180,7 +180,9 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       const interrupted = routines.filter(routine => routine.lastRun?.outcome === 'running');
       for (const routine of interrupted) routine.lastRun = {...routine.lastRun!, outcome: 'failed'};
       if (interrupted.length) save().catch(() => console.warn('Could not save routines'));
-      for (const routine of routines.filter(item => item.pending && !(item.nextRun && Date.parse(item.nextRun) <= now))) {
+      // One that is due again gets a newer run from fire(), which replaces the waiting one; fire() passes over a paused
+      // one, whose waiting run the server then settles.
+      for (const routine of routines.filter(item => item.pending && !(item.enabled && item.nextRun && Date.parse(item.nextRun) <= now))) {
         const scheduled = new Date(routine.pending!);
         due(routine, scheduled, now - scheduled.getTime() > MISSED_GRACE_MS);
       }
