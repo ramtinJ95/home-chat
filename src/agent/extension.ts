@@ -115,7 +115,7 @@ export function homeExtension({models, instructions, hostFor}:
         const chat = hostFor(api.conversationId);
         if (!chat) return {block: 'Home Chat is not available in this conversation right now'};
         const {turn} = chat;
-        const refused = refusedInTurn(call.name, {deepResearch: turn.mode.deepResearch === true, routineRun: turn.mode.routineRun !== undefined});
+        const refused = refusedInTurn(call.name, turn.mode);
         if (refused) return {block: refused};
         try { await validateToolInput(call.name, call.arguments, chat.cwd); }
         catch (error) { return {block: (error as Error).message}; }
