@@ -13,7 +13,8 @@ import { PiRejected, type ChatWorker, type PromptImage, type WorkerEvents } from
 import type { ChatStore, OpenStore } from './agent.ts';
 import type { ChatHost } from './extension.ts';
 
-interface Pending { id: string; resolve: (value: string | boolean | undefined) => void }
+// The question the app shows, and the tool waiting for its answer.
+interface Pending { question: Question; resolve: (value: string | boolean | undefined) => void }
 
 export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWorker, ChatHost {
   readonly directory: string;
@@ -23,7 +24,6 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   readonly #open: OpenStore;
   #store?: ChatStore;
   closed = false;
-  question: Question | null = null;
   turn: ChatHost['turn'] = {mode: {}, calls: 0, images: 0};
   #conversation?: Conversation;
   #stream?: AgentEventStream;
@@ -173,35 +173,37 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     return true;
   }
 
+  get question(): Question | null { return this.#pending?.question ?? null; }
+
   // ChatHost: shows `question` in the app until it is answered, dismissed, or the tool's signal aborts.
   dialog(question: Omit<Question, 'id'>, signal: AbortSignal | undefined): Promise<string | boolean | undefined> {
     if (signal?.aborted || this.closed) return Promise.resolve(undefined);
     this.#dismiss();
     const id = randomUUID();
-    this.question = {
+    const shown: Question = {
       id, method: question.method, title: question.title.slice(0, 2000), message: question.message.slice(0, 4000),
       options: question.options.slice(0, MAX_QUESTION_OPTIONS).map(option => option.slice(0, 1000)), prefill: question.prefill.slice(0, 4000),
     };
     return new Promise(resolve => {
-      this.#pending = {id, resolve};
-      signal?.addEventListener('abort', () => { if (this.#pending?.id === id) this.#dismiss(); }, {once: true});
-      this.emit('question', this.question!);
+      const pending = this.#pending = {question: shown, resolve};
+      signal?.addEventListener('abort', () => { if (this.#pending === pending) this.#dismiss(); }, {once: true});
+      this.emit('question', shown);
     });
   }
 
   answer(id: string, value: unknown, cancelled = false): void {
-    const question = this.question;
-    if (!question || question.id !== id || this.#pending?.id !== id) throw new Error('Question expired or belongs to another conversation');
+    const pending = this.#pending;
+    if (!pending || pending.question.id !== id) throw new Error('Question expired or belongs to another conversation');
+    const {question, resolve} = pending;
     if (!cancelled && question.method === 'select' && !question.options.includes(value as string)) throw new Error('Invalid choice');
     if (!cancelled && typeof value !== 'string' && question.method !== 'confirm') throw new Error('Invalid answer');
-    const {resolve} = this.#pending;
-    this.#pending = undefined; this.question = null;
+    this.#pending = undefined;
     resolve(cancelled ? undefined : question.method === 'confirm' ? value === true : value as string);
   }
 
   #dismiss() {
     const pending = this.#pending;
-    this.#pending = undefined; this.question = null;
+    this.#pending = undefined;
     pending?.resolve(undefined);
   }
 
