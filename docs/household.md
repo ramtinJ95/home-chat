@@ -1,19 +1,7 @@
 # Household features
 
-Planned 2026-10-17, after the move to Pi Durable (`docs/durable-migration.md`). Built on `feat/household-sharing`,
-which starts from `feat/pi-durable`. Calendar and email come after these and block nothing here.
-
-From the request: "separate and shared conversations between wife and i all shared in the app itself so we can share
-conversations or artifacts easily in app if we choose to", and "in app todos for different things which we can add to
-from shared or separate conversations".
-
-## Order
-
-1. **Todos.** Named lists, each private or shared, kept on a Todos page and through a `todo` tool.
-2. **Shared conversations.** A conversation is private until its owner shares it; then both read and write in it.
-3. **Shared library.** A single document or picture shared without its conversation, on one page for both.
-
-Each is its own PR, in this order.
+Planned 2026-10-17, after the move to Pi Durable (`docs/durable-migration.md`), and shipped in #18 to #20: todos,
+shared conversations and the shared library. Calendar and email come after these.
 
 ## Decisions
 
