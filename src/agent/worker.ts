@@ -124,7 +124,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     this.#dismiss();
     // Stopped from the app: the turn ends with what it has, as it did with the Pi CLI.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
-    else if (record.reason === 'model_error') this.emit('failure', providerFailure(JSON.stringify(record.detail ?? '')));
+    else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
   }
 

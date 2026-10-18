@@ -238,6 +238,15 @@ test('a stopped reply settles, a provider failure fails the turn, and a stopped 
   } finally { await f.cleanup(); }
 });
 
+test('a provider error is read as its text, so a status on a line of its own still counts', async () => {
+  const f = await fixture();
+  try {
+    const worker = await f.worker();
+    f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'Too Many Requests\n429'})]);
+    await assert.rejects(() => turn(worker, 'Hello'), /usage limit reached/);
+  } finally { await f.cleanup(); }
+});
+
 test('each conversation has its own file, and removing its directory after stop removes its transcript', async () => {
   const f = await fixture();
   try {
