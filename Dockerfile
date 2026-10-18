@@ -12,14 +12,16 @@ FROM node
 RUN apt-get update && apt-get install -y --no-install-recommends iptables util-linux ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 10001 chat && useradd -u 10001 -g chat -M -d /data/home chat
 WORKDIR /app
-COPY package.json package-lock.json ./
+# Modes are set here, not taken from the checkout, so a checkout made under umask 077 still gives uid 10001 readable
+# files and open directories.
+COPY --chmod=u=rwX,go=rX package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY src ./src
-COPY public ./public
+COPY --chmod=u=rwX,go=rX src ./src
+COPY --chmod=u=rwX,go=rX public ./public
 COPY --from=build /app/public/app.js /app/public/theme.js /app/public/sw.js ./public/
-COPY profile ./profile
+COPY --chmod=u=rwX,go=rX profile ./profile
 COPY --chmod=755 scripts ./scripts
-COPY test ./test
+COPY --chmod=u=rwX,go=rX test ./test
 ENV HOME=/data/home NODE_ENV=production
 ENTRYPOINT ["/app/scripts/entrypoint.sh"]
 CMD ["node", "src/server.ts"]
