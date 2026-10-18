@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { randomBytes, randomUUID, createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,13 +7,14 @@ import sharp from 'sharp';
 import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
-import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig, type AccessKeySource } from './access.ts';
-import { atomicJson, readJson, serialSave } from './files.ts';
+import { accessConfigFromEnv, type AccessConfig, type AccessKeySource } from './access.ts';
+import { readJson, serialSave } from './files.ts';
 import { HttpError, fail, jsonBody, recent } from './http.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
 import { createPush } from './push.ts';
+import { createSignIn } from './sign-in.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
 import { ATTACHED_NOTE, DOCUMENT_FILE, IMAGE_DIRECTORY, IMAGE_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
@@ -29,7 +30,6 @@ interface RoutineRun { routine: Routine; scheduled: Date }
 // `by`: who sent the message, or deletes; a routine run is its owner's. `run`: the routine run being answered, with
 // nobody watching. `deadline`: the reply's time limit.
 interface Turn { by: User; run?: RoutineRun; deadline?: NodeJS.Timeout }
-interface Session { user: User; csrf: string; expires: number }
 interface StreamClient { res: http.ServerResponse; sessionKey: string; user: User }
 
 export interface AppOptions {
@@ -60,7 +60,6 @@ export function namesFromEnv(env: NodeJS.ProcessEnv): Record<User, string> {
   return {owner: name('HOME_CHAT_OWNER_NAME', 'the owner'), guest: name('HOME_CHAT_GUEST_NAME', 'the guest')};
 }
 
-const digest = (text: string) => createHash('sha256').update(text).digest();
 const jsonHeaders = {'Content-Type': 'application/json; charset=utf-8'};
 // Thrown by startTurn while the conversation, its owner or both workers are busy; a routine run waits and tries again.
 class Busy extends HttpError { constructor(message: string, status = 409) { super(status, message); } }
@@ -99,19 +98,6 @@ async function diskUsage(directory: string): Promise<number> {
   return sizes.reduce((total, size) => total + size, 0);
 }
 
-// Only hashes stay in memory; the plaintext codes are scoped to this call.
-async function loadAccessHashes(path: string): Promise<[User, Buffer][]> {
-  let access = await readJson<Record<string, unknown>>(path);
-  if (!access) {
-    access = {owner: randomBytes(32).toString('base64url'), guest: randomBytes(32).toString('base64url')};
-    await atomicJson(path, access);
-  }
-  return Object.entries(access).map(([user, token]) => {
-    if (!isUser(user) || typeof token !== 'string') throw new Error('Invalid local access file');
-    return [user, digest(token)];
-  });
-}
-
 async function loadStaticFiles() {
   const files = [['/', 'index.html', 'text/html'], ['/app.js', 'app.js', 'text/javascript'], ['/theme.js', 'theme.js', 'text/javascript'],
     ['/style.css', 'style.css', 'text/css'], ['/manifest.webmanifest', 'manifest.webmanifest', 'application/manifest+json'],
@@ -139,19 +125,14 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   await rm(deletedDirectory, {recursive: true, force: true});
   await mkdir(chatsDirectory, {recursive: true, mode: 0o700});
   await mkdir(deletedDirectory, {mode: 0o700});
-  const accessHashes = await loadAccessHashes(join(data, 'local-access.json'));
+  const signIn = await createSignIn(join(data, 'local-access.json'), access, accessKeys);
   const agent = workerFactory ? undefined : createAgent({authPath: join(data, 'profile/auth.json'),
     instructions: await readFile(new URL('../profile/instructions.md', import.meta.url), 'utf8')});
   const makeWorker = workerFactory ?? ((directory: string, call: ServerCall) => agent!.worker(directory, call));
   const staticFiles = await loadStaticFiles();
-  const sessions = new Map<string, Session>();
-  const verifyAccess = access && createAccessVerifier(access, accessKeys);
-  // Access sessions are stateless: the CSRF token is derived from the verified email, so it survives page reloads.
-  const csrfSecret = randomBytes(32);
   const origin = access ? 'https://' + access.host : undefined;
   // Push services want a contact for the sender: the public site, or a placeholder in local mode.
   const push = await createPush(join(data, 'push'), origin ?? 'mailto:home-chat@localhost.invalid', pushFetch);
-  const loginAttempts = new Map<string, number[]>();
   const rates = new Map<User, number[]>();
   const chats = new Map<string, Chat>();
   const workers = new Map<string, ChatWorker>();
@@ -530,28 +511,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     return worker;
   }
 
-  async function authenticate(req: http.IncomingMessage): Promise<{session: Session; sessionKey: string}> {
-    if (verifyAccess) {
-      const header = req.headers['cf-access-jwt-assertion'];
-      let identity;
-      try { identity = await verifyAccess(typeof header === 'string' ? header : undefined); }
-      catch (error) {
-        if (error instanceof AccessDenied) throw fail(401, error.message);
-        throw fail(503, 'Could not verify the Cloudflare Access sign-in');
-      }
-      const csrf = createHmac('sha256', csrfSecret).update(identity.email).digest('base64url');
-      return {sessionKey: 'access:' + identity.email, session: {user: identity.user, csrf, expires: identity.expires}};
-    }
-    const cookie = String(req.headers.cookie ?? '').split(';').map(x => x.trim()).find(x => x.startsWith('home_chat='))?.slice(10);
-    const sessionKey = digest(cookie ?? '').toString('hex');
-    const session = sessions.get(sessionKey);
-    if (!session || session.expires < Date.now()) { sessions.delete(sessionKey); throw fail(401, 'Sign in required'); }
-    return {session, sessionKey};
-  }
-  // Open streams end when their sign-in does: at logout, or at expiry (the Access token's own expiry under Access).
-  const live = (sessionKey: string, session: Session) =>
-    session.expires >= Date.now() && (verifyAccess !== undefined || sessions.get(sessionKey) === session);
-
   // The routine tool's actions, for the person whose turn the call comes from. Returns the text the model sees.
   async function routineAction(owner: User, body: Record<string, unknown>): Promise<string> {
     const saved = (routine: Routine) => `${describeSchedule(routine.schedule)}. Next run: ${nextLabel(routine)}.`;
@@ -673,26 +632,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       const file = req.method === 'GET' ? staticFiles.get(path) : undefined;
       if (file) return send(200, file.body, {'Content-Type': file.type});
       if (path === '/api/login' && req.method === 'POST' && !access) {
-        const ip = req.socket.remoteAddress ?? '';
-        const attempts = recent(loginAttempts, ip, 15 * 60_000);
-        if (attempts.length >= 5) throw fail(429, 'Too many attempts; wait 15 minutes');
-        attempts.push(Date.now());
-        const body = await jsonBody(req, 1024);
-        if (typeof body.code !== 'string' || body.code.length > 128) throw fail(401, 'Invalid access code');
-        const candidate = digest(body.code);
-        const user = accessHashes.find(([, expected]) => timingSafeEqual(candidate, expected))?.[0];
-        if (!user) throw fail(401, 'Invalid access code');
-        loginAttempts.delete(ip);
-        // A browser stops sending a cookie once it expires, so an expired session is never presented again to be removed.
-        for (const [key, held] of sessions) if (held.expires < Date.now()) sessions.delete(key);
-        if (sessions.size >= 16) throw fail(429, 'Too many sessions');
-        const token = randomBytes(32).toString('base64url');
-        const session = {user, csrf: randomBytes(32).toString('base64url'), expires: Date.now() + 8 * 60 * 60_000};
-        sessions.set(digest(token).toString('hex'), session);
-        res.setHeader('Set-Cookie', `home_chat=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800`);
+        res.setHeader('Set-Cookie', await signIn.login(req));
         return send(200, {ok: true});
       }
-      const {session, sessionKey} = await authenticate(req);
+      const {session, sessionKey} = await signIn.authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
         const me: Me = {user: session.user, names, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
@@ -715,10 +658,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         // The device stops receiving this user's notifications in the same step, so a shared phone shows nothing after.
         const body = await jsonBody(req, 4_000);
         if (typeof body.pushEndpoint === 'string') await push.unsubscribe(session.user, body.pushEndpoint);
-        // Under Access the browser then leaves through Cloudflare's own logout, which ends the real session.
-        sessions.delete(sessionKey);
+        const cleared = signIn.logout(sessionKey);
         for (const clients of streams.values()) for (const client of clients) if (client.sessionKey === sessionKey) client.res.end();
-        if (!access) res.setHeader('Set-Cookie', 'home_chat=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+        if (cleared) res.setHeader('Set-Cookie', cleared);
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
@@ -870,7 +812,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         const client = {res, sessionKey, user: session.user}; clients.add(client); streams.set(chat.id, clients);
         sse(res, {type: 'snapshot', chat: snapshot(chat)});
         const heartbeat = setInterval(() => {
-          if (!live(sessionKey, session)) return res.end();
+          if (!signIn.live(sessionKey, session)) return res.end();
           res.write(': keepalive\n\n');
         }, 15_000);
         heartbeat.unref();
