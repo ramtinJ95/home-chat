@@ -5,7 +5,7 @@ import { EventEmitter } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { BACKGROUND_CONTEXT as context, type Context } from '@earendil-works/chord/context';
-import type { ImageContent } from '@earendil-works/pi-ai';
+import type { AssistantMessage, ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
 import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
@@ -91,21 +91,25 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
       this.#texts = new Map(); this.#sent = new Map();
       // The first partial is committed after a pause, so it may already hold text.
       const {message} = event;
-      if (message.role === 'assistant') message.content.forEach((block, index) => { if (block.type === 'text') this.#text(index, block.text); });
+      if (message.role === 'assistant') this.#textBlocks(message.content);
     }
     if (event.type === 'message_update') {
       for (const change of event.changes) {
         if (change.type === 'text_delta') this.#text(change.contentIndex, (this.#texts.get(change.contentIndex) ?? '') + change.delta);
         if ((change.type === 'text_start' || change.type === 'block') && change.block.type === 'text') this.#text(change.contentIndex, change.block.text);
-        if (change.type === 'message') change.message.content.forEach((block, index) => { if (block.type === 'text') this.#text(index, block.text); });
+        if (change.type === 'message') this.#textBlocks(change.message.content);
       }
     }
     // The finished message has the whole text, including any tail no update carried.
     if (event.type === 'message_end') {
       const message = event.entry.model?.[0];
-      if (message?.role === 'assistant') message.content.forEach((block, index) => { if (block.type === 'text') this.#text(index, block.text); });
+      if (message?.role === 'assistant') this.#textBlocks(message.content);
     }
     if (event.type === 'tool_execution_start' && event.parentToolCallId === undefined && isAllowedTool(event.toolName)) this.emit('tool', event.toolName);
+  }
+
+  #textBlocks(content: AssistantMessage['content']) {
+    content.forEach((block, index) => { if (block.type === 'text') this.#text(index, block.text); });
   }
 
   // Sends what is new in text block `index`.
