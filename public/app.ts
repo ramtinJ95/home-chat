@@ -939,9 +939,9 @@ function renderTodoCards(lists: TodoList[]) {
 }
 
 // A change to one list; a list that is gone or no longer shared takes the whole page back to what the server has.
-async function changeTodo(request: Promise<TodoList>): Promise<boolean> {
+async function changeTodo(path: string, method: string, body?: unknown): Promise<boolean> {
   try {
-    const list = await request;
+    const list = await api<TodoList>(path, method, body);
     todoCards.get(list.id)?.fill(list);
     return true;
   } catch (error) {
@@ -949,6 +949,26 @@ async function changeTodo(request: Promise<TodoList>): Promise<boolean> {
     await refreshTodos().catch(() => {});
     return false;
   }
+}
+
+// A todo card's items and actions are drawn again on every change. This notes which control has the focus and returns
+// what gives it back once they are: the same one, or for one that went away a neighbouring item's or `fallback`. Never
+// the add field, which would open a phone's keyboard.
+function keepTodoFocus(card: HTMLElement, input: HTMLInputElement): (fallback: HTMLElement) => void {
+  const focused = document.activeElement;
+  if (!(focused instanceof HTMLElement) || !card.contains(focused) || focused === input) return () => {};
+  const rows = () => [...card.querySelectorAll<HTMLElement>('.todo-item')];
+  const row = focused.closest<HTMLElement>('.todo-item');
+  const item = row?.dataset.item;
+  const index = row ? rows().indexOf(row) : -1;
+  const control = focused.classList.contains('todo-remove') ? '.todo-remove' : 'input';
+  const action = focused.dataset.action;
+  return fallback => {
+    const now = rows();
+    const same = item === undefined ? undefined : now.find(each => each.dataset.item === item) ?? now[Math.min(index, now.length - 1)];
+    const target = action ? card.querySelector<HTMLElement>(`[data-action="${action}"]`) : same?.querySelector<HTMLElement>(control);
+    (target ?? fallback).focus();
+  };
 }
 
 function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList) => void} {
@@ -971,7 +991,7 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
     // Cleared at once for the next item; a failed add puts its text back unless something new was typed.
     const text = input.value;
     input.value = '';
-    void changeTodo(api<TodoList>(todoPath(list) + '/items', 'POST', {text})).then(added => { if (!added && !input.value) input.value = text; });
+    void changeTodo(todoPath(list) + '/items', 'POST', {text}).then(added => { if (!added && !input.value) input.value = text; });
   };
   const actions = element('div', 'routine-actions');
   card.append(head, items, add, actions);
@@ -980,15 +1000,7 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
     // An answer that left the server before the one already shown would take that one's change back off the page.
     if (next.version < list.version) return;
     list = next;
-    // Everything below is drawn again, so a focused control gets the focus back afterwards: the same one, or for one
-    // that went away a neighbouring item's or the Rename button. Never the add field, which would open a phone's keyboard.
-    const focused = document.activeElement instanceof HTMLElement && card.contains(document.activeElement) && document.activeElement !== input
-      ? document.activeElement : undefined;
-    const focusedRow = focused?.closest<HTMLElement>('.todo-item');
-    const focusedItem = focusedRow?.dataset.item;
-    const focusedIndex = focusedRow ? [...items.children].indexOf(focusedRow) : -1;
-    const focusedControl = focused?.classList.contains('todo-remove') ? '.todo-remove' : 'input';
-    const focusedAction = focused?.dataset.action;
+    const refocus = keepTodoFocus(card, input);
     title.textContent = list.title;
     tag.hidden = !list.shared;
     input.placeholder = `Add to ${list.title}`;
@@ -1002,13 +1014,12 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
       const label = element('label');
       const box = element('input');
       box.type = 'checkbox'; box.checked = item.done;
-      box.onchange = () => changeTodo(api<TodoList>(`${todoPath(list)}/items/${item.id}`, 'PATCH', {done: box.checked}));
+      box.onchange = () => changeTodo(`${todoPath(list)}/items/${item.id}`, 'PATCH', {done: box.checked});
       label.append(box, element('span', undefined, item.text));
       const remove = element('button', 'icon-button todo-remove');
-      remove.type = 'button';
       remove.setAttribute('aria-label', `Remove ${item.text}`);
       remove.append(icon('close'));
-      remove.onclick = () => changeTodo(api<TodoList>(`${todoPath(list)}/items/${item.id}`, 'DELETE'));
+      remove.onclick = () => changeTodo(`${todoPath(list)}/items/${item.id}`, 'DELETE');
       row.append(label, remove);
       return row;
     }));
@@ -1021,19 +1032,19 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
     };
     if (list.items.some(item => item.done)) {
       const clear = button('clear', 'Clear done');
-      clear.onclick = () => changeTodo(api<TodoList>(todoPath(list) + '/clear', 'POST', {}));
+      clear.onclick = () => changeTodo(todoPath(list) + '/clear', 'POST', {});
       buttons.push(clear);
     }
     const rename = button('rename', 'Rename');
     rename.onclick = () => {
       const name = prompt('Name of the list', list.title)?.trim();
-      if (name && name !== list.title) void changeTodo(api<TodoList>(todoPath(list), 'PATCH', {title: name}));
+      if (name && name !== list.title) void changeTodo(todoPath(list), 'PATCH', {title: name});
     };
     buttons.push(rename);
     // Only the list's owner shares, unshares or deletes it.
     if (list.mine) {
       const share = button('share', list.shared ? 'Make private' : 'Share with the household');
-      share.onclick = () => changeTodo(api<TodoList>(todoPath(list), 'PATCH', {shared: !list.shared}));
+      share.onclick = () => changeTodo(todoPath(list), 'PATCH', {shared: !list.shared});
       const remove = button('delete', 'Delete', 'ghost danger');
       remove.onclick = async () => {
         if (!confirm(`Delete the list “${list.title}” and everything on it?`)) return;
@@ -1043,11 +1054,7 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
       buttons.push(share, remove);
     }
     actions.replaceChildren(...buttons);
-    if (!focused) return;
-    const rows = [...items.querySelectorAll<HTMLElement>('.todo-item')];
-    const row = focusedItem === undefined ? undefined : rows.find(each => each.dataset.item === focusedItem) ?? rows[Math.min(focusedIndex, rows.length - 1)];
-    const target = focusedAction ? buttons.find(each => each.dataset.action === focusedAction) : row?.querySelector<HTMLElement>(focusedControl);
-    (target ?? rename).focus();
+    refocus(rename);
   };
   fill(list);
   return {card, fill};
