@@ -4,13 +4,13 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { mkdir } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import type { Context } from '@earendil-works/chord/context';
+import { BACKGROUND_CONTEXT as context, type Context } from '@earendil-works/chord/context';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
 import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
 import { PiRejected, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
-import { context, type ChatStore, type HomeAgent } from './agent.ts';
+import type { ChatStore, OpenStore } from './agent.ts';
 import type { ChatHost } from './extension.ts';
 
 interface Pending { id: string; resolve: (value: string | boolean | undefined) => void }
@@ -20,7 +20,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   readonly chat: string;
   readonly cwd: string;
   readonly call: ServerCall;
-  readonly #agent: HomeAgent;
+  readonly #open: OpenStore;
   #store?: ChatStore;
   closed = false;
   question: Question | null = null;
@@ -39,9 +39,9 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   #texts = new Map<number, string>();
   #sent = new Map<number, number>();
 
-  constructor(agent: HomeAgent, directory: string, call: ServerCall) {
+  constructor(open: OpenStore, directory: string, call: ServerCall) {
     super();
-    this.#agent = agent;
+    this.#open = open;
     this.directory = directory;
     this.chat = basename(directory);
     this.cwd = join(directory, 'work');
@@ -53,7 +53,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     this.#opening = (async () => {
       await mkdir(join(this.cwd, 'uploads'), {recursive: true, mode: 0o700});
       // Its tools reach this worker only for the conversation it is on.
-      return this.#agent.open(this.directory, id => !this.closed && id === this.#conversation?.id ? this : undefined);
+      return this.#open(this.directory, id => !this.closed && id === this.#conversation?.id ? this : undefined);
     })();
     const store = this.#store = await this.#opening;
     // Stopped while the file opened; stop() closes it.
