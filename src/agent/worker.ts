@@ -233,8 +233,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
       this.emit('failure', reason);
     }
     // A file still opening is closed once it is open.
-    const store = this.#store ? Promise.resolve(this.#store) : this.#opening;
-    return this.#stopped = store?.then(opened => opened.close(this.#conversation), () => {}) ?? Promise.resolve();
+    return this.#stopped = this.#opening?.then(opened => opened.close(this.#conversation), () => {}) ?? Promise.resolve();
   }
 
   #require(): Conversation {
