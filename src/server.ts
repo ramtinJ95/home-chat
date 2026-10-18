@@ -15,7 +15,7 @@ import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
 import { createPush } from './push.ts';
 import { MAX_QUERY, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
-import { ATTACHED_NOTE, DOCUMENT_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, IMAGE_DIRECTORY, IMAGE_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -492,10 +492,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     const cwd = workDir(chat);
     const found: StoredAsset[] = [];
     const known = (path: string) => chat.assets.some(asset => asset.path === path);
-    const images = join(cwd, '.pi/openai-codex-images');
+    const images = join(cwd, IMAGE_DIRECTORY);
     for (const file of await filesIn(images)) {
       const path = join(images, file);
-      if (!/^ig_[0-9a-f]{32}(?:_\d+)?\.png$/.test(file) || known(path)) continue;
+      if (!IMAGE_FILE.test(file) || known(path)) continue;
       await allowedImagePath(path, cwd);
       found.push({id: randomUUID(), path});
     }

@@ -3,11 +3,11 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type { ImageContent, MutableModels } from '@earendil-works/pi-ai';
 import { Type, type Static } from 'typebox';
-import { allowedImagePath } from '../../policy.ts';
+import { IMAGE_DIRECTORY, allowedImagePath } from '../../policy.ts';
 import { codexPost } from '../codex.ts';
 
 // Codex image generation and editing, as @howaboua/pi-codex-imagegen did it from the Pi CLI: the same schema, request
-// and file names (src/server.ts collectGenerated picks the files up when the turn ends).
+// and file names (IMAGE_FILE; src/server.ts collectGenerated picks the files up when the turn ends).
 export const description = 'Generate/edit images; omit selectors to generate';
 
 export const parameters = Type.Object({
@@ -16,8 +16,6 @@ export const parameters = Type.Object({
   referenced_image_paths: Type.Optional(Type.Union([Type.Array(Type.String(), {description: 'Local edit targets', maxItems: 5}), Type.Null()])),
   num_last_images_to_include: Type.Optional(Type.Union([Type.Integer({description: 'Smallest recent edit count', minimum: 1, maximum: 5}), Type.Null()])),
 }, {additionalProperties: false});
-
-export const IMAGE_DIRECTORY = '.pi/openai-codex-images';
 
 // `recent(n)`: the conversation's newest n images, oldest first, or fewer when it has fewer.
 export async function imagegen(models: MutableModels, cwd: string, turnId: string, args: Static<typeof parameters>,
