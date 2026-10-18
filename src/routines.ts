@@ -169,7 +169,8 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
     if (!routine) throw new RoutineError('No routine with that id; list the routines first');
     return routine;
   };
-  // Every change is saved before it counts, and re-arms the timer.
+  // A change takes effect in memory first, then is saved and re-arms the timer. A failed save rejects to the caller, but
+  // the change stays in effect: it goes out with the next save, and reaches the timer at the next re-arm.
   const commit = async () => { await save(); arm(); };
 
   return {
