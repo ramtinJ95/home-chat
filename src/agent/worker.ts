@@ -69,8 +69,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     // A storage failure ends the Harness and its event streams without ending the turn's submission.
     void stream.closed.then(end => {
       if (this.#stream !== stream || !this.#active) return;
-      this.#active = false; this.#submission = undefined;
-      this.#dismiss();
+      this.#endTurn();
       this.emit('failure', end.reason === 'session_failed' ? 'Home Chat could not save the conversation' : 'The reply stopped before it finished');
     });
   }
@@ -120,12 +119,16 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
 
   #finish(record: SubmissionRecord) {
     if (!this.#active || record.id !== this.#submission) return;
-    this.#active = false; this.#submission = undefined; this.#ended.clear();
-    this.#dismiss();
+    this.#endTurn(); this.#ended.clear();
     // Stopped from the app: the turn ends with what it has, as it did with the Pi CLI.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
     else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
+  }
+
+  #endTurn() {
+    this.#active = false; this.#submission = undefined;
+    this.#dismiss();
   }
 
   async prompt(message: string, images: PromptImage[] = [], mode: TurnMode = {}): Promise<void> {
@@ -231,7 +234,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     this.#dismiss();
     void this.#stream?.stop();
     if (this.#active) {
-      this.#active = false; this.#submission = undefined;
+      this.#endTurn();
       this.emit('failure', reason);
     }
     // A file still opening is closed once it is open.
