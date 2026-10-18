@@ -9,7 +9,7 @@ import type { ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
 import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
-import { PiRejected, providerFailure, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
+import { PiRejected, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
 import { context, type ChatStore, type HomeAgent } from './agent.ts';
 import type { ChatHost } from './extension.ts';
 
@@ -240,4 +240,14 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     if (!this.#conversation || this.closed) throw new Error('The conversation is not open');
     return this.#conversation;
   }
+}
+
+function providerFailure(value: unknown): string {
+  const text = String(value ?? '');
+  const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
+  if (code) return `Subscription login needs refreshing (${code[0]})`;
+  if (/\b429\b|quota|rate.limit/i.test(text)) return 'Subscription usage limit reached; try again after the provider limit resets';
+  const status = text.match(/\b(?:401|403|502|503)\b/);
+  if (status) return `Provider request failed (HTTP ${status[0]})`;
+  return 'The model request failed. Check subscription login, quota and provider availability.';
 }
