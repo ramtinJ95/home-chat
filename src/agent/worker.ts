@@ -112,8 +112,10 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     content.forEach((block, index) => { if (block.type === 'text') this.#text(index, block.text); });
   }
 
-  // Sends what is new in text block `index`.
+  // Sends what is new in text block `index`. A delta listener may end the turn, as the size limit does, while one event
+  // still has blocks to go; nothing is sent after that.
   #text(index: number, text: string) {
+    if (!this.#active) return;
     this.#texts.set(index, text);
     const sent = this.#sent.get(index) ?? 0;
     if (text.length <= sent) return;

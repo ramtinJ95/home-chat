@@ -5,13 +5,13 @@ import { once } from 'node:events';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall, type AssistantMessage, type Message, type SystemMessage } from '@earendil-works/pi-ai';
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type AssistantMessage, type Message, type SystemMessage } from '@earendil-works/pi-ai';
 import type { Question } from '../src/api.d.ts';
 import { createAgent } from '../src/agent/agent.ts';
 import type { DurableWorker } from '../src/agent/worker.ts';
 import { ALLOWED_TOOLS, type ServerCall, type TurnMode } from '../src/policy.ts';
 import { createMemory } from '../src/memory.ts';
-import { tempDir, withEnv } from './helpers.ts';
+import { tempDir, until, withEnv } from './helpers.ts';
 
 type Reply = AssistantMessage | ((messages: Message[]) => AssistantMessage);
 
@@ -240,6 +240,18 @@ test('a stopped reply settles, a provider failure fails the turn, and a stopped 
   const next = await f.worker();
   f.reply([fauxAssistantMessage('Back.')]);
   assert.equal(await turn(next, 'Hello again'), 'Back.');
+});
+
+test('a reply stopped from a delta, as the response size limit does, sends no text after it fails', async t => {
+  const f = await fixture(t);
+  const worker = await f.worker();
+  f.reply([fauxAssistantMessage([fauxText('First block.'), fauxText('Second block.')])]);
+  const events: string[] = [];
+  worker.on('delta', text => { events.push(`delta ${text}`); void worker.stop('Response size limit reached'); });
+  worker.on('failure', message => events.push(`failure ${message}`));
+  await worker.prompt('Write a lot');
+  await until(() => events.some(event => event.startsWith('failure')), 'the turn failed');
+  assert.deepEqual(events, ['delta First block.', 'failure Response size limit reached']);
 });
 
 test('a provider error is read as its text, so a status on a line of its own still counts', async t => {
