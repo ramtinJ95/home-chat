@@ -87,14 +87,14 @@ Deploy:
       `check-network`). Init now has `KILL`, so a stop reaches the server (a fix main needs too). Docker on home-macmini
       kills a container 1 s after SIGTERM unless told otherwise (source unknown), so compose sets 10 s; a stop while a
       reply runs or a question waits then exits cleanly in about 3.4 s. Open: pids and memory.
-- [x] `check-network`, `check-runtime`, `check-live` and `check-browser` pass against the branch (live, headless).
+- [x] `check-network`, `check-runtime` and `check-browser` pass against the branch (live, headless).
 - [x] The Pi CLI path is gone before the switch-over, in the same PR (chosen 2026-10-17): `PiWorker`, the internal
       socket and its tokens, `profile/` apart from `instructions.md`, pi-coding-agent and the `@howaboua/*` add-ons.
 
 ## Status
 
 2026-10-17: the agent is in `src/agent/` and is the server's default worker on this branch. Ticked items have faux-model
-tests in `test/agent.test.ts` or are covered by the existing server tests. `check-runtime` and `check-live` run the durable agent, and `login-codex` uses pi-ai's login, writing the same
+tests in `test/agent.test.ts` or are covered by the existing server tests. `check-runtime` runs the durable agent, and `login-codex` uses pi-ai's login, writing the same
 `auth.json`.
 
 2026-10-17, live on home-macmini (local mode, the real volume, then main restored): the check scripts, the container

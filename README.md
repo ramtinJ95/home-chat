@@ -252,7 +252,6 @@ Checks against the running stack:
 ```sh
 docker compose exec -T --user 10001:10001 app node scripts/check-runtime.ts  # no capabilities, SQLite opens on /data, only the eight tools, Codex signed in
 docker compose exec -T --user 10001:10001 app node scripts/check-network.ts  # direct egress denied, proxy allowlist holds
-docker compose exec -T --user 10001:10001 app node scripts/check-live.ts     # one real model reply through Pi Durable; uses quota
 node scripts/check-browser.ts                                               # Chrome: login, upload, layout (no inference)
 node scripts/check-browser-live.ts --confirm-subscription-usage             # end-to-end; uses quota and generates one image
 ```
