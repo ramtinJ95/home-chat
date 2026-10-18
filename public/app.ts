@@ -62,22 +62,18 @@ const ui = {
   readerBody: $('#reader-body'),
   aboutEntry: $('#about-entry'),
   about: $('#about'),
-  aboutClose: $<HTMLButtonElement>('#about-close'),
   aboutForm: $<HTMLFormElement>('#about-form'),
   aboutMine: $<HTMLTextAreaElement>('#about-mine'),
   aboutShared: $<HTMLTextAreaElement>('#about-shared'),
   routinesEntry: $('#routines-entry'),
   routinesPage: $('#routines-page'),
-  routinesClose: $<HTMLButtonElement>('#routines-close'),
   routineCards: $('#routine-cards'),
   todosEntry: $('#todos-entry'),
   libraryEntry: $('#library-entry'),
   libraryPage: $('#library-page'),
-  libraryClose: $<HTMLButtonElement>('#library-close'),
   libraryLede: $('#library-lede'),
   libraryCards: $('#library-cards'),
   todosPage: $('#todos-page'),
-  todosClose: $<HTMLButtonElement>('#todos-close'),
   todoNew: $<HTMLFormElement>('#todo-new'),
   todoNewTitle: $<HTMLInputElement>('#todo-new-title'),
   todoNewShared: $<HTMLInputElement>('#todo-new-shared'),
@@ -578,13 +574,13 @@ function documentCard(snapshot: ChatSnapshot, info: DocumentInfo): HTMLElement {
   return card;
 }
 
-// The reader covers the conversation and takes one history entry, so a phone's back gesture closes it.
-// Full-screen pages over the conversation: the reader and About us. One shows at a time, and Back closes it like a page.
-// `opener` gets the focus back when the last page closes; `from`, what opened a page over its `parent`, when it closes
-// back to that one.
+// Full-screen pages over the conversation: the reader, About us, Routines, Todos and the Library. One shows at a time
+// and takes one history entry, so Back, and a phone's back gesture, close it. A page opens with the focus on its Back
+// button. `opener` gets the focus back when the last page closes; `from`, what opened a page over its `parent`, when it
+// closes back to that one.
 let sheet: {node: HTMLElement; opener?: HTMLElement; parent?: HTMLElement; from?: HTMLElement} | undefined;
 const sheetInHistory = () => (history.state as {sheet?: boolean} | null)?.sheet === true;
-function showSheet(node: HTMLElement, focus: HTMLElement, parent?: HTMLElement) {
+function showSheet(node: HTMLElement, parent?: HTMLElement) {
   const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const opener = sheet?.opener ?? focused;
   if (sheet && sheet.node !== node) sheet.node.hidden = true;
@@ -594,7 +590,7 @@ function showSheet(node: HTMLElement, focus: HTMLElement, parent?: HTMLElement) 
   ui.workspace.inert = true;
   node.scrollTop = 0;
   if (!sheetInHistory()) history.pushState({sheet: true}, '');
-  focus.focus();
+  node.querySelector<HTMLElement>('.reader-bar > button')!.focus();
 }
 
 function hideSheet() {
@@ -647,7 +643,7 @@ async function openReader(url: string, {share, parent}: {share?: () => Promise<v
   ui.readerLibrary.hidden = !share;
   ui.readerLibrary.textContent = `Share with ${otherName()}`;
   ui.readerLibrary.onclick = share ? () => share().catch(showError) : null;
-  showSheet(ui.reader, ui.readerClose, parent);
+  showSheet(ui.reader, parent);
 }
 
 // About us: the household notes, one per line, as the server last saved them (`aboutSaved`).
@@ -669,7 +665,7 @@ function fillAbout(view: MemoryView, keepEdits = false) {
 async function openAbout() {
   fillAbout(await api<MemoryView>('/api/memory'));
   setDrawer(false);
-  showSheet(ui.about, ui.aboutClose);
+  showSheet(ui.about);
 }
 
 // Routines: every routine as a card, to switch, edit, open or delete. One card at a time turns into its edit form,
@@ -687,7 +683,7 @@ async function openRoutines(edit?: string) {
   routineEdit = undefined;
   renderRoutineCards(await api<RoutineSummary[]>('/api/routines'));
   setDrawer(false);
-  showSheet(ui.routinesPage, ui.routinesClose);
+  showSheet(ui.routinesPage);
   const routine = routineList.find(item => item.id === edit);
   if (routine) editRoutine(routine);
 }
@@ -832,14 +828,14 @@ const todoPath = (list: TodoList) => `/api/todos/${encodeURIComponent(list.id)}`
 async function openTodos() {
   await refreshTodos();
   setDrawer(false);
-  showSheet(ui.todosPage, ui.todosClose);
+  showSheet(ui.todosPage);
 }
 
 // The Library: copies of documents and pictures shared on their own, for both people. Opening it marks what the other
 // person shared as seen, which clears the dot on its sidebar entry.
 async function openLibrary() {
   setDrawer(false);
-  showSheet(ui.libraryPage, ui.libraryClose);
+  showSheet(ui.libraryPage);
   await refreshLibrary();
 }
 
@@ -1676,13 +1672,9 @@ ui.imageInput.onchange = async () => {
   } catch (error) { showError(error); }
 };
 
-ui.readerClose.onclick = closeSheet;
-ui.aboutClose.onclick = closeSheet;
-ui.routinesClose.onclick = closeSheet;
-ui.todosClose.onclick = closeSheet;
+for (const back of document.querySelectorAll<HTMLButtonElement>('.reader-bar > button')) back.onclick = closeSheet;
 ui.todosEntry.replaceChildren(actionButton('check', 'Todos', openTodos));
 renderLibraryEntry(false);
-ui.libraryClose.onclick = closeSheet;
 ui.todoNew.onsubmit = async event => {
   event.preventDefault();
   try {
