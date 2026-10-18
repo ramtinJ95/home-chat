@@ -35,19 +35,22 @@ export async function createMemory(path: string) {
   // Every change counts up the version, which the settings page's save checks.
   const change = (apply: (next: Saved) => void) => store.change(next => { apply(next); next.version++; });
   const mine = (state: Saved, user: User) => state.people[user] ?? [];
-  // Checks a change from the model without making it, so the user is only asked about one that can be saved.
+  // Checks a change from the model without making it, so the user is only asked about one that can be saved. Returns the
+  // note, the list it goes in and the note it replaces.
   const verify = (state: Saved, user: User, input: ModelChange) => {
     const text = note(input.text);
     const list = input.shared === true ? state.shared : mine(state, user);
     if (input.action === 'forget') {
       if (!mine(state, user).includes(text) && !state.shared.includes(text)) throw new MemoryError('There is no such note; copy it exactly as written');
-      return;
+      return {text, list};
     }
     if (input.action !== 'remember') throw new MemoryError('action must be remember or forget');
-    if (input.replaces !== undefined && !list.includes(note(input.replaces))) throw new MemoryError('The note to replace was not found; copy it exactly as written');
-    if (input.replaces === undefined && !list.includes(text) && list.length >= MAX_NOTES) {
+    const replaces = input.replaces === undefined ? undefined : note(input.replaces);
+    if (replaces !== undefined && !list.includes(replaces)) throw new MemoryError('The note to replace was not found; copy it exactly as written');
+    if (replaces === undefined && !list.includes(text) && list.length >= MAX_NOTES) {
       throw new MemoryError(`There are already ${MAX_NOTES} notes; the user can tidy them under About us`);
     }
+    return {text, list, replaces};
   };
 
   return {
@@ -60,20 +63,18 @@ export async function createMemory(path: string) {
         state.people[user] = next.mine; state.shared = next.shared;
       });
     },
-    check: (user: User, input: ModelChange) => verify(saved(), user, input),
+    check: (user: User, input: ModelChange) => { verify(saved(), user, input); },
     async apply(user: User, input: ModelChange) {
       await change(state => {
-        verify(state, user, input);
-        const text = note(input.text);
+        const {text, list, replaces} = verify(state, user, input);
         if (input.action === 'forget') {
           state.people[user] = mine(state, user).filter(item => item !== text);
           state.shared = state.shared.filter(item => item !== text);
           return;
         }
-        const list = input.shared === true ? state.shared : mine(state, user);
         // A replacement takes the old note's place; a new note goes last, and one already there stays where it is.
-        const next = input.replaces === undefined ? (list.includes(text) ? list : [...list, text])
-          : [...new Set(list.map(item => item === note(input.replaces) ? text : item))];
+        const next = replaces === undefined ? (list.includes(text) ? list : [...list, text])
+          : [...new Set(list.map(item => item === replaces ? text : item))];
         if (input.shared === true) state.shared = next; else state.people[user] = next;
       });
     },
