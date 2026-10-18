@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync, type KeyObject } from 'node:crypto';
+import { generateKeyPairSync } from 'node:crypto';
 import { encode, signedToken } from './helpers.ts';
 import { AccessDenied, accessConfigFromEnv, createAccessVerifier, type AccessConfig } from '../src/access.ts';
 
@@ -16,8 +16,6 @@ function keyPair(kid: string) {
   return {kid, privateKey, jwk: {...publicKey.export({format: 'jwk'}), kid, alg: 'RS256'}};
 }
 
-const token = (privateKey: KeyObject, claims: Record<string, unknown>, header: Record<string, unknown>) => signedToken(privateKey, header, claims);
-
 const now = () => Math.floor(Date.now() / 1000);
 const validClaims = (overrides: Record<string, unknown> = {}) => ({
   iss: 'https://home.cloudflareaccess.com', aud: ['aud-tag'], email: 'Owner@Example.test', exp: now() + 600, iat: now(), ...overrides,
@@ -26,10 +24,10 @@ const validClaims = (overrides: Record<string, unknown> = {}) => ({
 test('valid Cloudflare Access tokens map the verified email to its account', async () => {
   const current = keyPair('k1');
   const verify = createAccessVerifier(config, async () => [current.jwk]);
-  const identity = await verify(token(current.privateKey, validClaims(), {alg: 'RS256', kid: 'k1'}));
+  const identity = await verify(signedToken(current.privateKey, {alg: 'RS256', kid: 'k1'}, validClaims()));
   assert.equal(identity.user, 'owner');
   assert.equal(identity.email, 'owner@example.test');
-  assert.equal((await verify(token(current.privateKey, validClaims({email: 'guest@example.test', aud: 'aud-tag'}), {alg: 'RS256', kid: 'k1'}))).user, 'guest');
+  assert.equal((await verify(signedToken(current.privateKey, {alg: 'RS256', kid: 'k1'}, validClaims({email: 'guest@example.test', aud: 'aud-tag'})))).user, 'guest');
 });
 
 test('forged, foreign, expired and unlisted Access tokens are denied', async () => {
@@ -40,15 +38,15 @@ test('forged, foreign, expired and unlisted Access tokens are denied', async () 
   const denied = [
     undefined,
     'not-a-token',
-    token(attacker.privateKey, validClaims(), header),
-    token(current.privateKey, validClaims({aud: ['another-app']}), header),
-    token(current.privateKey, validClaims({iss: 'https://evil.cloudflareaccess.com'}), header),
-    token(current.privateKey, validClaims({exp: now() - 120}), header),
-    token(current.privateKey, validClaims({exp: undefined}), header),
-    token(current.privateKey, validClaims({nbf: now() + 600}), header),
-    token(current.privateKey, validClaims({email: 'stranger@example.test'}), header),
-    token(current.privateKey, validClaims(), {alg: 'HS256', kid: 'k1'}),
-    token(current.privateKey, validClaims(), {alg: 'none', kid: 'k1'}),
+    signedToken(attacker.privateKey, header, validClaims()),
+    signedToken(current.privateKey, header, validClaims({aud: ['another-app']})),
+    signedToken(current.privateKey, header, validClaims({iss: 'https://evil.cloudflareaccess.com'})),
+    signedToken(current.privateKey, header, validClaims({exp: now() - 120})),
+    signedToken(current.privateKey, header, validClaims({exp: undefined})),
+    signedToken(current.privateKey, header, validClaims({nbf: now() + 600})),
+    signedToken(current.privateKey, header, validClaims({email: 'stranger@example.test'})),
+    signedToken(current.privateKey, {alg: 'HS256', kid: 'k1'}, validClaims()),
+    signedToken(current.privateKey, {alg: 'none', kid: 'k1'}, validClaims()),
     `${encode({alg: 'RS256', kid: 'k1'})}.${encode(validClaims())}.`,
   ];
   for (const candidate of denied) await assert.rejects(() => verify(candidate), AccessDenied);
@@ -60,12 +58,12 @@ test('rotated keys are fetched by kid, but unknown kids cannot force constant re
   let published = [first.jwk];
   let fetches = 0;
   const verify = createAccessVerifier(config, async () => { fetches++; return published; });
-  await verify(token(first.privateKey, validClaims(), {alg: 'RS256', kid: 'k1'}));
+  await verify(signedToken(first.privateKey, {alg: 'RS256', kid: 'k1'}, validClaims()));
   assert.equal(fetches, 1);
   // Within a minute of the last fetch, an unseen kid is denied without asking Cloudflare again.
   published = [first.jwk, second.jwk];
-  await assert.rejects(() => verify(token(second.privateKey, validClaims(), {alg: 'RS256', kid: 'k2'})), AccessDenied);
-  await assert.rejects(() => verify(token(second.privateKey, validClaims(), {alg: 'RS256', kid: 'nope'})), AccessDenied);
+  await assert.rejects(() => verify(signedToken(second.privateKey, {alg: 'RS256', kid: 'k2'}, validClaims())), AccessDenied);
+  await assert.rejects(() => verify(signedToken(second.privateKey, {alg: 'RS256', kid: 'nope'}, validClaims())), AccessDenied);
   assert.equal(fetches, 1);
 });
 
@@ -74,7 +72,7 @@ test('Access key outages are errors, not denials, and failed fetches are throttl
   const verify = createAccessVerifier(config, async () => { fetches++; throw new Error('offline'); });
   const current = keyPair('k1');
   for (let i = 0; i < 3; i++) {
-    await assert.rejects(() => verify(token(current.privateKey, validClaims(), {alg: 'RS256', kid: 'k1'})), error => !(error instanceof AccessDenied));
+    await assert.rejects(() => verify(signedToken(current.privateKey, {alg: 'RS256', kid: 'k1'}, validClaims())), error => !(error instanceof AccessDenied));
   }
   assert.equal(fetches, 1);
 });
@@ -104,7 +102,7 @@ test('held keys survive a failed hourly refresh, and unseen kids are retried aft
     if (!published) throw new Error('offline');
     return published as never;
   });
-  const signed = (pair: ReturnType<typeof keyPair>) => token(pair.privateKey, validClaims(), {alg: 'RS256', kid: pair.kid});
+  const signed = (pair: ReturnType<typeof keyPair>) => signedToken(pair.privateKey, {alg: 'RS256', kid: pair.kid}, validClaims());
   await verify(signed(first));
   // An hour later Cloudflare is unreachable: the refresh fails, but the key already held still verifies.
   published = undefined;
