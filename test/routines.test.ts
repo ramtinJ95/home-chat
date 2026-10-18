@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { composePrompt, refusedInTurn, ROUTINE_NOTE } from '../src/policy.ts';
-import { createRoutines, cronFor, describeSchedule, nextAfter, parseSchedule, whenLabel, type Routine } from '../src/routines.ts';
+import { RoutineError, createRoutines, cronFor, describeSchedule, nextAfter, parseSchedule, whenLabel, type Routine } from '../src/routines.ts';
 
 // Due runs fire only once their next times are saved, which takes longer on a busy disk than any fixed wait allows.
 async function until(done: () => boolean) {
@@ -25,6 +25,9 @@ test('schedules become cron patterns read in Stockholm time, daylight saving inc
     {kind: 'monthly', time: '07:30', day: 31}, {kind: 'once', time: '07:30', date: '20 Oct'}, null]) {
     assert.throws(() => parseSchedule(bad), JSON.stringify(bad));
   }
+  // A one-off date the calendar does not have is refused rather than moved into the next month.
+  for (const date of ['2026-02-31', '2027-02-29', '2026-04-31']) assert.throws(() => parseSchedule({kind: 'once', time: '07:30', date}), RoutineError, date);
+  assert.deepEqual(parseSchedule({kind: 'once', time: '07:30', date: '2028-02-29'}), {kind: 'once', time: '07:30', date: '2028-02-29'});
 });
 
 test('schedules and next runs read naturally', () => {
