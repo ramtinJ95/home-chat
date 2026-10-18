@@ -648,7 +648,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // What a conversation's tools ask of the server: the household notes for the turn's instructions (routine runs
   // included), changes to routines and notes, and the todo lists, which routine runs may change too. All of them are the
   // turn's sender's. Fails with an HttpError whose message the model is shown.
-  async function serverCall(chat: Chat, path: '/routine' | '/memory' | '/todo', body?: unknown): Promise<string> {
+  async function serverCall(chat: Chat, path: Parameters<ServerCall>[0], body?: unknown): Promise<string> {
     const turn = turns.get(chat.id);
     const user = turn?.by ?? chat.owner;
     if (path === '/memory' && body === undefined) return memory.prompt(user);
