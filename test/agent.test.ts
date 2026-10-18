@@ -107,6 +107,28 @@ test('ask shows the app its questions and gives the model the answers', async ()
   } finally { await f.cleanup(); }
 });
 
+test('ask keeps Other/rephrase and Finish selection on screen: more choices than fit go back to the model', async () => {
+  const f = await fixture();
+  try {
+    const worker = await f.worker();
+    const choices = (count: number) => Array.from({length: count}, (_, index) => ({label: `Choice ${index + 1}`}));
+    const pick = (count: number) => fauxToolCall('ask', {prompts: [{title: 'Pick', multiple: true, choices: choices(count)}]});
+    f.reply([
+      fauxAssistantMessage([pick(19)], {stopReason: 'toolUse'}),
+      fauxAssistantMessage([pick(18)], {stopReason: 'toolUse'}),
+      fauxAssistantMessage('Done.'),
+    ]);
+    const asked: Question[] = [];
+    await turn(worker, 'Help me choose', {}, question => {
+      asked.push(question);
+      return question.method === 'input' ? '' : question.options.includes('Choice 1') ? 'Choice 1' : 'Finish selection';
+    });
+    assert.deepEqual(asked[0]!.options, [...choices(18).map(choice => choice.label), 'Other/rephrase', 'Finish selection']);
+    assert.match(toolResults(f.requests[1]!)[0]!, /prompts\.0\.choices/);
+    assert.equal(toolResults(f.requests[2]!).at(-1), 'Pick: Choice 1');
+  } finally { await f.cleanup(); }
+});
+
 test('a routine run cannot ask, deep research needs its mode, and a message has a tool-call limit', async () => {
   const f = await fixture();
   try {
@@ -213,6 +235,15 @@ test('a stopped reply settles, a provider failure fails the turn, and a stopped 
     const next = await f.worker();
     f.reply([fauxAssistantMessage('Back.')]);
     assert.equal(await turn(next, 'Hello again'), 'Back.');
+  } finally { await f.cleanup(); }
+});
+
+test('a provider error is read as its text, so a status on a line of its own still counts', async () => {
+  const f = await fixture();
+  try {
+    const worker = await f.worker();
+    f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'Too Many Requests\n429'})]);
+    await assert.rejects(() => turn(worker, 'Hello'), /usage limit reached/);
   } finally { await f.cleanup(); }
 });
 

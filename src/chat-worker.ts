@@ -22,15 +22,14 @@ export interface ChatWorker extends EventEmitter<WorkerEvents> {
   rewind(text: string): Promise<boolean>;
   answer(id: string, value: unknown, cancelled?: boolean): void;
   abort(): Promise<unknown>;
-  // A promise, when the worker's files stay open until it settles.
-  stop(): void | Promise<void>;
+  // A running turn fails, with `reason` when given. A promise, when the worker's files stay open until it settles.
+  stop(reason?: string): void | Promise<void>;
 }
 
 export function providerFailure(value: unknown): string {
   const text = String(value ?? '');
   const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
   if (code) return `Subscription login needs refreshing (${code[0]})`;
-  if (/already processing/i.test(text)) return 'Pi is already processing a message';
   if (/\b429\b|quota|rate.limit/i.test(text)) return 'Subscription usage limit reached; try again after the provider limit resets';
   const status = text.match(/\b(?:401|403|502|503)\b/);
   if (status) return `Provider request failed (HTTP ${status[0]})`;

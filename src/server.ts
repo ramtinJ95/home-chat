@@ -73,6 +73,8 @@ class Busy extends HttpError { constructor(message: string, status = 409) { supe
 class TurnFailed extends HttpError { constructor(message: string) { super(503, message); } }
 // Thrown by startTurn for a routine run that was paused or replaced while its worker started; drainOnce settles it.
 class StaleRun extends Error {}
+// How a reply ends when its end, or what its tools wrote, cannot be saved.
+const UNSAVED_REPLY = 'Could not persist the response';
 const MAX_CHATS = 20;
 // The times in `log` for `key` within the last `ms`, for the rate limits. Older ones are dropped from the same list,
 // so a time pushed after a wait still lands in it, however many requests read it meanwhile.
@@ -247,7 +249,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const routines = await createRoutines(join(data, 'routines.json'), (routine, scheduled, late) => {
     // A newer run of the same routine replaces one still waiting.
     for (const waiting of queue.filter(item => item.routine === routine)) dequeue(waiting);
-    if (late) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
+    // A paused routine's run goes in line however late, to be dropped there without a note.
+    if (late && routine.enabled) void skipRun({routine, scheduled}, 'Home Chat was not running at the time');
     else { queue.push({routine, scheduled}); void drainRuns(); }
   });
   const memory = await createMemory(join(data, 'memory.json'));
@@ -309,13 +312,17 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     await rm(join(chatsDirectory, chat.id), {recursive: true, force: true});
   }
 
+  // Ends the conversation's turn, failed with `error` when given. It never rejects, so nothing ends the turn a second
+  // time: a reply whose end cannot be saved fails with UNSAVED_REPLY and is saved once more, and if that fails too, the
+  // reply is on disk as running, which the next start reports, or not on disk at all.
   async function endTurn(chat: Chat, error?: string) {
     if (stopping) return;
     const turn = turns.get(chat.id);
     const {run, by = chat.owner} = turn ?? {};
     clearTimeout(turn?.deadline);
     const last = chat.messages.at(-1);
-    if (error && last?.role === 'assistant') last.error = error;
+    const reply = last?.role === 'assistant' ? last : undefined;
+    if (error && reply) reply.error = error;
     delete chat.replying;
     // Who missed the reply: a routine run's owner, and in a shared conversation the person who did not send the message.
     for (const user of USERS) {
@@ -324,7 +331,15 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     // Clients see the turn end now, but the conversation stays occupied until it is saved, so a delete cannot remove the files under the save.
     const saving: Turn = {by};
     turns.set(chat.id, saving);
-    try { await publish(chat); } finally { release(chat.id, saving); }
+    try { await publish(chat); }
+    catch {
+      if (!error) {
+        error = UNSAVED_REPLY;
+        if (reply) reply.error = error;
+        emit(chat.id, {type: 'error', message: error});
+      }
+      await publish(chat).catch(() => console.warn('Could not save a conversation'));
+    } finally { release(chat.id, saving); }
     if (run) await recordRun(run, error ? 'failed' : 'done');
     if (!watching(chat.id, by)) {
       push.notify(by, run
@@ -399,8 +414,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       if (!chat.replying) release(chat.id, turn);
     }
     if (failed) {
-      // If even this save fails, the reply is on disk as running, which the next start reports, or not on disk at all.
-      await endTurn(chat, failed).catch(() => console.warn('Could not save a conversation'));
+      await endTurn(chat, failed);
       throw new TurnFailed(failed);
     }
   }
@@ -518,12 +532,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       emit(chat.id, {type: 'error', message});
       return endTurn(chat, message);
     };
-    worker.on('failure', message => { void failTurn(message).catch(() => worker.stop()); });
+    worker.on('failure', message => { void failTurn(message); });
     let saveTimer: NodeJS.Timeout | undefined;
     worker.on('delta', text => {
       const last = chat.messages.at(-1);
       if (last?.role !== 'assistant') return;
-      if (last.text.length + text.length > 100_000) { worker.stop(); void failTurn('Response size limit reached'); return; }
+      if (last.text.length + text.length > 100_000) { worker.stop('Response size limit reached'); return; }
       last.text += text; emit(chat.id, {type: 'delta', text});
       // Streamed text is saved every few seconds so a crash loses only the last moments of a reply. A failed save here is
       // left to the turn's final save, which reports it.
@@ -541,10 +555,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     });
     worker.on('settled', () => {
       clearTimeout(turns.get(chat.id)?.deadline);
-      void (async () => {
-        await collectGenerated(chat);
-        await endTurn(chat);
-      })().catch(() => failTurn('Could not persist the response'));
+      void collectGenerated(chat).then(() => endTurn(chat), () => failTurn(UNSAVED_REPLY));
     });
     workers.set(chat.id, worker);
     try { await worker.start(); }
@@ -695,6 +706,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         const user = accessHashes.find(([, expected]) => timingSafeEqual(candidate, expected))?.[0];
         if (!user) throw fail(401, 'Invalid access code');
         loginAttempts.delete(ip);
+        // A browser stops sending a cookie once it expires, so an expired session is never presented again to be removed.
+        for (const [key, held] of sessions) if (held.expires < Date.now()) sessions.delete(key);
         if (sessions.size >= 16) throw fail(429, 'Too many sessions');
         const token = randomBytes(32).toString('base64url');
         const session = {user, csrf: randomBytes(32).toString('base64url'), expires: Date.now() + 8 * 60 * 60_000};

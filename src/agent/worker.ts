@@ -8,7 +8,7 @@ import type { Context } from '@earendil-works/chord/context';
 import type { ImageContent } from '@earendil-works/pi-ai';
 import { ConversationBusy, UserEntry, watchEvents, type AgentEvent, type AgentEventStream, type Conversation, type Cursor, type EntryRecord, type SubmissionId, type SubmissionRecord } from '@earendil-works/pi-durable';
 import type { Question } from '../api.d.ts';
-import { carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
+import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
 import { PiRejected, providerFailure, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
 import { context, type ChatStore, type HomeAgent } from './agent.ts';
 import type { ChatHost } from './extension.ts';
@@ -124,7 +124,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     this.#dismiss();
     // Stopped from the app: the turn ends with what it has, as it did with the Pi CLI.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
-    else if (record.reason === 'model_error') this.emit('failure', providerFailure(JSON.stringify(record.detail ?? '')));
+    else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
   }
 
@@ -180,7 +180,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     const id = randomUUID();
     this.question = {
       id, method: question.method, title: question.title.slice(0, 2000), message: question.message.slice(0, 4000),
-      options: question.options.slice(0, 20).map(option => option.slice(0, 1000)), prefill: question.prefill.slice(0, 4000),
+      options: question.options.slice(0, MAX_QUESTION_OPTIONS).map(option => option.slice(0, 1000)), prefill: question.prefill.slice(0, 4000),
     };
     return new Promise(resolve => {
       this.#pending = {id, resolve};
@@ -221,16 +221,16 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     await this.#conversation?.abort(context);
   }
 
-  // Ends this worker: like the Pi CLI process exiting, a running turn fails and its work is aborted. Resolves once the
-  // conversation's file is closed, so its directory can be removed.
-  stop(): Promise<void> {
+  // Ends this worker: like the Pi CLI process exiting, a running turn fails with `reason` and its work is aborted.
+  // Resolves once the conversation's file is closed, so its directory can be removed.
+  stop(reason = 'The reply was stopped before it finished'): Promise<void> {
     if (this.closed) return this.#stopped ?? Promise.resolve();
     this.closed = true;
     this.#dismiss();
     void this.#stream?.stop();
     if (this.#active) {
       this.#active = false; this.#submission = undefined;
-      this.emit('failure', 'The reply was stopped before it finished');
+      this.emit('failure', reason);
     }
     // A file still opening is closed once it is open.
     const store = this.#store ? Promise.resolve(this.#store) : this.#opening;

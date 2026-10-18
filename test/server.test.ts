@@ -26,26 +26,32 @@ class FakePi extends EventEmitter<WorkerEvents> implements ChatWorker {
   lastDeep?: boolean;
   lastMode?: TurnMode;
   async start() {}
+  // From a prompt until it settles; stopping the worker meanwhile fails the turn, as it does the real one.
+  running = false;
   // Fails the next prompt: rejected, as Pi does before it records the message, or timed out, when nobody knows.
   failNext?: 'rejected' | 'timeout';
   async prompt(text: string, _images?: unknown, mode: TurnMode = {}) {
     const failure = this.failNext; this.failNext = undefined;
     if (failure) throw failure === 'rejected' ? new PiRejected('rejected') : new Error('Pi command timed out');
+    this.running = true;
     this.lastText = text; this.lastMode = mode; this.lastDeep = mode.deepResearch === true;
     const question: Question = this.question = {id: 'question-1', method: 'select', title: 'Choose', message: '', options: ['One', 'Two'], prefill: ''};
     setTimeout(() => { this.emit('delta', 'Hello <script>bad()</script>'); this.emit('question', question); }, 10);
   }
   answer(id: string, value: unknown) {
     if (id !== this.question?.id || !this.question.options.includes(value as string)) throw new Error('Invalid answer');
-    this.question = null; this.emit('settled');
+    this.question = null; this.running = false; this.emit('settled');
   }
   // The texts regenerate and edit asked Pi to go back over.
   rewound: string[] = [];
   // What Pi reports: whether its last message carried the text.
   rewindMatches = true;
   async rewind(text: string) { this.rewound.push(text); return this.rewindMatches; }
-  async abort() { this.emit('settled'); }
-  stop() { this.closed = true; }
+  async abort() { this.running = false; this.emit('settled'); }
+  stop(reason = 'The reply was stopped before it finished') {
+    this.closed = true; this.question = null;
+    if (this.running) { this.running = false; this.emit('failure', reason); }
+  }
 }
 
 // `hold`: the body is sent only once it settles, as from a slow connection.
@@ -148,6 +154,58 @@ test('mocked Pi streaming and structured questions stay in their conversation', 
     assert.equal((await f.request(`/api/chats/${chat.id}/answer`, {method: 'POST', body: {id: 'question-1', value: 'One'}, ...owner})).status, 200);
     await delay(30);
     assert.equal((await (await f.request(`/api/chats/${chat.id}`, owner)).json()).busy, false);
+  } finally { await f.close(); }
+});
+test('a reply that grows past the size limit fails its turn once, saying why', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    // The page's stream, which ends at logout with every event it was sent.
+    const stream = f.request(`/api/chats/${chat.id}/events`, owner);
+    await delay(30);
+    assert.equal((await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Write a novel', assets: []}, ...owner})).status, 202);
+    await delay(40);
+    f.worker.emit('delta', 'x'.repeat(100_000));
+    await delay(30);
+    const state = await (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    assert.equal(state.busy, false);
+    assert.equal(state.messages[1].error, 'Response size limit reached');
+    await f.request('/api/logout', {method: 'POST', body: {}, ...owner});
+    const events = (await (await stream).text()).split('\n\n').filter(block => block.startsWith('data: ')).map(block => JSON.parse(block.slice(6)));
+    assert.deepEqual(events.filter(event => event.type === 'error'), [{type: 'error', message: 'Response size limit reached'}]);
+  } finally { await f.close(); }
+});
+test('a reply whose end cannot be saved fails once, for its sender, and the conversation takes the next message', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner'); const guest = await f.login('guest');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    assert.equal((await f.request(`/api/chats/${chat.id}/share`, {method: 'POST', body: {on: true}, ...owner})).status, 200);
+    const device = {endpoint: 'https://web.push.apple.com/guest-device', keys: pushKeys()};
+    assert.equal((await f.request('/api/push/subscriptions', {method: 'POST', body: device, ...guest})).status, 200);
+    // The owner has the conversation open; the guest, who sends the message, is not looking.
+    const stream = f.request(`/api/chats/${chat.id}/events`, owner);
+    await delay(30);
+    const send = (text: string) => f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text, assets: []}, ...guest});
+    assert.equal((await send('Plan the weekend')).status, 202);
+    await delay(40);
+    // Every save of the conversation fails until its record is put back.
+    const record = join(f.data, 'chats', chat.id, 'chat.json');
+    await rm(record); await mkdir(record);
+    const pushed = f.deliveries.length;
+    f.worker.answer('question-1', 'One');
+    await delay(60);
+    await rm(record, {recursive: true});
+    const state = await (await f.request(`/api/chats/${chat.id}`, owner)).json();
+    assert.equal(state.busy, false);
+    assert.equal(state.messages[1].error, 'Could not persist the response');
+    assert.deepEqual(f.deliveries.slice(pushed).map(delivery => delivery.endpoint), [device.endpoint]);
+    assert.equal((await (await f.request('/api/chats', guest)).json()).find((item: {id: string}) => item.id === chat.id).unread, false);
+    await f.request('/api/logout', {method: 'POST', body: {}, ...owner});
+    const events = (await (await stream).text()).split('\n\n').filter(block => block.startsWith('data: ')).map(block => JSON.parse(block.slice(6)));
+    assert.deepEqual(events.filter(event => event.type === 'error'), [{type: 'error', message: 'Could not persist the response'}]);
+    assert.equal((await send('Try again')).status, 202);
   } finally { await f.close(); }
 });
 test('documents saved during a reply are attached to it, readable, downloadable and revisable', async () => {
@@ -679,6 +737,34 @@ test('a routine paused while its run waits in line does not run', async () => {
     } finally { await restarted.app.stop(); }
   } finally { await rm(f.data, {recursive: true}); }
 });
+test('a paused routine’s run still waiting at a restart is settled without a note, even once its next time has passed', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Set up a routine', assets: []}, ...owner});
+    await delay(40);
+    await callRoutine(f.worker, {action: 'create', title: 'Briefing', prompt: 'News', schedule: {kind: 'daily', time: '07:30'}});
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    await f.app.stop();
+    // Its run came due five hours ago and waited, it was paused, and the app was down past its next time.
+    const path = join(f.data, 'routines.json');
+    const [routine] = JSON.parse(await readFile(path, 'utf8'));
+    Object.assign(routine, {enabled: false, pending: new Date(Date.now() - 5 * 60 * 60_000).toISOString(), nextRun: new Date(Date.now() - 60 * 60_000).toISOString()});
+    await writeFile(path, JSON.stringify([routine]));
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      assert.equal(restarted.worker.lastText, undefined);
+      const [after] = JSON.parse(await readFile(path, 'utf8'));
+      assert.equal(after.pending, undefined);
+      assert.equal(after.lastRun.outcome, 'skipped');
+      const again = await restarted.login('owner');
+      assert.deepEqual((await (await restarted.request(`/api/chats/${routine.chat}`, again)).json()).messages, []);
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
 test('the last turn can be regenerated or edited and sent again, and only the last turn', async () => {
   const f = await fixture();
   try {
@@ -821,6 +907,46 @@ test('a routine run that cannot be recorded as started does not start, so a rest
     assert.equal(state.busy, false);
   } finally { await app.close(); }
 });
+test('a routine run whose reply cannot be saved is recorded as failed', async () => {
+  const f = await fixture();
+  try {
+    const owner = await f.login('owner');
+    const chat = await (await f.request('/api/chats', {method: 'POST', body: {}, ...owner})).json();
+    await f.request(`/api/chats/${chat.id}/messages`, {method: 'POST', body: {text: 'Set up a routine', assets: []}, ...owner});
+    await delay(40);
+    await callRoutine(f.worker, {action: 'create', title: 'Briefing', prompt: 'News', schedule: {kind: 'daily', time: '07:30'}});
+    f.worker.answer('question-1', 'One');
+    await delay(30);
+    await f.app.stop();
+    // Due a minute ago, so it runs at the next start.
+    const path = join(f.data, 'routines.json');
+    const [routine] = JSON.parse(await readFile(path, 'utf8'));
+    routine.nextRun = new Date(Date.now() - 60_000).toISOString();
+    await writeFile(path, JSON.stringify([routine]));
+    const restarted = await fixture(true, {data: f.data});
+    try {
+      await delay(60);
+      assert.equal(restarted.worker.lastText, 'News');
+      // Every save of its conversation fails until the record is put back.
+      const record = join(f.data, 'chats', routine.chat, 'chat.json');
+      await rm(record); await mkdir(record);
+      restarted.worker.answer('question-1', 'One');
+      await delay(60);
+      await rm(record, {recursive: true});
+      const again = await restarted.login('owner');
+      const [summary] = await (await restarted.request('/api/routines', again)).json();
+      assert.equal(summary.lastRun.outcome, 'failed');
+      const state = await (await restarted.request(`/api/chats/${routine.chat}`, again)).json();
+      assert.equal(state.busy, false);
+      assert.equal(state.messages[1].error, 'Could not persist the response');
+      // Opening it marks it read, and that save must land before the data is removed.
+      for (let tries = 0; !await readFile(record, 'utf8').then(() => true, () => false); tries++) {
+        assert.ok(tries < 100, 'the conversation is saved once it is read');
+        await delay(10);
+      }
+    } finally { await restarted.app.stop(); }
+  } finally { await rm(f.data, {recursive: true}); }
+});
 test('unconfigured Codex never falls back to API billing or fabricated replies', async () => {
   const f = await fixture(false);
   try {
@@ -835,6 +961,22 @@ test('local access-code guessing is rate limited', async () => {
   try {
     for (let i = 0; i < 5; i++) assert.equal((await f.request('/api/login', {method: 'POST', body: {code: 'wrong'}})).status, 401);
     assert.equal((await f.request('/api/login', {method: 'POST', body: {code: 'wrong'}})).status, 429);
+  } finally { await f.close(); }
+});
+test('sign-ins that expired stop counting toward the limit on open sessions', async t => {
+  const f = await fixture();
+  try {
+    t.mock.timers.enable({apis: ['Date'], now: Date.now()});
+    const codes: Record<User, string> = JSON.parse(await readFile(join(f.data, 'local-access.json'), 'utf8'));
+    const signIn = () => f.request('/api/login', {method: 'POST', body: {code: codes.owner}});
+    for (let i = 0; i < 16; i++) assert.equal((await signIn()).status, 200);
+    assert.equal((await signIn()).status, 429);
+    // Eight hours on, every one of them has expired, and the browsers that held them no longer send their cookies.
+    t.mock.timers.tick(8 * 60 * 60_000 + 1);
+    const again = await signIn();
+    assert.equal(again.status, 200);
+    const cookie = (again.headers.get('set-cookie') ?? '').split(';')[0];
+    assert.equal((await f.request('/api/me', {cookie})).status, 200);
   } finally { await f.close(); }
 });
 

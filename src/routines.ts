@@ -66,7 +66,10 @@ export function parseSchedule(value: unknown): RoutineSchedule {
     }
     case 'once': {
       const date = input.date;
-      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))) throw new RoutineError('schedule.date must be YYYY-MM-DD');
+      // Date.parse rolls a day the month does not have over into the next one (2026-02-31 is 3 March), so a real date is
+      // one that reads back the same.
+      if (typeof date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(date) || Number.isNaN(Date.parse(date))
+        || new Date(date).toISOString().slice(0, 10) !== date) throw new RoutineError('schedule.date must be a real date, YYYY-MM-DD');
       return {kind: 'once', time, date};
     }
     default: throw new RoutineError('schedule.kind must be daily, weekdays, weekly, monthly or once');
@@ -177,7 +180,9 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       const interrupted = routines.filter(routine => routine.lastRun?.outcome === 'running');
       for (const routine of interrupted) routine.lastRun = {...routine.lastRun!, outcome: 'failed'};
       if (interrupted.length) save().catch(() => console.warn('Could not save routines'));
-      for (const routine of routines.filter(item => item.pending && !(item.nextRun && Date.parse(item.nextRun) <= now))) {
+      // One that is due again gets a newer run from fire(), which replaces the waiting one; fire() passes over a paused
+      // one, whose waiting run the server then settles.
+      for (const routine of routines.filter(item => item.pending && !(item.enabled && item.nextRun && Date.parse(item.nextRun) <= now))) {
         const scheduled = new Date(routine.pending!);
         due(routine, scheduled, now - scheduled.getTime() > MISSED_GRACE_MS);
       }
