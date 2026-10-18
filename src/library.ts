@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { mkdir, readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Library, LibraryContent, LibraryItem, User } from './api.d.ts';
-import { atomicJson, readJson, syncedFile } from './files.ts';
+import { jsonStore, syncedFile } from './files.ts';
 import { whenLabel } from './routines.ts';
 
 // The Library, in library.json with the copies under library/. Every item is a copy, so it outlives the conversation
@@ -21,24 +21,12 @@ export async function createLibrary(data: string) {
   const path = join(data, 'library.json');
   const files = join(data, 'library');
   await mkdir(files, {recursive: true, mode: 0o700});
-  let saved = await readJson<Saved>(path) ?? {items: [], seen: {}};
+  const {saved, change} = await jsonStore<Saved>(path, {items: [], seen: {}});
   // Left by a share or removal the app stopped in the middle of.
-  const named = new Set(saved.items.map(item => item.file));
+  const named = new Set(saved().items.map(item => item.file));
   for (const file of await readdir(files)) if (!named.has(file)) await rm(join(files, file), {force: true});
   // A copy the list no longer names: the change is saved, and a file left behind goes at the next start.
   const discard = (file: string) => rm(join(files, file), {force: true}).catch(() => console.warn('Could not remove a Library file'));
-  let changing: Promise<unknown> = Promise.resolve();
-  const change = <T>(apply: (next: Saved) => T): Promise<T> => {
-    const run = changing.catch(() => {}).then(async () => {
-      const next: Saved = structuredClone(saved);
-      const result = apply(next);
-      await atomicJson(path, next);
-      saved = next;
-      return result;
-    });
-    changing = run;
-    return run;
-  };
   const view = ({owner, at, source: _source, file: _file, ...item}: StoredItem, user: User): LibraryItem =>
     ({...item, by: owner, mine: owner === user, when: whenLabel(new Date(at))});
   const find = (state: Saved, id: string) => {
@@ -47,8 +35,10 @@ export async function createLibrary(data: string) {
     return item;
   };
 
-  const library = (user: User): Library => ({items: saved.items.map(item => view(item, user)),
-    unseen: saved.items.some(item => item.owner !== user && item.at > (saved.seen[user] ?? ''))});
+  const library = (user: User): Library => {
+    const {items, seen} = saved();
+    return {items: items.map(item => view(item, user)), unseen: items.some(item => item.owner !== user && item.at > (seen[user] ?? ''))};
+  };
 
   return {
     view: library,
@@ -58,7 +48,7 @@ export async function createLibrary(data: string) {
       return library(user);
     },
     // The copy's file and how it shows on the page.
-    get: (user: User, id: string) => { const item = find(saved, id); return {item: view(item, user), path: join(files, item.file)}; },
+    get: (user: User, id: string) => { const item = find(saved(), id); return {item: view(item, user), path: join(files, item.file)}; },
     // Shared again by the same person from the same source, the item moves to the top with the new copy. `allowed`
     // throws if the sharer may no longer share it; it runs in the change itself, after every wait.
     async share(user: User, source: string, content: LibraryContent, bytes: Buffer | string, allowed: () => void): Promise<LibraryItem> {

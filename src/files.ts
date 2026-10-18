@@ -30,6 +30,25 @@ export async function readJson<T>(path: string): Promise<T | undefined> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
 }
 
+// A JSON file held in memory as `saved()`, or `empty` while the file does not exist yet. Changes run one at a time, each
+// on the state the one before it left; a change counts once it is saved.
+export async function jsonStore<S>(path: string, empty: S) {
+  let saved = await readJson<S>(path) ?? empty;
+  let changing: Promise<unknown> = Promise.resolve();
+  const change = <T>(apply: (next: S) => T): Promise<T> => {
+    const run = changing.catch(() => {}).then(async () => {
+      const next = structuredClone(saved);
+      const result = apply(next);
+      await atomicJson(path, next);
+      saved = next;
+      return result;
+    });
+    changing = run;
+    return run;
+  };
+  return {saved: () => saved, change};
+}
+
 // Saves of one file run one at a time, so a slow earlier save never replaces a newer one. A save asked for while another
 // is still waiting joins it, since that one writes `value()` as it is when its turn comes; callers that joined share
 // its outcome, failure included. A failed save only fails its own callers: the next one still runs.
