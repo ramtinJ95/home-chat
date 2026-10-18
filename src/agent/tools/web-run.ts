@@ -23,7 +23,7 @@ export const parameters = Type.Object({
 export async function webRun(models: MutableModels, id: string, args: Static<typeof parameters>, signal?: AbortSignal) {
   const {settings, ...commands} = args;
   const result = await codexPost(models, '/alpha/search', {
-    id, model: process.env.PI_CODEX_MODEL ?? 'gpt-6-luna', commands,
+    id, model: 'gpt-6-luna', commands,
     settings: {...settings, allowed_callers: ['direct'], external_web_access: true}, max_output_tokens: 2_500,
   }, signal) as Record<string, unknown> | null;
   const text = typeof result?.output_text === 'string' ? result.output_text : typeof result?.output === 'string' ? result.output : undefined;
