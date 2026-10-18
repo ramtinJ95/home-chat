@@ -40,7 +40,7 @@ const ui = {
   cancelEdit: $<HTMLButtonElement>('#cancel-edit'),
   composer: $<HTMLFormElement>('#composer'),
   privacy: $('#privacy'),
-  message: $<HTMLTextAreaElement>('#message'),
+  draft: $<HTMLTextAreaElement>('#message'),
   attachments: $('#attachments'),
   imageInput: $<HTMLInputElement>('#image-input'),
   dictate: $<HTMLButtonElement>('#dictate'),
@@ -49,7 +49,7 @@ const ui = {
   send: $<HTMLButtonElement>('#send'),
   install: $('#install'),
   notifications: $('#notifications'),
-  error: $('#error'),
+  toast: $('#error'),
   reader: $('#reader'),
   readerClose: $<HTMLButtonElement>('#reader-close'),
   readerCopy: $<HTMLButtonElement>('#reader-copy'),
@@ -151,18 +151,18 @@ let attachments: Attachment[] = [];
 // The assistant reply currently receiving deltas; re-rendered at most every STREAM_RENDER_MS.
 let streaming: {node: HTMLElement; text: string; timer?: number} | undefined;
 let activeQuestionId: string | undefined;
-let errorTimer: number | undefined;
+let toastTimer: number | undefined;
 let dictation: Recognition | undefined;
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
 let following = true;
 
 // One toast, for failures and, styled as `info`, for confirmations.
 function toast(text: string, info: boolean) {
-  ui.error.textContent = text;
-  ui.error.classList.toggle('info', info);
-  ui.error.hidden = false;
-  clearTimeout(errorTimer);
-  errorTimer = window.setTimeout(() => { ui.error.hidden = true; }, 8000);
+  ui.toast.textContent = text;
+  ui.toast.classList.toggle('info', info);
+  ui.toast.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => { ui.toast.hidden = true; }, 8000);
 }
 const showError = (error: unknown) => toast(error instanceof Error ? error.message : String(error), false);
 const showNotice = (text: string) => toast(text, true);
@@ -193,7 +193,7 @@ async function api<T>(path: string, method = 'GET', body?: unknown, signal?: Abo
   return result as T;
 }
 
-// Buttons made here never submit a form; the composer's send button is the one that does, in index.html.
+// Buttons made here do not submit a form unless they are made submit buttons, like a routine form's Save.
 function element<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const node = document.createElement(tag);
   if (node instanceof HTMLButtonElement) node.type = 'button';
@@ -348,7 +348,7 @@ function renderEmpty(): HTMLElement {
   for (const {icon: name, title, prompt} of SUGGESTIONS) {
     const button = element('button');
     button.append(icon(name), element('strong', undefined, title), element('span', undefined, prompt));
-    button.onclick = () => { cancelDictation(); ui.message.value = prompt; resizeComposer(); ui.message.focus(); };
+    button.onclick = () => { cancelDictation(); ui.draft.value = prompt; resizeComposer(); ui.draft.focus(); };
     suggestions.append(button);
   }
   empty.append(
@@ -477,6 +477,7 @@ async function copyText(text: string) {
   try { await navigator.clipboard.writeText(text); } catch { throw new Error('Could not copy; select the text instead'); }
 }
 
+const canShare = 'share' in navigator;
 // Shared as text, which every share target takes (Messages, Mail, Notes). Closing the share sheet is no failure.
 async function shareText(data: ShareData, failure: string) {
   try { await navigator.share(data); } catch (error) { if ((error as DOMException).name !== 'AbortError') throw new Error(failure); }
@@ -495,7 +496,7 @@ function messageActions(snapshot: ChatSnapshot, message: Message, index: number)
   // A reply still streaming is not finished enough to copy.
   if (message.role === 'assistant' && message.text && !(last && snapshot.busy)) {
     bar.append(actionButton('copy', 'Copy', async button => { await copyText(message.text); button.lastChild!.textContent = 'Copied'; }));
-    if ('share' in navigator) bar.append(actionButton('share', 'Share', () => shareText({text: message.text}, 'Could not share this reply')));
+    if (canShare) bar.append(actionButton('share', 'Share', () => shareText({text: message.text}, 'Could not share this reply')));
   }
   if (canRedo(snapshot) && last) bar.append(actionButton('redo', 'Regenerate', regenerate));
   if (canRedo(snapshot) && index === snapshot.messages.length - 2) bar.append(actionButton('pencil', 'Edit', async () => startEditing()));
@@ -544,7 +545,9 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
     download.download = 'home-chat.png';
     download.append(icon('download'), 'Download');
     const actions = element('div', 'picture-actions');
-    actions.append(download, shareWithButton(() => shareAsset(snapshot.id, id)));
+    const share = actionButton('people', `Share with ${otherName()}`, () => shareAsset(snapshot.id, id));
+    share.className = 'download';
+    actions.append(download, share);
     figure.append(picture, actions);
     bubble.append(figure);
   }
@@ -618,13 +621,14 @@ function closeSheet() {
 }
 
 let readerText = '';
+const documentMeta = (version: number) => version > 1 ? `Document · version ${version}` : 'Document';
 // `share`: copies it into the Library, offered for a document in a conversation. `parent`: the page it was opened from,
 // which closing it goes back to.
 async function openReader(url: string, {share, parent}: {share?: () => Promise<void>; parent?: HTMLElement} = {}) {
   const content = await api<DocumentContent>(url);
   readerText = `# ${content.title}\n\n${content.markdown}`;
   ui.readerTitle.textContent = content.title;
-  ui.readerMeta.textContent = content.version > 1 ? `Document · version ${content.version}` : 'Document';
+  ui.readerMeta.textContent = documentMeta(content.version);
   renderMarkdown(ui.readerBody, content.markdown);
   const headings = [...ui.readerBody.querySelectorAll<HTMLElement>('h3, h4')];
   const list = element('ol');
@@ -638,6 +642,7 @@ async function openReader(url: string, {share, parent}: {share?: () => Promise<v
   ui.readerContents.querySelector('ol')?.replaceWith(list);
   ui.readerContents.open = false;
   ui.readerContents.hidden = headings.length < 2;
+  // Download gives the .md file.
   ui.readerDownload.href = url + '?download=1';
   ui.readerCopy.textContent = 'Copy';
   ui.readerClose.setAttribute('aria-label', parent === ui.libraryPage ? 'Back to the Library' : 'Back to the conversation');
@@ -677,6 +682,7 @@ const WEEK: [Weekday, string][] = [['mon', 'Mon'], ['tue', 'Tue'], ['wed', 'Wed'
 const OUTCOMES = {running: 'running now', done: 'done', failed: 'failed', skipped: 'skipped'};
 let routineList: RoutineSummary[] = [];
 let routineEdit: {id: string; form: HTMLFormElement; read: () => RoutineEdit; saved: string} | undefined;
+const routinePath = (id: string) => `/api/routines/${encodeURIComponent(id)}`;
 const nextRun = (routine: RoutineSummary) => routine.next === 'Paused' || routine.next === 'Done' ? routine.next : `Next run: ${routine.next}`;
 const routineEdited = () => sheet?.node === ui.routinesPage && routineEdit !== undefined && JSON.stringify(routineEdit.read()) !== routineEdit.saved;
 
@@ -802,7 +808,7 @@ function editRoutine(routine: RoutineSummary) {
     if (edit.rule?.kind === 'weekly' && !edit.rule.days.length) return showError(new Error('Pick at least one day'));
     save.disabled = true;
     try {
-      const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(routine.id)}`, 'PATCH', edit);
+      const changed = await api<RoutineSummary>(routinePath(routine.id), 'PATCH', edit);
       // The form closes, unless another one was opened meanwhile, or this one was changed again while saving: then
       // those changes stay, unsaved.
       if (routineEdit?.form === form) {
@@ -810,7 +816,7 @@ function editRoutine(routine: RoutineSummary) {
         if (JSON.stringify(read()) === sent) routineEdit = undefined; else routineEdit.saved = sent;
       }
       if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
-      await refreshList();
+      await refreshSidebar();
       showNotice(`Saved “${changed.title}”. ${nextRun(changed)}.`);
     } catch (error) { showError(error); }
     finally { save.disabled = false; }
@@ -846,10 +852,11 @@ let libraryRun = 0;
 async function refreshLibrary() {
   const run = ++libraryRun;
   const open = () => sheet?.node === ui.libraryPage;
-  let library = await api<Library>(open() ? '/api/library/seen' : '/api/library', open() ? 'POST' : 'GET', open() ? {} : undefined);
+  const markSeen = () => api<Library>('/api/library/seen', 'POST', {});
+  let library = await (open() ? markSeen() : api<Library>('/api/library'));
   if (run !== libraryRun) return;
   // Opened while the plain read was on its way.
-  if (open() && library.unseen) library = await api<Library>('/api/library/seen', 'POST', {});
+  if (open() && library.unseen) library = await markSeen();
   if (run !== libraryRun) return;
   renderLibraryEntry(library.unseen);
   if (open()) renderLibrary(library);
@@ -884,7 +891,7 @@ function libraryCard(item: LibraryItem): HTMLElement {
     picture.alt = item.mine ? 'A picture you shared' : `A picture ${nameOf(item.by)} shared`;
     card.append(picture);
   } else {
-    card.append(element('h2', undefined, item.title), element('p', 'routine-when', item.version > 1 ? `Document · version ${item.version}` : 'Document'));
+    card.append(element('h2', undefined, item.title), element('p', 'routine-when', documentMeta(item.version)));
   }
   card.append(element('p', 'routine-last', item.mine ? `You shared it · ${item.when}` : `From ${nameOf(item.by)} · ${item.when}`));
   const actions = element('div', 'routine-actions');
@@ -911,12 +918,6 @@ function libraryCard(item: LibraryItem): HTMLElement {
 async function shareAsset(chatId: string, assetId: string) {
   await api(`/api/chats/${chatId}/assets/${assetId}/share`, 'POST', {});
   showNotice(`Shared with ${otherName()}. It’s in the Library.`);
-}
-
-function shareWithButton(run: () => Promise<void>): HTMLButtonElement {
-  const button = actionButton('people', `Share with ${otherName()}`, run);
-  button.className = 'download';
-  return button;
 }
 
 async function refreshTodos() {
@@ -1082,7 +1083,7 @@ function renderChat(next: ChatSnapshot) {
   ui.privacy.textContent = next.shared ? 'Shared' : 'Private';
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
-  ui.message.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
+  ui.draft.placeholder = next.deepResearch ? 'What should I research?' : 'What’s on your mind?';
   renderRoutineBar(next.routine);
   setBusy(next.busy);
   ui.messages.replaceChildren(...(next.messages.length
@@ -1134,17 +1135,17 @@ function routineSwitch(routine: RoutineSummary): HTMLElement {
 }
 
 async function setRoutine(id: string, enabled: boolean): Promise<RoutineSummary> {
-  const changed = await api<RoutineSummary>(`/api/routines/${encodeURIComponent(id)}`, 'POST', {enabled});
+  const changed = await api<RoutineSummary>(routinePath(id), 'POST', {enabled});
   if (chat?.routine?.id === changed.id) renderRoutineBar(changed);
-  await refreshList();
+  await refreshSidebar();
   return changed;
 }
 
 async function deleteRoutine(routine: RoutineSummary) {
   if (!confirm(`Delete the routine “${routine.title}”? It stops running. Its conversation and past results stay.`)) return;
-  await api(`/api/routines/${routine.id}`, 'DELETE');
+  await api(routinePath(routine.id), 'DELETE');
   if (chat?.routine?.id === routine.id) renderRoutineBar(null);
-  await refreshList();
+  await refreshSidebar();
 }
 
 function renderRoutineBar(routine: RoutineSummary | null) {
@@ -1189,7 +1190,7 @@ function unreadDot(label = 'New results'): HTMLElement {
   return dot;
 }
 
-async function refreshList(): Promise<ChatSummary[]> {
+async function refreshSidebar(): Promise<ChatSummary[]> {
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
   ui.routines.hidden = !routines.length;
   ui.routineList.replaceChildren(...routines.map(routineRow));
@@ -1291,7 +1292,7 @@ async function deleteChat(item: ChatSummary) {
   const forBoth = item.shared ? `, for ${otherName()} too` : '';
   if (!confirm(`Delete “${item.title}”? Its messages and pictures will be gone for good${forBoth}.`)) return;
   await api(`/api/chats/${item.id}`, 'DELETE');
-  if (item.id === chat?.id) await openLatest(); else await refreshList();
+  if (item.id === chat?.id) await openLatest(); else await refreshSidebar();
 }
 
 async function openChat(id: string) {
@@ -1312,7 +1313,7 @@ async function connect(id: string) {
   if (attempt !== connection) return;
   renderChat(snapshot);
   // The sidebar too, which may have changed while this page was elsewhere or hidden.
-  const listed = refreshList();
+  const listed = refreshSidebar();
   if (!document.hidden) listen(id);
   await listed;
 }
@@ -1324,7 +1325,7 @@ function listen(id: string) {
     if (event.type !== 'snapshot' && event.type !== 'library') shown = '';
     switch (event.type) {
       // The stream opens with the snapshot connect just drew, which is not drawn again.
-      case 'snapshot': if (update(event.chat)) refreshList().catch(showError); break;
+      case 'snapshot': if (update(event.chat)) refreshSidebar().catch(showError); break;
       case 'delta': appendDelta(event.text); break;
       case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
@@ -1355,14 +1356,18 @@ async function orGone(id: string, task: Promise<unknown>) {
   }
 }
 
+// Busy from the moment a message goes until the turn's snapshot says otherwise, unless the server refuses it.
+async function sendMessage(id: string, body: {text: string; assets: string[]; replace?: boolean}) {
+  setBusy(true);
+  try { await api(`/api/chats/${id}/messages`, 'POST', body); }
+  catch (error) { setBusy(false); throw error; }
+}
+
 // Regenerate, and edit and resend: the last message goes again, as it was or as edited, in place of the last turn.
 // The same pictures go with it, and any `added` while editing.
 async function resend(text: string, added: string[] = []) {
   if (!chat) return;
-  const question = chat.messages.at(-2)!;
-  setBusy(true);
-  try { await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: [...question.assets, ...added], replace: true}); }
-  catch (error) { setBusy(false); throw error; }
+  await sendMessage(chat.id, {text, assets: [...chat.messages.at(-2)!.assets, ...added], replace: true});
 }
 
 async function regenerate() {
@@ -1375,17 +1380,17 @@ async function regenerate() {
 let editing: {draft: string} | undefined;
 function startEditing() {
   if (!chat) return;
-  editing = {draft: editing?.draft ?? ui.message.value};
-  ui.message.value = chat.messages.at(-2)!.text;
+  editing = {draft: editing?.draft ?? ui.draft.value};
+  ui.draft.value = chat.messages.at(-2)!.text;
   ui.editing.hidden = false;
   resizeComposer();
-  ui.message.focus();
+  ui.draft.focus();
 }
 
 function stopEditing() {
   if (!editing) return;
   cancelDictation();
-  ui.message.value = editing.draft;
+  ui.draft.value = editing.draft;
   resizeComposer();
   editing = undefined;
   ui.editing.hidden = true;
@@ -1404,7 +1409,7 @@ async function pauseRoutine(id: string) {
 }
 
 async function openLatest(preferred?: string | null) {
-  const list = await refreshList();
+  const list = await refreshSidebar();
   const target = list.find(item => item.id === preferred) ?? list[0];
   if (target) await openChat(target.id); else await newChat();
 }
@@ -1491,8 +1496,8 @@ function showQuestion(question: Question | null) {
 }
 
 function resizeComposer() {
-  ui.message.style.height = 'auto';
-  ui.message.style.height = Math.min(ui.message.scrollHeight, 220) + 'px';
+  ui.draft.style.height = 'auto';
+  ui.draft.style.height = Math.min(ui.draft.scrollHeight, 220) + 'px';
 }
 
 function setDictation(next: Recognition | undefined) {
@@ -1514,11 +1519,11 @@ function startDictation(Speech: new () => Recognition) {
   recognition.continuous = true;
   recognition.interimResults = true;
   // Speech continues whatever was already typed.
-  const typed = ui.message.value.trimEnd();
+  const typed = ui.draft.value.trimEnd();
   recognition.onresult = event => {
     if (dictation !== recognition) return;
     const spoken = Array.from(event.results, result => result[0].transcript.trim()).filter(Boolean).join(' ');
-    ui.message.value = [typed, spoken].filter(Boolean).join(' ');
+    ui.draft.value = [typed, spoken].filter(Boolean).join(' ');
     resizeComposer();
   };
   recognition.onerror = event => {
@@ -1611,23 +1616,22 @@ ui.composer.onsubmit = async event => {
   if (!chat) return;
   // Whatever is shown is what gets sent; late recognition results must not refill the cleared composer.
   cancelDictation();
-  const text = ui.message.value;
+  const text = ui.draft.value;
   const sent = [...attachments];
   try {
     const edit = editing;
-    setBusy(true);
     if (edit) {
       await resend(text, sent.map(item => item.id));
       // The draft from before the edit comes back, unless the new turn's snapshot already ended the edit (renderChat);
       // an edit started since, perhaps in another conversation, is left alone.
       if (editing === edit) stopEditing();
     } else {
-      await api(`/api/chats/${chat.id}/messages`, 'POST', {text, assets: sent.map(item => item.id)});
+      await sendMessage(chat.id, {text, assets: sent.map(item => item.id)});
       // The composer stays editable while a message is accepted; keep anything added since.
-      if (ui.message.value === text) { ui.message.value = ''; resizeComposer(); }
+      if (ui.draft.value === text) { ui.draft.value = ''; resizeComposer(); }
     }
     dropAttachments(sent);
-  } catch (error) { setBusy(false); showError(error); }
+  } catch (error) { showError(error); }
 };
 ui.cancelEdit.onclick = () => stopEditing();
 ui.research.onclick = async () => {
@@ -1642,14 +1646,14 @@ ui.share.onclick = async () => {
   if (!on && !confirm(`Make “${chat.title}” private again? It will no longer be shared with ${otherName()}.`)) return;
   try {
     update(await api<ChatSnapshot>(`/api/chats/${chat.id}/share`, 'POST', {on}));
-    await refreshList();
+    await refreshSidebar();
   } catch (error) { showError(error); }
 };
 ui.stop.onclick = () => {
   if (chat) api(`/api/chats/${chat.id}/abort`, 'POST', {}).catch(showError);
 };
 // Typing takes over from dictation, which would otherwise overwrite the edit with its next result.
-ui.message.oninput = () => { cancelDictation(); resizeComposer(); };
+ui.draft.oninput = () => { cancelDictation(); resizeComposer(); };
 ui.dictate.hidden = !Recognizer;
 ui.dictate.onclick = () => {
   if (dictation) { dictation.stop(); return; }
@@ -1660,7 +1664,7 @@ ui.messages.addEventListener('scroll', () => {
 }, {passive: true});
 // On touch keyboards Enter inserts a newline; the send button sends.
 const touchKeyboard = matchMedia('(pointer: coarse)');
-ui.message.onkeydown = event => {
+ui.draft.onkeydown = event => {
   if (event.key === 'Escape' && editing) { stopEditing(); return; }
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || touchKeyboard.matches) return;
   event.preventDefault();
@@ -1715,8 +1719,7 @@ ui.aboutForm.onsubmit = async event => {
   finally { aboutSaving = false; }
 };
 ui.readerCopy.onclick = () => copyText(readerText).then(() => { ui.readerCopy.textContent = 'Copied'; }, showError);
-// Download gives the .md file.
-ui.readerShare.hidden = !navigator.share;
+ui.readerShare.hidden = !canShare;
 ui.readerShare.onclick = () => shareText({title: ui.readerTitle.textContent ?? '', text: readerText}, 'Could not share this document').catch(showError);
 
 // The access-code form is only for local mode; under Cloudflare Access the user is already signed in.
