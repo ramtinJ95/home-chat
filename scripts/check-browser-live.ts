@@ -61,7 +61,7 @@ try {
   const generated = page.locator('.message.assistant').last().locator('img');
   assert.equal(await generated.count(), 1, 'Expected one generated image rendered in the chat');
   await generated.waitFor({state: 'visible'});
-  const download = await page.locator('.message.assistant').last().locator('a.download').getAttribute('href');
+  const download = await page.locator('.message.assistant').last().locator('a.picture-action').getAttribute('href');
   const response = await context.request.get(origin + download);
   assert.equal(response.status(), 200); assert.equal(response.headers()['content-type'], 'image/png');
   assert.ok((await response.body()).length > 1000);

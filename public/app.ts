@@ -540,13 +540,13 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
     picture.loading = 'lazy';
     // Images grow the thread after the initial scroll; keep the latest message in view.
     picture.addEventListener('load', keepFollowing, {once: true});
-    const download = element('a', 'download');
+    const download = element('a', 'picture-action');
     download.href = url + '?download=1';
     download.download = 'home-chat.png';
     download.append(icon('download'), 'Download');
     const actions = element('div', 'picture-actions');
     const share = actionButton('people', `Share with ${otherName()}`, () => shareAsset(snapshot.id, id));
-    share.className = 'download';
+    share.className = 'picture-action';
     actions.append(download, share);
     figure.append(picture, actions);
     bubble.append(figure);
@@ -594,7 +594,7 @@ function showSheet(node: HTMLElement, parent?: HTMLElement) {
   ui.workspace.inert = true;
   node.scrollTop = 0;
   if (!sheetInHistory()) history.pushState({sheet: true}, '');
-  node.querySelector<HTMLElement>('.reader-bar > button')!.focus();
+  node.querySelector<HTMLElement>('.page-bar > button')!.focus();
 }
 
 function hideSheet() {
@@ -699,7 +699,7 @@ function renderRoutineCards(list: RoutineSummary[]) {
   routineList = list;
   if (routineEdit && !list.some(item => item.id === routineEdit!.id)) routineEdit = undefined;
   const nodes = list.length ? list.map(item => item.id === routineEdit?.id ? routineEdit.form : routineCard(item))
-    : [element('p', 'routines-empty', 'No routines yet.')];
+    : [element('p', 'empty-note', 'No routines yet.')];
   const form = routineEdit?.form.parentNode === ui.routineCards ? routineEdit.form : undefined;
   if (!form) return ui.routineCards.replaceChildren(...nodes);
   // Moving the form would take the focus out of it mid-typing, so the cards are put around it instead.
@@ -709,17 +709,17 @@ function renderRoutineCards(list: RoutineSummary[]) {
 }
 
 function routineCard(routine: RoutineSummary): HTMLElement {
-  const card = element('article', 'routine-card');
-  const head = element('div', 'routine-card-head');
+  const card = element('article', 'card');
+  const head = element('div', 'card-head');
   head.append(element('h2', undefined, routine.title), routineSwitch(routine));
-  card.append(head, element('p', 'routine-when', routine.schedule), element('p', 'routine-last', nextRun(routine)));
+  card.append(head, element('p', 'card-detail', routine.schedule), element('p', 'card-note', nextRun(routine)));
   if (routine.lastRun) {
     const {when, outcome} = routine.lastRun;
-    card.append(element('p', outcome === 'failed' ? 'routine-last failed' : 'routine-last', `Last run: ${when}, ${OUTCOMES[outcome]}`));
+    card.append(element('p', outcome === 'failed' ? 'card-note failed' : 'card-note', `Last run: ${when}, ${OUTCOMES[outcome]}`));
   }
   card.append(element('p', 'routine-task', routine.prompt));
-  if (routine.deepResearch) card.append(element('span', 'routine-tag', 'Deep research'));
-  const actions = element('div', 'routine-actions');
+  if (routine.deepResearch) card.append(element('span', 'pill', 'Deep research'));
+  const actions = element('div', 'card-actions');
   const open = element('button', 'ghost', 'Open conversation');
   if (routine.unread) open.append(unreadDot());
   // Opening another conversation closes this page by itself.
@@ -742,7 +742,7 @@ function field(label: string, control: HTMLElement): HTMLLabelElement {
 function editRoutine(routine: RoutineSummary) {
   if (routineEdited() && !confirm('Leave without saving your changes to this routine?')) return;
   const rule = routine.rule;
-  const form = element('form', 'routine-card routine-form');
+  const form = element('form', 'card routine-form');
   form.setAttribute('aria-label', `Edit “${routine.title}”`);
   const title = element('input');
   title.required = true; title.maxLength = 80; title.value = routine.title;
@@ -774,7 +774,7 @@ function editRoutine(routine: RoutineSummary) {
   const once = field('Date', date);
   const research = element('input');
   research.type = 'checkbox'; research.checked = routine.deepResearch;
-  const researchField = element('label', 'routine-check');
+  const researchField = element('label', 'check-field');
   researchField.append(research, 'Deep research: a thorough, sourced report each run');
   researchField.hidden = !me?.deepResearch && !routine.deepResearch;
   // Fields for other kinds of schedule are disabled too, so a leftover value in them cannot block Save.
@@ -876,13 +876,13 @@ function renderLibrary(library: Library) {
   const focused = document.activeElement instanceof HTMLElement && ui.libraryCards.contains(document.activeElement) ? document.activeElement : undefined;
   const item = focused?.closest<HTMLElement>('.library-card')?.dataset.item;
   ui.libraryCards.replaceChildren(...(library.items.length ? library.items.map(libraryCard)
-    : [element('p', 'routines-empty', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)]));
+    : [element('p', 'empty-note', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)]));
   if (item) [...ui.libraryCards.querySelectorAll<HTMLElement>(`[data-item="${item}"] .ghost`)].find(control => control.textContent === focused?.textContent)?.focus();
 }
 
 function libraryCard(item: LibraryItem): HTMLElement {
   const url = `/api/library/${item.id}`;
-  const card = element('article', 'routine-card library-card');
+  const card = element('article', 'card library-card');
   card.dataset.item = item.id;
   const name = item.kind === 'picture' ? 'this picture' : `“${item.title}”`;
   if (item.kind === 'picture') {
@@ -891,10 +891,10 @@ function libraryCard(item: LibraryItem): HTMLElement {
     picture.alt = item.mine ? 'A picture you shared' : `A picture ${nameOf(item.by)} shared`;
     card.append(picture);
   } else {
-    card.append(element('h2', undefined, item.title), element('p', 'routine-when', documentMeta(item.version)));
+    card.append(element('h2', undefined, item.title), element('p', 'card-detail', documentMeta(item.version)));
   }
-  card.append(element('p', 'routine-last', item.mine ? `You shared it · ${item.when}` : `From ${nameOf(item.by)} · ${item.when}`));
-  const actions = element('div', 'routine-actions');
+  card.append(element('p', 'card-note', item.mine ? `You shared it · ${item.when}` : `From ${nameOf(item.by)} · ${item.when}`));
+  const actions = element('div', 'card-actions');
   if (item.kind === 'document') {
     const open = element('button', 'ghost', 'Open');
     open.onclick = () => openReader(url, {parent: ui.libraryPage}).catch(showError);
@@ -933,9 +933,9 @@ function renderTodoCards(lists: TodoList[]) {
     todoCards.set(list.id, made);
     return made.card;
   });
-  if (!cards.length) { ui.todoCards.replaceChildren(element('p', 'routines-empty', 'No lists yet.')); return; }
+  if (!cards.length) { ui.todoCards.replaceChildren(element('p', 'empty-note', 'No lists yet.')); return; }
   // Cards already in place stay put, so a focused field in one is not taken out of the page and back.
-  ui.todoCards.querySelector('.routines-empty')?.remove();
+  ui.todoCards.querySelector('.empty-note')?.remove();
   for (const child of [...ui.todoCards.children]) if (!cards.includes(child as HTMLElement)) child.remove();
   cards.forEach((card, index) => { if (ui.todoCards.children[index] !== card) ui.todoCards.insertBefore(card, ui.todoCards.children[index] ?? null); });
 }
@@ -975,10 +975,10 @@ function keepTodoFocus(card: HTMLElement, input: HTMLInputElement): (fallback: H
 
 function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList) => void} {
   let list = initial;
-  const card = element('article', 'routine-card todo-card');
-  const head = element('div', 'routine-card-head');
+  const card = element('article', 'card todo-card');
+  const head = element('div', 'card-head');
   const title = element('h2');
-  const tag = element('span', 'routine-tag', 'Shared');
+  const tag = element('span', 'pill', 'Shared');
   head.append(title, tag);
   const items = element('ul', 'todo-items');
   const add = element('form', 'todo-add');
@@ -995,7 +995,7 @@ function todoCard(initial: TodoList): {card: HTMLElement; fill: (list: TodoList)
     input.value = '';
     void changeTodo(todoPath(list) + '/items', 'POST', {text}).then(added => { if (!added && !input.value) input.value = text; });
   };
-  const actions = element('div', 'routine-actions');
+  const actions = element('div', 'card-actions');
   card.append(head, items, add, actions);
 
   const fill = (next: TodoList) => {
@@ -1684,7 +1684,7 @@ ui.imageInput.onchange = async () => {
   } catch (error) { showError(error); }
 };
 
-for (const back of document.querySelectorAll<HTMLButtonElement>('.reader-bar > button')) back.onclick = closeSheet;
+for (const back of document.querySelectorAll<HTMLButtonElement>('.page-bar > button')) back.onclick = closeSheet;
 ui.todosEntry.replaceChildren(actionButton('check', 'Todos', openTodos));
 renderLibraryEntry(false);
 ui.todoNew.onsubmit = async event => {

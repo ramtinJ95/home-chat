@@ -85,7 +85,7 @@
         </button>
         <h2 id="chat-title" class="chat-title">Your space to think</h2>
         <span id="shared-by" class="shared-by" hidden></span>
-        <button id="share-chat" class="research-toggle" type="button" aria-pressed="false" hidden>
+        <button id="share-chat" class="toggle-button" type="button" aria-pressed="false" hidden>
           <svg viewBox="0 0 24 24"><use href="#people"/></svg><span id="share-label">Share</span>
         </button>
       </header>
@@ -113,7 +113,7 @@
             <button id="dictate" class="attach" type="button" aria-label="Dictate" aria-pressed="false" title="Dictate" hidden>
               <svg viewBox="0 0 24 24"><use href="#mic"/></svg>
             </button>
-            <button id="research" class="research-toggle" type="button" aria-pressed="false" hidden
+            <button id="research" class="toggle-button" type="button" aria-pressed="false" hidden
               title="Deep research: thorough, sourced reports for this conversation">
               <svg viewBox="0 0 24 24"><use href="#research-icon"/></svg><span class="research-label">Deep research</span>
             </button>
@@ -127,21 +127,21 @@
     </main>
   </div>
 
-  <section id="reader" class="reader" role="dialog" aria-modal="true" aria-labelledby="reader-title" hidden>
-    <header class="reader-bar">
+  <section id="reader" class="page" role="dialog" aria-modal="true" aria-labelledby="reader-title" hidden>
+    <header class="page-bar">
       <button id="reader-close" class="icon-button" type="button" aria-label="Back to the conversation">
         <svg viewBox="0 0 24 24"><use href="#back"/></svg>
       </button>
-      <div class="reader-actions">
+      <div class="page-actions">
         <button id="reader-copy" class="ghost" type="button">Copy</button>
         <button id="reader-share" class="ghost" type="button">Share</button>
         <button id="reader-library" class="ghost" type="button" hidden></button>
         <a id="reader-download" class="ghost" download>Download</a>
       </div>
     </header>
-    <article class="reader-page">
-      <p id="reader-meta" class="reader-meta"></p>
-      <h1 id="reader-title" class="reader-title"></h1>
+    <article class="page-column">
+      <p id="reader-meta" class="page-meta"></p>
+      <h1 id="reader-title" class="page-title"></h1>
       <details id="reader-contents" class="reader-contents">
         <summary>Contents</summary>
         <ol></ol>
@@ -150,19 +150,19 @@
     </article>
   </section>
 
-  <section id="about" class="reader" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
-    <header class="reader-bar">
+  <section id="about" class="page" role="dialog" aria-modal="true" aria-labelledby="about-title" hidden>
+    <header class="page-bar">
       <button id="about-close" class="icon-button" type="button" aria-label="Back to the conversation">
         <svg viewBox="0 0 24 24"><use href="#back"/></svg>
       </button>
-      <div class="reader-actions">
+      <div class="page-actions">
         <button class="ghost" type="submit" form="about-form">Save</button>
       </div>
     </header>
-    <form id="about-form" class="reader-page about-page">
-      <p class="reader-meta">Kept in mind in every conversation</p>
-      <h1 id="about-title" class="reader-title">About us</h1>
-      <p class="about-lede">Home Chat remembers these notes when it answers. You can also just tell it something; it asks
+    <form id="about-form" class="page-column page-stack">
+      <p class="page-meta">Kept in mind in every conversation</p>
+      <h1 id="about-title" class="page-title">About us</h1>
+      <p class="page-lede">Home Chat remembers these notes when it answers. You can also just tell it something; it asks
         before it remembers anything. One note per line.</p>
       <label for="about-mine">About you</label>
       <p class="about-hint">Only you see these.</p>
@@ -173,53 +173,53 @@
     </form>
   </section>
 
-  <section id="routines-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="routines-title" hidden>
-    <header class="reader-bar">
+  <section id="routines-page" class="page" role="dialog" aria-modal="true" aria-labelledby="routines-title" hidden>
+    <header class="page-bar">
       <button id="routines-close" class="icon-button" type="button" aria-label="Back to the conversation">
         <svg viewBox="0 0 24 24"><use href="#back"/></svg>
       </button>
     </header>
-    <div class="reader-page about-page">
-      <p class="reader-meta">Runs on its own</p>
-      <h1 id="routines-title" class="reader-title">Routines</h1>
-      <p class="about-lede">Each routine runs at its time, and its result arrives in its own conversation with a notification.
+    <div class="page-column page-stack">
+      <p class="page-meta">Runs on its own</p>
+      <h1 id="routines-title" class="page-title">Routines</h1>
+      <p class="page-lede">Each routine runs at its time, and its result arrives in its own conversation with a notification.
         To add one, ask in any conversation, like “every weekday at 7:30, give me the weather and my day”.</p>
-      <div id="routine-cards" class="routine-cards"></div>
+      <div id="routine-cards" class="cards"></div>
     </div>
   </section>
 
-  <section id="todos-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="todos-title" hidden>
-    <header class="reader-bar">
+  <section id="todos-page" class="page" role="dialog" aria-modal="true" aria-labelledby="todos-title" hidden>
+    <header class="page-bar">
       <button id="todos-close" class="icon-button" type="button" aria-label="Back to the conversation">
         <svg viewBox="0 0 24 24"><use href="#back"/></svg>
       </button>
     </header>
-    <div class="reader-page about-page">
-      <p class="reader-meta">Yours and the household’s</p>
-      <h1 id="todos-title" class="reader-title">Todos</h1>
-      <p class="about-lede">Tick things off here, or ask in any conversation, like “add milk and eggs to groceries”.
+    <div class="page-column page-stack">
+      <p class="page-meta">Yours and the household’s</p>
+      <h1 id="todos-title" class="page-title">Todos</h1>
+      <p class="page-lede">Tick things off here, or ask in any conversation, like “add milk and eggs to groceries”.
         Shared lists are for everyone in the household; the others are only yours.</p>
       <form id="todo-new" class="todo-new">
         <input id="todo-new-title" maxlength="80" placeholder="New list, like Groceries" aria-label="Name of the new list" required
           autocomplete="off" enterkeyhint="done">
-        <label class="routine-check"><input id="todo-new-shared" type="checkbox"> Share with the household</label>
+        <label class="check-field"><input id="todo-new-shared" type="checkbox"> Share with the household</label>
         <button class="primary" type="submit">Make list</button>
       </form>
-      <div id="todo-cards" class="routine-cards"></div>
+      <div id="todo-cards" class="cards"></div>
     </div>
   </section>
 
-  <section id="library-page" class="reader" role="dialog" aria-modal="true" aria-labelledby="library-title" hidden>
-    <header class="reader-bar">
+  <section id="library-page" class="page" role="dialog" aria-modal="true" aria-labelledby="library-title" hidden>
+    <header class="page-bar">
       <button id="library-close" class="icon-button" type="button" aria-label="Back to the conversation">
         <svg viewBox="0 0 24 24"><use href="#back"/></svg>
       </button>
     </header>
-    <div class="reader-page about-page">
-      <p class="reader-meta">Shared with each other</p>
-      <h1 id="library-title" class="reader-title">Library</h1>
-      <p id="library-lede" class="about-lede"></p>
-      <div id="library-cards" class="routine-cards"></div>
+    <div class="page-column page-stack">
+      <p class="page-meta">Shared with each other</p>
+      <h1 id="library-title" class="page-title">Library</h1>
+      <p id="library-lede" class="page-lede"></p>
+      <div id="library-cards" class="cards"></div>
     </div>
   </section>
 
