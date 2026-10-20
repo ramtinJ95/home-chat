@@ -190,8 +190,11 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
       throw error instanceof ConversationBusy ? new PiRejected('The conversation is still busy') : error;
     }
     this.#submission = submitted.id;
-    // The turn may have ended before submit() returned, its end delivered already or replaced by a snapshot.
-    await this.#finish(await submitted.status(context));
+    // The turn may have ended before submit() returned. Its events may then still be on their way, or replaced by a
+    // snapshot, so its text comes from the transcript.
+    const record = await submitted.status(context);
+    if (record.status === 'done' || record.status === 'unanswered') this.#behind = true;
+    await this.#finish(record);
   }
 
   async rewind(text: string): Promise<boolean> {
