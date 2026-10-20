@@ -33,8 +33,6 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   // From a prompt until its submission ends; events outside a turn are ignored.
   #active = false;
   #submission?: SubmissionId;
-  // Submissions the event stream saw end, in case that happens before submit() returns.
-  readonly #ended = new Map<SubmissionId, SubmissionRecord>();
   // The streamed message's text blocks as known so far, and how much of each was sent as deltas.
   #texts = new Map<number, string>();
   #sent = new Map<number, number>();
@@ -121,7 +119,6 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
 
   #finish(record: SubmissionRecord) {
     if (record.status !== 'done' && record.status !== 'unanswered') return;
-    this.#ended.set(record.id, record);
     if (!this.#active || record.id !== this.#submission) return;
     this.#endTurn();
     // Stopped from the app: the turn ends with what it has.
@@ -132,7 +129,6 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
 
   #endTurn() {
     this.#active = false; this.#submission = undefined;
-    this.#ended.clear();
     this.#dismiss();
   }
 
@@ -151,8 +147,8 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
       throw error instanceof ConversationBusy ? new PiRejected('The conversation is still busy') : error;
     }
     this.#submission = submitted.id;
-    const ended = this.#ended.get(submitted.id);
-    if (ended) this.#finish(ended);
+    // The turn may have ended before submit() returned, its end delivered already or replaced by a snapshot.
+    this.#finish(await submitted.status(context));
   }
 
   async rewind(text: string): Promise<boolean> {
