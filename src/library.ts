@@ -27,7 +27,7 @@ export async function createLibrary(data: string) {
   for (const file of await readdir(files)) if (!named.has(file)) await rm(join(files, file), {force: true});
   // A copy the list no longer names: the change is saved, and a file left behind goes at the next start.
   const discard = (file: string) => rm(join(files, file), {force: true}).catch(() => console.warn('Could not remove a Library file'));
-  const view = ({owner, at, source: _source, file: _file, ...item}: StoredItem, user: User): LibraryItem =>
+  const shown = ({owner, at, source: _source, file: _file, ...item}: StoredItem, user: User): LibraryItem =>
     ({...item, by: owner, mine: owner === user, when: whenLabel(new Date(at))});
   const find = (state: Saved, id: string) => {
     const item = state.items.find(entry => entry.id === id);
@@ -35,20 +35,20 @@ export async function createLibrary(data: string) {
     return item;
   };
 
-  const library = (user: User): Library => {
+  const page = (user: User): Library => {
     const {items, seen} = saved();
-    return {items: items.map(item => view(item, user)), unseen: items.some(item => item.owner !== user && item.at > (seen[user] ?? ''))};
+    return {items: items.map(item => shown(item, user)), unseen: items.some(item => item.owner !== user && item.at > (seen[user] ?? ''))};
   };
 
   return {
-    view: library,
+    view: page,
     // Answers with the page as it is at that moment, so what it marks seen is what the person is shown.
     seen: async (user: User): Promise<Library> => {
       await change(state => { state.seen[user] = new Date().toISOString(); });
-      return library(user);
+      return page(user);
     },
     // The copy's file and how it shows on the page.
-    get: (user: User, id: string) => { const item = find(saved(), id); return {item: view(item, user), path: join(files, item.file)}; },
+    get: (user: User, id: string) => { const item = find(saved(), id); return {item: shown(item, user), path: join(files, item.file)}; },
     // Shared again by the same person from the same source, the item moves to the top with the new copy. `allowed`
     // throws if the sharer may no longer share it; it runs in the change itself, after every wait.
     async share(user: User, source: string, content: LibraryContent, bytes: Buffer | string, allowed: () => void): Promise<LibraryItem> {
@@ -75,7 +75,7 @@ export async function createLibrary(data: string) {
         });
       } catch (error) { if (!saving) await rm(join(files, file), {force: true}); throw error; }
       if (replaced) await discard(replaced);
-      return view(item, user);
+      return shown(item, user);
     },
     async remove(user: User, id: string): Promise<Library> {
       const file = await change(state => {
@@ -85,7 +85,7 @@ export async function createLibrary(data: string) {
         return item.file;
       });
       await discard(file);
-      return library(user);
+      return page(user);
     },
   };
 }
