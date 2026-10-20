@@ -160,8 +160,9 @@ svg { width: 20px; height: 20px; flex: none; }
 
 .workspace { display: grid; grid-template-columns: 284px minmax(0, 1fr); height: 100dvh; }
 
+/* When its lists don't all fit, the whole sidebar scrolls, so the actions and the footer stay reachable. */
 .sidebar {
-  display: flex; flex-direction: column; gap: 14px; min-height: 0;
+  display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto;
   padding: max(22px, env(safe-area-inset-top)) 16px 16px;
   background: var(--paper-deep); border-right: 1px solid var(--line);
 }
@@ -181,6 +182,8 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 /* One column no wider than the list, so a long title ends in "…" instead of widening the list sideways. */
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
+/* Recent is the one list that shrinks to make room for the sections above it, but never below about three rows. */
+#chat-list { min-height: 132px; }
 
 /* Search: while the box has words in it, results take the place of the lists under it. 16px text, so iOS does not zoom. */
 .search { position: relative; }
