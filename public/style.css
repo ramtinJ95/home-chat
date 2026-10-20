@@ -160,8 +160,9 @@ svg { width: 20px; height: 20px; flex: none; }
 
 .workspace { display: grid; grid-template-columns: 284px minmax(0, 1fr); height: 100dvh; }
 
+/* When its lists don't all fit, the whole sidebar scrolls, so the actions and the footer stay reachable. */
 .sidebar {
-  display: flex; flex-direction: column; gap: 14px; min-height: 0;
+  display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto;
   padding: max(22px, env(safe-area-inset-top)) 16px 16px;
   background: var(--paper-deep); border-right: 1px solid var(--line);
 }
@@ -179,8 +180,12 @@ svg { width: 20px; height: 20px; flex: none; }
   margin: 10px 10px 0; font-size: 0.7rem; font-weight: 700;
   letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
 }
+#starred-label { display: flex; align-items: center; gap: 5px; }
+#starred-label svg { width: 13px; height: 13px; color: var(--accent); --star-fill: currentColor; }
 /* One column no wider than the list, so a long title ends in "…" instead of widening the list sideways. */
 .chat-list { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 2px; }
+/* Recent is the one list that shrinks to make room for the sections above it, but never below about three rows. */
+#chat-list { min-height: 132px; }
 
 /* Search: while the box has words in it, results take the place of the lists under it. 16px text, so iOS does not zoom. */
 .search { position: relative; }
@@ -189,7 +194,7 @@ svg { width: 20px; height: 20px; flex: none; }
   width: 100%; padding: 9px 12px 9px 36px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--card); font-size: 1rem;
 }
-.sidebar.searching #routines, .sidebar.searching #shared, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
+.sidebar.searching #starred, .sidebar.searching #routines, .sidebar.searching #shared, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
 .search-result { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background 140ms; }
 .search-result:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .search-result strong { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -236,7 +241,14 @@ svg { width: 20px; height: 20px; flex: none; }
 .shared-list { flex: none; max-height: 30vh; }
 .chat-delete.chat-mark, .chat-delete.chat-mark:hover { color: var(--muted); background: none; }
 .unread-dot { flex: none; width: 8px; height: 8px; margin: 0 2px 0 -4px; border-radius: 50%; background: var(--accent); }
-.chat-item > .unread-dot:last-child { margin-right: 14px; }
+/* Star ends the row: filled on a starred conversation, a quiet outline on the rest. */
+.chat-star {
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-right: 4px;
+  border-radius: 10px; color: var(--muted); transition: color 140ms, background 140ms;
+}
+.chat-star svg { width: 16px; height: 16px; }
+.chat-star:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.chat-star[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 .switch { position: relative; flex: none; display: inline-grid; place-items: center; width: 44px; height: 34px; cursor: pointer; }
 .switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .switch span {
@@ -319,6 +331,9 @@ svg { width: 20px; height: 20px; flex: none; }
 .toggle-button:hover { border-color: var(--accent); color: var(--accent); }
 .toggle-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .toggle-button:disabled { opacity: 0.55; cursor: default; }
+/* Star, in the header; filled while the conversation is starred. */
+.star-button { flex: none; width: 38px; height: 38px; }
+.star-button[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 
 .notice {
   margin: 14px auto 0; width: min(100% - 32px, 760px);
@@ -712,7 +727,7 @@ svg { width: 20px; height: 20px; flex: none; }
 @media (pointer: coarse) {
   .icon-button, .attach, .send { width: 44px; height: 44px; }
   .stop, .toggle-button { height: 44px; }
-  .sidebar-foot .icon-button, .chat-delete { width: 44px; height: 44px; }
+  .sidebar-foot .icon-button, .chat-delete, .chat-star { width: 44px; height: 44px; }
   .row-menu summary, .switch { width: 44px; height: 44px; }
   .row-menu .menu button { padding: 13px 16px; }
   .chat-open, .sidebar-action button, .sidebar-action summary, .search-result { padding: 13px 12px; }

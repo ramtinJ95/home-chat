@@ -22,6 +22,8 @@ const ui = {
   chatList: $('#chat-list'),
   shared: $('#shared'),
   sharedList: $('#shared-list'),
+  starred: $('#starred'),
+  starredList: $('#starred-list'),
   routines: $('#routines'),
   routineList: $('#routine-list'),
   routineBar: $('#routine-bar'),
@@ -31,6 +33,7 @@ const ui = {
   title: $('#chat-title'),
   sharedBy: $('#shared-by'),
   share: $<HTMLButtonElement>('#share-chat'),
+  star: $<HTMLButtonElement>('#star-chat'),
   shareLabel: $('#share-label'),
   research: $<HTMLButtonElement>('#research'),
   providerWarning: $('#provider-warning'),
@@ -281,6 +284,8 @@ const senderOf = (snapshot: ChatSnapshot, message: Message) => message.by ?? sna
 // The server says whether the last turn can be redone at all; only the person who sent its message may.
 const canRedo = (snapshot: ChatSnapshot) => snapshot.redoable && senderOf(snapshot, snapshot.messages.at(-2)!) === me?.user;
 let chat: ChatSnapshot | undefined;
+// The sidebar's conversations as last listed, newest first.
+let listed: ChatSummary[] = [];
 // The snapshot last drawn, as JSON, so the same one coming again is not drawn twice (update). Cleared by anything that
 // changes the page since: stream events, and a dropped stream, after which the next snapshot is drawn in full.
 let shown = '';
@@ -439,6 +444,7 @@ function renderChat(next: ChatSnapshot) {
   ui.share.title = next.shared ? `Shared with ${otherName()}; tap to make it private` : `Share this conversation with ${otherName()}`;
   ui.sharedBy.hidden = mine;
   ui.sharedBy.textContent = mine ? '' : `Shared by ${nameOf(next.owner)}`;
+  renderStar();
   ui.privacy.textContent = next.shared ? 'Shared' : 'Private';
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
@@ -483,6 +489,16 @@ ui.share.onclick = async () => {
     await refreshSidebar();
   } catch (error) { showError(error); }
 };
+
+ui.star.onclick = () => {
+  if (!chat) return;
+  setStar(chat.id, listed.find(item => item.id === chat?.id)?.starred == null).catch(showError);
+};
+
+async function setStar(id: string, on: boolean) {
+  await api(`/api/chats/${id}/star`, 'POST', {on});
+  await refreshSidebar();
+}
 
 let stream: EventSource | undefined;
 // The assistant reply currently receiving deltas; re-rendered at most every STREAM_RENDER_MS.
@@ -872,23 +888,46 @@ function unreadDot(label = 'New results'): HTMLElement {
   return dot;
 }
 
+let sidebarRun = 0;
 async function refreshSidebar(): Promise<ChatSummary[]> {
+  const run = ++sidebarRun;
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
+  // A refresh that a later one overtook draws nothing, so an older list never replaces a newer one, such as the list
+  // from before a star.
+  if (run !== sidebarRun) return all.reverse();
   ui.routines.hidden = !routines.length;
-  keepSwitchFocus(ui.routineList, () => ui.routineList.replaceChildren(...routines.map(routineRow)));
+  keepFocus(ui.routineList, 'routine', () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
-  // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list, and
-  // shared ones in theirs.
-  const list = all.reverse();
-  const shared = list.filter(item => item.shared);
-  ui.shared.hidden = !shared.length;
-  ui.sharedList.replaceChildren(...shared.map(chatRow));
-  ui.chatList.replaceChildren(...list.filter(item => !item.routine && !item.shared).map(chatRow));
+  // The server lists oldest first; everything here wants newest first. Starred conversations come first, the earliest
+  // starred on top, and leave their usual list meanwhile. Routine conversations sit in their own list, and shared ones
+  // in theirs.
+  const list = listed = all.reverse();
+  const starred = list.filter(item => item.starred !== null).sort((a, b) => (a.starred ?? '').localeCompare(b.starred ?? ''));
+  const rest = list.filter(item => item.starred === null);
+  const shared = rest.filter(item => item.shared);
+  keepFocus(ui.sidebar, 'chat', () => {
+    ui.starred.hidden = !starred.length;
+    ui.starredList.replaceChildren(...starred.map(chatRow));
+    ui.shared.hidden = !shared.length;
+    ui.sharedList.replaceChildren(...shared.map(chatRow));
+    ui.chatList.replaceChildren(...rest.filter(item => !item.routine && !item.shared).map(chatRow));
+  });
+  renderStar();
   return list;
+}
+
+// A star is each person's own, so the header's comes from their sidebar list, not from the conversation's snapshot.
+function renderStar() {
+  const item = listed.find(entry => entry.id === chat?.id);
+  ui.star.hidden = !item || item.routine;
+  const on = item?.starred != null;
+  ui.star.setAttribute('aria-pressed', String(on));
+  ui.star.title = on ? 'Starred; tap to unstar' : 'Star to keep it at the top of the list';
 }
 
 function chatRow(item: ChatSummary): HTMLElement {
   const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
+  row.dataset.chat = item.id;
   const open = element('button', 'chat-open', item.title);
   open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
   // Only the owner deletes it; the other person's row has a mark there instead.
@@ -902,8 +941,19 @@ function chatRow(item: ChatSummary): HTMLElement {
     lead.title = `Shared by ${otherName()}`;
     lead.append(icon('people'));
   }
-  row.append(lead, open, ...(item.unread ? [unreadDot('New messages')] : []));
+  row.append(lead, open, ...(item.unread ? [unreadDot('New messages')] : []), rowStar(item));
   return row;
+}
+
+function rowStar(item: ChatSummary): HTMLButtonElement {
+  const on = item.starred !== null;
+  const star = element('button', 'chat-star');
+  star.title = on ? 'Unstar' : 'Star to keep it at the top of the list';
+  star.setAttribute('aria-label', `Star “${item.title}”`);
+  star.setAttribute('aria-pressed', String(on));
+  star.append(icon('star'));
+  star.onclick = () => setStar(item.id, !on).catch(showError);
+  return star;
 }
 
 async function deleteChat(item: ChatSummary) {
@@ -1145,7 +1195,7 @@ async function openRoutines(edit?: string) {
 }
 
 function renderRoutineCards(list: RoutineSummary[]) {
-  keepSwitchFocus(ui.routineCards, () => drawRoutineCards(list));
+  keepFocus(ui.routineCards, 'routine', () => drawRoutineCards(list));
 }
 
 function drawRoutineCards(list: RoutineSummary[]) {
@@ -1280,12 +1330,17 @@ function editRoutine(routine: RoutineSummary) {
   title.focus({preventScroll: true});
 }
 
-// Runs `redraw` on `node`. A routine switch in it that had the focus is drawn anew, so the new one gets the focus.
-function keepSwitchFocus(node: HTMLElement, redraw: () => void) {
+// Runs `redraw` on `node`. A control in it that had the focus is drawn anew, perhaps in another list, so the same
+// control for the same routine or conversation gets the focus back: the one `data-<key>` marks, or the one in it.
+function keepFocus(node: HTMLElement, key: 'routine' | 'chat', redraw: () => void) {
   const active = document.activeElement;
-  const id = active instanceof HTMLInputElement && node.contains(active) ? active.dataset.routine : undefined;
+  const holder = active instanceof HTMLElement && node.contains(active) ? active.closest<HTMLElement>(`[data-${key}]`) : null;
+  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input')];
+  const at = holder ? controls(holder).indexOf(active as HTMLElement) : -1;
   redraw();
-  if (id && !active!.isConnected) node.querySelector<HTMLInputElement>(`input[data-routine="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
+  if (!holder || active!.isConnected) return;
+  const again = node.querySelector<HTMLElement>(`[data-${key}="${CSS.escape(holder.dataset[key]!)}"]`);
+  if (again) controls(again)[at]?.focus();
 }
 
 function routineSwitch(routine: RoutineSummary): HTMLElement {
@@ -1324,7 +1379,7 @@ function renderRoutineBar(routine: RoutineSummary | null) {
   const remove = element('button', 'ghost danger', 'Delete routine');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
   const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
-  keepSwitchFocus(ui.routineBar, () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
+  keepFocus(ui.routineBar, 'routine', () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
 }
 
 // The Pause button on a routine's notification.

@@ -57,7 +57,9 @@ export interface ChatSnapshot {
 
 // `unread`: a routine run, or in a shared conversation a reply to the other person, arrived while this person was not
 // looking. Routine conversations are listed under /api/routines. `mine`: this person owns it; the other's are shared.
-export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean; shared: boolean; mine: boolean }
+// `starred`: when the signed-in person starred it (POST /api/chats/<id>/star {on}), or null. The sidebar lists starred
+// conversations first, the earliest starred on top.
+export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean; shared: boolean; mine: boolean; starred: string | null }
 
 // GET /api/search?q=<words>: the conversations the user can see whose title or messages contain every word, newest first.
 // `message` indexes the conversation's messages, or is null for a match in the title only; `marks` are the [start, end)

@@ -381,7 +381,7 @@ test('a shared conversation: both write in it, each turn is its sender’s, and 
   assert.equal((await f.request(`/api/chats/${chat.id}/share`, {method: 'POST', body: {on: true}, ...guest})).status, 404);
   const shared = await (await f.request(`/api/chats/${chat.id}/share`, {method: 'POST', body: {on: true}, ...owner})).json();
   assert.equal(shared.shared, true); assert.equal(shared.owner, 'owner');
-  assert.deepEqual(await listed(guest), {id: chat.id, title: 'Plan the weekend', unread: false, routine: false, shared: true, mine: false});
+  assert.deepEqual(await listed(guest), {id: chat.id, title: 'Plan the weekend', unread: false, routine: false, shared: true, mine: false, starred: null});
   assert.equal((await f.request(`/api/chats/${chat.id}`, {method: 'DELETE', ...guest})).status, 403);
   assert.equal((await f.request(`/api/chats/${chat.id}/share`, {method: 'POST', body: {on: false}, ...guest})).status, 403);
 
@@ -425,6 +425,48 @@ test('a shared conversation: both write in it, each turn is its sender’s, and 
   assert.equal((await f.request(`/api/chats/${chat.id}`, guest)).status, 404);
   assert.equal(await listed(guest), undefined);
   assert.deepEqual(await (await f.request(`/api/search?q=picnic`, guest)).json(), []);
+});
+
+test('each person stars conversations for themselves, in the order they starred them, and stars survive a restart', async t => {
+  const f = await fixture(t);
+  const owner = await f.login('owner'); const guest = await f.login('guest');
+  const first = await f.newChat(owner); const second = await f.newChat(owner); const third = await f.newChat(owner);
+  const star = (id: string, on: unknown, who: Who = owner) => f.request(`/api/chats/${id}/star`, {method: 'POST', body: {on}, ...who});
+  type Listed = {id: string; starred: string | null};
+  const list = async (who: Who, app: Pick<typeof f, 'request'> = f): Promise<Listed[]> => (await app.request('/api/chats', who)).json();
+  // Starred ones, first starred first, as the sidebar shows them.
+  const starred = async (who: Who, app: Pick<typeof f, 'request'> = f) => (await list(who, app)).filter(item => item.starred !== null)
+    .sort((a, b) => a.starred!.localeCompare(b.starred!)).map(item => item.id);
+
+  assert.equal((await star(third.id, true)).status, 200);
+  // A star's time is to the millisecond; this keeps the two apart.
+  await delay(5);
+  assert.equal((await star(first.id, true)).status, 200);
+  assert.deepEqual(await starred(owner), [third.id, first.id]);
+  assert.equal((await list(owner)).find(item => item.id === second.id)!.starred, null);
+  // Starring it again keeps its place.
+  const placed = (await list(owner)).find(item => item.id === third.id)!.starred;
+  assert.equal((await star(third.id, true)).status, 200);
+  assert.equal((await list(owner)).find(item => item.id === third.id)!.starred, placed);
+  assert.equal((await star(first.id, 'yes')).status, 400);
+  assert.equal((await star(second.id, true, guest)).status, 404);
+
+  // A shared conversation is starred by each person on their own.
+  await f.request(`/api/chats/${first.id}/share`, {method: 'POST', body: {on: true}, ...owner});
+  assert.deepEqual(await starred(guest), []);
+  assert.equal((await star(first.id, true, guest)).status, 200);
+  assert.deepEqual(await starred(guest), [first.id]);
+  assert.equal((await star(first.id, false)).status, 200);
+  assert.deepEqual(await starred(owner), [third.id]);
+  assert.deepEqual(await starred(guest), [first.id]);
+  // Made private, it is no longer the guest's to star; shared again, it comes back unstarred for them.
+  await f.request(`/api/chats/${first.id}/share`, {method: 'POST', body: {on: false}, ...owner});
+  await f.request(`/api/chats/${first.id}/share`, {method: 'POST', body: {on: true}, ...owner});
+  assert.deepEqual(await starred(guest), []);
+
+  await f.stop();
+  const restarted = await f.restart();
+  assert.deepEqual(await starred(await restarted.login('owner'), restarted), [third.id]);
 });
 
 test('unread from before it was kept per person counts as the owner’s, and names from .env are checked', async t => {
@@ -625,9 +667,10 @@ test('routines are set up by the model, listed and switched in the app, and kept
   assert.equal(routine.title, 'Morning briefing'); assert.equal(routine.schedule, 'Every day at 07:30'); assert.equal(routine.unread, false);
   assert.deepEqual(await (await f.request('/api/routines', guest)).json(), []);
   const listed = await (await f.request('/api/chats', owner)).json();
-  assert.deepEqual(listed.find((item: {id: string}) => item.id === routine.chat), {id: routine.chat, title: 'Morning briefing', unread: false, routine: true, shared: false, mine: true});
+  assert.deepEqual(listed.find((item: {id: string}) => item.id === routine.chat), {id: routine.chat, title: 'Morning briefing', unread: false, routine: true, shared: false, mine: true, starred: null});
   assert.equal((await f.state(routine.chat, owner)).routine.id, routine.id);
   assert.equal((await f.request(`/api/chats/${routine.chat}/share`, {method: 'POST', body: {on: true}, ...owner})).status, 409);
+  assert.equal((await f.request(`/api/chats/${routine.chat}/star`, {method: 'POST', body: {on: true}, ...owner})).status, 409);
   assert.equal((await f.request(`/api/routines/${routine.id}`, {method: 'POST', body: {enabled: false}, ...guest})).status, 404);
   const paused = await (await f.request(`/api/routines/${routine.id}`, {method: 'POST', body: {enabled: false}, ...owner})).json();
   assert.equal(paused.next, 'Paused');

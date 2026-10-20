@@ -185,6 +185,12 @@ regenerate or edit it. Only the owner deletes it or makes it private again,
 which closes it on the other phone. A reply to one person shows as unread for
 the other; routine conversations stay private.
 
+**Starred conversations.** The star in a conversation's header, or on its row
+in the sidebar, lists it under Starred, at the top of the sidebar, until it is
+unstarred; the one starred first stays on top. Stars are each person's own, so starring a shared
+conversation stars it only for you, and making a conversation private again
+removes the other person's star. Routine conversations stay under Routines.
+
 **The Library** holds single documents and pictures shared on their own, for
 both people, while the conversation they came from stays private. "Share with
 <name>" on a picture or in the document reader puts a copy there, so deleting

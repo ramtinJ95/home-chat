@@ -23,8 +23,11 @@ interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
 // `shared`: its owner shares it with the household, and both read and write in it. `unread`: who has not seen a routine
 // run, or in a shared conversation a reply to the other person, that arrived while they were not looking; each is
-// cleared when that person opens the conversation.
-interface Chat { id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true; unread?: User[] }
+// cleared when that person opens the conversation. `starred`: when each person who starred it did so.
+interface Chat {
+  id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true;
+  unread?: User[]; starred?: Partial<Record<User, string>>;
+}
 interface RoutineRun { routine: Routine; scheduled: Date }
 // What a conversation is busy with, from a message's admission until its reply's end is saved, or during a delete.
 // `by`: who sent the message, or deletes; a routine run is its owner's. `run`: the routine run being answered, with
@@ -157,6 +160,11 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     chat.unread = chat.unread.filter(other => other !== user);
     if (!chat.unread.length) delete chat.unread;
     return true;
+  };
+  const unstar = (chat: Chat, user: User) => {
+    if (!chat.starred?.[user]) return;
+    delete chat.starred[user];
+    if (!Object.keys(chat.starred).length) delete chat.starred;
   };
   // The saved switch only counts while Exa is set up, so removing the key turns research off everywhere, visibly.
   const researching = (chat: Chat) => researchReady && chat.deepResearch === true;
@@ -664,8 +672,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
-        const list: ChatSummary[] = visibleChats(session.user).map(({id, title, owner, shared, unread}) => ({id, title,
-          unread: unread?.includes(session.user) === true, routine: routines.byChat(id) !== undefined, shared: shared === true, mine: owner === session.user}));
+        const list: ChatSummary[] = visibleChats(session.user).map(({id, title, owner, shared, unread, starred}) => ({id, title,
+          unread: unread?.includes(session.user) === true, routine: routines.byChat(id) !== undefined, shared: shared === true, mine: owner === session.user,
+          starred: starred?.[session.user] ?? null}));
         return send(200, list);
       }
       if (path === '/api/search' && req.method === 'GET') {
@@ -797,13 +806,24 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         if (body.on) chat.shared = true;
         else {
           delete chat.shared;
-          for (const user of USERS) if (user !== chat.owner) markRead(chat, user);
+          for (const user of USERS) if (user !== chat.owner) { markRead(chat, user); unstar(chat, user); }
           for (const client of streams.get(chat.id) ?? []) {
             if (client.user !== chat.owner) { sse(client.res, {type: 'gone'}); client.res.end(); }
           }
         }
         await publish(chat);
         return send(200, snapshot(chat));
+      }
+      // Each person's own: it lists the conversation first in their sidebar. Starring it again keeps its place.
+      if (route === 'POST star') {
+        const body = await jsonBody(req, 1024);
+        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        stillVisible();
+        if (routines.byChat(chat.id)) throw fail(409, 'A routine’s conversation is listed under Routines');
+        if (!body.on) unstar(chat, session.user);
+        else if (!chat.starred?.[session.user]) (chat.starred ??= {})[session.user] = new Date().toISOString();
+        await save(chat);
+        return send(200, {ok: true});
       }
       if (route === 'GET events') {
         const clients = streams.get(chat.id) ?? new Set();
