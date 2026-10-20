@@ -36,6 +36,11 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   // The streamed message's text blocks as known so far, and how much of each was sent as deltas.
   #texts = new Map<number, string>();
   #sent = new Map<number, number>();
+  // All the text the turn sent. `#behind`: a snapshot replaced some of the turn's events, so its text is read from the
+  // transcript when it ends (`#catchingUp`) rather than streamed.
+  #streamed = '';
+  #behind = false;
+  #catchingUp?: Promise<void>;
 
   constructor(open: OpenStore, directory: string, call: ServerCall) {
     super();
@@ -74,10 +79,13 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
 
   async #handle(event: AgentEvent) {
     if (event.type === 'submission') return this.#finish(event.record);
-    // Only after more than 100 batches waiting; the turn's end may be among the ones it replaced.
-    if (event.type === 'snapshot' && this.#submission !== undefined) {
+    // Only after more than 100 batches waiting; the turn's text and its end may be among the ones it replaced.
+    if (event.type === 'snapshot') {
+      if (!this.#active) return;
+      this.#behind = true;
+      if (this.#submission === undefined) return;
       const record = await (await this.#store!.harness.submission(this.#submission, context))?.status(context);
-      if (record) this.#finish(record);
+      if (record) await this.#finish(record);
       return;
     }
     if (!this.#active) return;
@@ -109,22 +117,56 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   // Sends what is new in text block `index`. A delta listener may end the turn, as the size limit does, while one event
   // still has blocks to go; nothing is sent after that.
   #text(index: number, text: string) {
-    if (!this.#active) return;
+    if (!this.#active || this.#behind) return;
     this.#texts.set(index, text);
     const sent = this.#sent.get(index) ?? 0;
     if (text.length <= sent) return;
     this.#sent.set(index, text.length);
-    this.emit('delta', text.slice(sent));
+    this.#send(text.slice(sent));
   }
 
-  #finish(record: SubmissionRecord) {
+  #send(delta: string) {
+    this.#streamed += delta;
+    this.emit('delta', delta);
+  }
+
+  async #finish(record: SubmissionRecord) {
     if (record.status !== 'done' && record.status !== 'unanswered') return;
     if (!this.#active || record.id !== this.#submission) return;
+    if (this.#behind) {
+      // Whoever comes second waits for the same reading, and finds the turn ended.
+      try { await (this.#catchingUp ??= this.#catchUp(record)); }
+      catch {
+        if (this.#active && record.id === this.#submission) { this.#endTurn(); this.emit('failure', 'Home Chat could not read the end of the reply'); }
+        return;
+      }
+      if (!this.#active || record.id !== this.#submission) return;
+    }
     this.#endTurn();
     // Stopped from the app: the turn ends with what it has.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
     else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
+  }
+
+  // Sends the part of the turn's text, its replies after its message, that it has not sent yet. What it sent is the start
+  // of that text, unless a listener stopped it meanwhile.
+  async #catchUp(record: SubmissionRecord) {
+    // Ended before its message reached the transcript: it has no replies.
+    if (record.entry === undefined) return;
+    const replies: string[] = [];
+    let cursor: Cursor | undefined;
+    reading: do {
+      const page = await this.#require().entries({}, 200, cursor, context);
+      for (const entry of page.items) {
+        if (entry.id === record.entry) break reading;
+        const message = entry.model?.[0];
+        if (message?.role === 'assistant') replies.unshift(message.content.map(block => block.type === 'text' ? block.text : '').join(''));
+      }
+      cursor = page.next;
+    } while (cursor !== undefined);
+    const text = replies.join('');
+    if (this.#active && text.length > this.#streamed.length && text.startsWith(this.#streamed)) this.#send(text.slice(this.#streamed.length));
   }
 
   #endTurn() {
@@ -136,6 +178,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     const conversation = this.#require();
     this.turn = {mode, calls: 0, images: 0};
     this.#texts = new Map(); this.#sent = new Map();
+    this.#streamed = ''; this.#behind = false; this.#catchingUp = undefined;
     this.#active = true;
     let submitted;
     try {
@@ -148,7 +191,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     }
     this.#submission = submitted.id;
     // The turn may have ended before submit() returned, its end delivered already or replaced by a snapshot.
-    this.#finish(await submitted.status(context));
+    await this.#finish(await submitted.status(context));
   }
 
   async rewind(text: string): Promise<boolean> {
