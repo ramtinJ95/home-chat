@@ -25,8 +25,8 @@ Preconditions:
 
 - `stack.sh doctor` prints `OK`. Codex isn't needed.
 
-The journey script covers `todos-create` (shared), `todos-items` (add and tick), `todos-clear`, `todos-delete` and
-`todos-household`:
+The journey script covers `todos-create` (shared), `todos-items` (add, tick, and done items sinking), `todos-clear`,
+`todos-delete` and `todos-household`:
 
 ```sh
 .claude/skills/verify-home-chat/stack.sh run node .claude/skills/verify-home-chat/journeys/todos.ts
@@ -37,21 +37,28 @@ The journey script covers `todos-create` (shared), `todos-items` (add and tick),
   heading appears and its "Shared" tag (`.pill`) shows.
 - **Items.** In the card, fill the textbox "Add an item to <title>" and tap "Add to <title>". A `.todo-item` with the text
   appears. Ticking the checkbox named after the item gives the row the class `todo-item done`.
-- **Stored.** `stack.sh data todos.json` lists the title with `owner: "owner"`, `shared: true` and the items with their
-  `done` flags.
-- **Household.** Sign in as guest on a phone and open Todos. The same card is there without "Delete", and an item the
-  guest adds is in `todos.json` too.
+- **Stored.** `stack.sh data todos.json` holds each list as `{id, owner, title, shared, version, next, items}`, with
+  `id` like `list_<16 hex>` and each item as `{id, text, done}` with a numeric `id`. Items stay in the order they were
+  added. Only the screen moves done items down.
+- **Household.** Sign in as guest on a phone and open Todos. The same card is there without "Delete" or "Make
+  private", and an item the guest adds is in `todos.json` too. The guest can still rename it.
 - **Owner catches up.** Tap `#todos-close` and reopen Todos. The guest's item is shown.
 - **Clear and delete.** "Clear done" removes the ticked rows. Accept the `confirm()` and tap "Delete", and the card
   goes away and the list is gone from `todos.json`.
-- **Not in the script yet.** `todos-rename` (accept the `prompt()` with a new name; the heading changes) and
-  `todos-share` ("Make private"; the guest's card disappears after the guest reopens Todos), and a pass at 1360x950
-  on `page`.
+- **Not in the script yet.** Untick an item, and remove one with the button "Remove <item>". `todos-rename`: accept
+  the `prompt()` "Name of the list" with a new name, and the heading changes. `todos-share`: "Make private", and the
+  guest's card disappears after the guest reopens Todos. A list made without "Share with the household" never shows
+  for the guest. A pass at 1360x950 on `page`, where `#todos-entry button` is tapped without opening a drawer.
 - **Proof.** `.local/verify/todos-<time>/` holds screenshots and ARIA snapshots `01` to `05` and `results.json`.
 
 ## Gotchas
 
 - `todos.json` doesn't exist until the first list is made, so `stack.sh data todos.json` fails on a fresh volume.
-- The page reloads lists only when it opens or comes back into view. To see the other person's change, close and reopen
-  Todos rather than waiting.
-- Lists are capped at 30 per person and items at 200 per list. Journeys delete what they make so reruns stay below that.
+- The page fetches the lists again when it opens, comes back into view, and after making a list, deleting one, or a
+  refused change. To see the other person's change, close and reopen Todos rather than waiting. A change to a list
+  that was deleted or made private meanwhile shows "This list is gone or no longer shared with you", and the card goes
+  away.
+- Item checkboxes are named by the label around them, so `getByRole('checkbox', {name: 'Milk'})` finds them. They
+  have no `aria-label`.
+- Lists are capped at 30 per person and items at 200 per list. A list title can be 80 characters and an item 300.
+  Journeys delete what they make so reruns stay below the caps.

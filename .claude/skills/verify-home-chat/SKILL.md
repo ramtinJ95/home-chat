@@ -70,7 +70,7 @@ calls reach `home-chat-verify` and not another project:
 
 ```sh
 .claude/skills/verify-home-chat/stack.sh run node .claude/skills/verify-home-chat/journeys/todos.ts
-.claude/skills/verify-home-chat/stack.sh run node scripts/check-browser.ts    # sign-in, picture upload and removal, layout
+.claude/skills/verify-home-chat/stack.sh run node scripts/check-browser.ts    # sign-in, picture upload and removal, layout; screenshots only
 .claude/skills/verify-home-chat/stack.sh run node scripts/check-browser-live.ts --confirm-subscription-usage   # needs Codex; uses quota
 ```
 
@@ -80,15 +80,17 @@ names (`getByRole('button', {name: 'Make list'})`). Never use coordinates. On ph
 `#open-sidebar` before any sidebar control.
 
 To read stored state on the data volume (read-only), run
-`.claude/skills/verify-home-chat/stack.sh data todos.json`. The other files are `memory.json` and `routines.json`, plus
-`chats/<id>/` for conversations.
+`.claude/skills/verify-home-chat/stack.sh data todos.json`. The other files are `memory.json`, `routines.json` and
+`library.json`, plus `chats/<id>/chat.json` for conversations. Each appears on the first change it records, so reading
+it before then fails. Never read `local-access.json`: it holds the access codes in plain text.
 
 ## Evidence
 
 Each journey writes to `.local/verify/<feature>-<UTC time>/`, which is git-ignored and survives `down`. It writes a
 full-page PNG and an ARIA snapshot (`.aria.yml`) after each numbered step (one step can be several actions), `results.json` with the steps that passed, and
-`failure.png` when a step fails. Keep the console output (`PASS ...` lines) with the evidence when reporting. The
-proof standards are:
+`failure.png` when a step fails. Keep the console output (`PASS ...` lines) with the evidence when reporting.
+`scripts/check-browser.ts` is the app's own check and only writes `.local/desktop.png` and `.local/mobile.png`, so copy
+those into the run's evidence folder. The proof standards are:
 
 - Go through the UI the way a user would: the sidebar drawer, buttons, forms. Calling `/api/...` directly is only for
   reading state back, never for performing the step being proved.
