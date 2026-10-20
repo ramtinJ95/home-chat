@@ -537,6 +537,15 @@ test('a restart keeps conversations in the order they were made, also ones saved
   }
   const again = await f.restart();
   assert.deepEqual((await again.chats(await again.login('owner'))).map((item: {id: string}) => item.id), order);
+  await again.stop();
+
+  // Made in the same millisecond: their ids settle the order, so it is the same however the directories are read.
+  for (const id of order) {
+    const path = join(f.data, 'chats', id, 'chat.json');
+    await writeFile(path, JSON.stringify({...JSON.parse(await readFile(path, 'utf8')), created: '2026-10-20T12:00:00.000Z'}));
+  }
+  const tied = await f.restart();
+  assert.deepEqual((await tied.chats(await tied.login('owner'))).map((item: {id: string}) => item.id), [...order].sort());
 });
 test('a crash mid-reply or mid-creation is recovered when the app comes back', async t => {
   const f = await fixture(t);

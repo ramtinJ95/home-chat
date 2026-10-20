@@ -150,7 +150,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // A person has at most one turn at a time, counting the turns they sent, wherever they are.
   const userBusy = (user: User) => [...turns.values()].some(turn => turn.by === user);
   const canSee = (chat: Chat, user: User) => chat.owner === user || chat.shared === true;
-  const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user));
+  // In the order they were made, the same after a restart, which reads the directories in no particular order.
+  const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user))
+    .sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id));
   const markUnread = (chat: Chat, user: User) => { if (!chat.unread?.includes(user)) (chat.unread ??= []).push(user); };
   // True if it changed, so the conversation needs saving.
   const markRead = (chat: Chat, user: User) => {
@@ -175,7 +177,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     return saver();
   };
   const forget = (chat: Chat) => { chats.delete(chat.id); savers.delete(chat.id); };
-  const loaded: Chat[] = [];
   for (const id of await readdir(chatsDirectory)) {
     if (!ID_PATTERN.test(id)) throw new Error('Unexpected conversation directory');
     const chat = await readJson<Chat>(join(chatsDirectory, id, 'chat.json'));
@@ -195,10 +196,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       if (last?.role === 'assistant') last.error = 'Home Chat restarted before this reply finished';
     }
     if (undated || interrupted) await save(chat);
-    loaded.push(chat);
+    chats.set(id, chat);
   }
-  // Directories are read in no particular order.
-  for (const chat of loaded.sort((a, b) => a.created.localeCompare(b.created))) chats.set(chat.id, chat);
   // Set by stop(). From then on no turn ends: stop() saves running replies and the next start marks them interrupted,
   // so Pi exiting or rejecting a prompt under a shutdown is never recorded as the turn's outcome.
   let stopping = false;
