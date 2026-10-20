@@ -515,6 +515,29 @@ test('a restart keeps conversations and the streamed part of an unfinished reply
   assert.match(state.messages[1].error, /restarted before this reply finished/);
   assert.equal((await restarted.send(chat.id, again, 'again')).status, 202);
 });
+test('a restart keeps conversations in the order they were made, also ones saved before that order was recorded', async t => {
+  const f = await fixture(t);
+  const owner = await f.login('owner');
+  for (let made = 0; made < 6; made++) {
+    await f.newChat(owner);
+    // A conversation's time is to the millisecond; this keeps them apart.
+    await delay(5);
+  }
+  const order = (await f.chats(owner)).map((item: {id: string}) => item.id);
+  await f.stop();
+  const restarted = await f.restart();
+  assert.deepEqual((await restarted.chats(await restarted.login('owner'))).map((item: {id: string}) => item.id), order);
+  await restarted.stop();
+
+  for (const id of order) {
+    const path = join(f.data, 'chats', id, 'chat.json');
+    const {created, ...older} = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(typeof created, 'string');
+    await writeFile(path, JSON.stringify(older));
+  }
+  const again = await f.restart();
+  assert.deepEqual((await again.chats(await again.login('owner'))).map((item: {id: string}) => item.id), order);
+});
 test('a crash mid-reply or mid-creation is recovered when the app comes back', async t => {
   const f = await fixture(t);
   const owner = await f.login('owner');
