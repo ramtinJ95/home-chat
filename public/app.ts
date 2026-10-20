@@ -896,20 +896,22 @@ async function refreshSidebar(): Promise<ChatSummary[]> {
   // from before a star.
   if (run !== sidebarRun) return all.reverse();
   ui.routines.hidden = !routines.length;
-  keepSwitchFocus(ui.routineList, () => ui.routineList.replaceChildren(...routines.map(routineRow)));
+  keepFocus(ui.routineList, 'routine', () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
   // The server lists oldest first; everything here wants newest first. Starred conversations come first, the earliest
   // starred on top, and leave their usual list meanwhile. Routine conversations sit in their own list, and shared ones
   // in theirs.
   const list = listed = all.reverse();
   const starred = list.filter(item => item.starred !== null).sort((a, b) => (a.starred ?? '').localeCompare(b.starred ?? ''));
-  ui.starred.hidden = !starred.length;
-  ui.starredList.replaceChildren(...starred.map(chatRow));
   const rest = list.filter(item => item.starred === null);
   const shared = rest.filter(item => item.shared);
-  ui.shared.hidden = !shared.length;
-  ui.sharedList.replaceChildren(...shared.map(chatRow));
-  ui.chatList.replaceChildren(...rest.filter(item => !item.routine && !item.shared).map(chatRow));
+  keepFocus(ui.sidebar, 'chat', () => {
+    ui.starred.hidden = !starred.length;
+    ui.starredList.replaceChildren(...starred.map(chatRow));
+    ui.shared.hidden = !shared.length;
+    ui.sharedList.replaceChildren(...shared.map(chatRow));
+    ui.chatList.replaceChildren(...rest.filter(item => !item.routine && !item.shared).map(chatRow));
+  });
   renderStar();
   return list;
 }
@@ -950,13 +952,7 @@ function rowStar(item: ChatSummary): HTMLButtonElement {
   star.setAttribute('aria-label', `Star “${item.title}”`);
   star.setAttribute('aria-pressed', String(on));
   star.append(icon('star'));
-  // Starring moves the row to another list, so the focus follows it there.
-  star.onclick = () => {
-    const focused = document.activeElement === star;
-    setStar(item.id, !on).then(() => {
-      if (focused) document.querySelector<HTMLElement>(`.chat-star[data-chat="${CSS.escape(item.id)}"]`)?.focus();
-    }).catch(showError);
-  };
+  star.onclick = () => setStar(item.id, !on).catch(showError);
   return star;
 }
 
@@ -1199,7 +1195,7 @@ async function openRoutines(edit?: string) {
 }
 
 function renderRoutineCards(list: RoutineSummary[]) {
-  keepSwitchFocus(ui.routineCards, () => drawRoutineCards(list));
+  keepFocus(ui.routineCards, 'routine', () => drawRoutineCards(list));
 }
 
 function drawRoutineCards(list: RoutineSummary[]) {
@@ -1334,12 +1330,13 @@ function editRoutine(routine: RoutineSummary) {
   title.focus({preventScroll: true});
 }
 
-// Runs `redraw` on `node`. A routine switch in it that had the focus is drawn anew, so the new one gets the focus.
-function keepSwitchFocus(node: HTMLElement, redraw: () => void) {
+// Runs `redraw` on `node`. A routine switch or conversation star in it that had the focus is drawn anew, perhaps in
+// another list, so the new one for the same routine or conversation gets the focus.
+function keepFocus(node: HTMLElement, key: 'routine' | 'chat', redraw: () => void) {
   const active = document.activeElement;
-  const id = active instanceof HTMLInputElement && node.contains(active) ? active.dataset.routine : undefined;
+  const id = active instanceof HTMLElement && node.contains(active) ? active.dataset[key] : undefined;
   redraw();
-  if (id && !active!.isConnected) node.querySelector<HTMLInputElement>(`input[data-routine="${CSS.escape(id)}"]`)?.focus({preventScroll: true});
+  if (id && !active!.isConnected) node.querySelector<HTMLElement>(`[data-${key}="${CSS.escape(id)}"]`)?.focus();
 }
 
 function routineSwitch(routine: RoutineSummary): HTMLElement {
@@ -1378,7 +1375,7 @@ function renderRoutineBar(routine: RoutineSummary | null) {
   const remove = element('button', 'ghost danger', 'Delete routine');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
   const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
-  keepSwitchFocus(ui.routineBar, () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
+  keepFocus(ui.routineBar, 'routine', () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
 }
 
 // The Pause button on a routine's notification.
