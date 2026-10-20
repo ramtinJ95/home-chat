@@ -57,6 +57,7 @@ try {
   await add(phone, 'Eggs');
   await card(phone).getByRole('checkbox', {name: 'Milk'}).check();
   await card(phone).locator('.todo-item.done', {hasText: 'Milk'}).waitFor({state: 'visible'});
+  assert.deepEqual(await card(phone).locator('.todo-item label').allInnerTexts(), ['Eggs', 'Milk'], 'Done items sink below open ones');
   await capture(phone, '02-owner-made-list');
   const made = stored();
   assert.deepEqual(made && {owner: made.owner, shared: made.shared, items: made.items.map(({text, done}) => ({text, done}))},
@@ -68,10 +69,11 @@ try {
   await card(guestPhone).waitFor({state: 'visible'});
   assert.equal(await item(guestPhone, 'Milk').getAttribute('class'), 'todo-item done');
   assert.equal(await card(guestPhone).getByRole('button', {name: 'Delete', exact: true}).count(), 0, 'The guest can delete the owner’s list');
+  assert.equal(await card(guestPhone).getByRole('button', {name: 'Make private'}).count(), 0, 'The guest can unshare the owner’s list');
   await add(guestPhone, 'Bread');
   await capture(guestPhone, '03-guest-added-bread');
   assert.deepEqual(stored()?.items.map(each => each.text), ['Milk', 'Eggs', 'Bread']);
-  pass('guest sees the shared list without Delete and adds Bread; todos.json agrees');
+  pass('guest sees the shared list without Delete or Make private and adds Bread; todos.json agrees');
 
   current = phone;
   await phone.locator('#todos-close').click();
