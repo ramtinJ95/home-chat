@@ -1554,6 +1554,12 @@ async function openLibrary() {
   await refreshLibrary();
 }
 
+const libraryDot = unreadDot('Newly shared');
+libraryDot.hidden = true;
+const libraryButton = actionButton('document', 'Library', openLibrary);
+libraryButton.append(libraryDot);
+ui.libraryEntry.replaceChildren(libraryButton);
+
 // Drawn into the page if it is open, which counts as seeing it; otherwise the sidebar entry shows whether anything is
 // new. `libraryRun` keeps an answer that newer requests overtook from drawing over theirs.
 let libraryRun = 0;
@@ -1566,14 +1572,8 @@ async function refreshLibrary() {
   // Opened while the plain read was on its way.
   if (open() && library.unseen) library = await markSeen();
   if (run !== libraryRun) return;
-  renderLibraryEntry(library.unseen);
+  libraryDot.hidden = !library.unseen;
   if (open()) renderLibrary(library);
-}
-
-function renderLibraryEntry(unseen: boolean) {
-  const open = actionButton('document', 'Library', openLibrary);
-  if (unseen) open.append(unreadDot('Newly shared'));
-  ui.libraryEntry.replaceChildren(open);
 }
 
 function renderLibrary(library: Library) {
@@ -1622,8 +1622,6 @@ async function shareAsset(chatId: string, assetId: string) {
   await api(`/api/chats/${chatId}/assets/${assetId}/share`, 'POST', {});
   showNotice(`Shared with ${otherName()}. It’s in the Library.`);
 }
-
-renderLibraryEntry(false);
 
 
 // Adding to the Home Screen: Chromium browsers (Edge, Chrome, Android) hand over a prompt the page can show; iPhone and
