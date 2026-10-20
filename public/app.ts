@@ -852,8 +852,9 @@ ui.dictate.onclick = () => {
   try { if (Recognizer) startDictation(Recognizer); } catch (error) { showError(error); }
 };
 
-function routineRow(routine: RoutineSummary): HTMLElement {
+function routineRow(routine: RoutineSummary, menuOpen: boolean): HTMLElement {
   const row = element('div', routine.chat === chat?.id ? 'chat-item active' : 'chat-item');
+  row.dataset.chat = routine.chat;
   const open = element('button', 'chat-open routine-open');
   open.append(element('strong', undefined, routine.title), element('span', undefined, routine.next));
   open.onclick = () => { setDrawer(false); openChat(routine.chat).catch(showError); };
@@ -873,6 +874,7 @@ function routineRow(routine: RoutineSummary): HTMLElement {
     items.style.top = (below ? button.bottom + 4 : button.top - 4 - items.offsetHeight) + 'px';
     items.style.right = (innerWidth - button.right) + 'px';
   });
+  menu.open = menuOpen;
   row.append(open, ...(routine.unread ? [unreadDot()] : []), routineSwitch(routine), menu);
   return row;
 }
@@ -893,7 +895,9 @@ async function refreshSidebar(): Promise<ChatSummary[]> {
   // from before a star.
   if (run !== sidebarRun) return list;
   ui.routines.hidden = !routines.length;
-  keepFocus(ui.routineList, 'routine', () => ui.routineList.replaceChildren(...routines.map(routineRow)));
+  // A redraw keeps a row's open menu open, and the focus on the control of the row that had it.
+  const menuOpen = ui.routineList.querySelector('details[open]')?.closest<HTMLElement>('[data-chat]')?.dataset.chat;
+  keepFocus(ui.routineList, 'chat', () => ui.routineList.replaceChildren(...routines.map(routine => routineRow(routine, routine.chat === menuOpen))));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
   // Starred conversations come first, the earliest starred on top, and leave their usual list meanwhile. Routine
   // conversations sit in their own list, and shared ones in theirs.
@@ -1330,7 +1334,7 @@ function editRoutine(routine: RoutineSummary) {
 function keepFocus(node: HTMLElement, key: 'routine' | 'chat' | 'item', redraw: () => void) {
   const active = document.activeElement;
   const holder = active instanceof HTMLElement && node.contains(active) ? active.closest<HTMLElement>(`[data-${key}]`) : null;
-  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input, a')];
+  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input, a, summary')];
   const at = holder ? controls(holder).indexOf(active as HTMLElement) : -1;
   redraw();
   if (!holder || active!.isConnected) return;
