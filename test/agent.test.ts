@@ -6,6 +6,9 @@ import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type AssistantMessage, type Message, type SystemMessage } from '@earendil-works/pi-ai';
+import { Harness, type AgentEvent, type Conversation, type SubmissionId } from '@earendil-works/pi-durable';
+// Internal to Pi Durable: the queue behind an event stream, so a test can hold its deliveries back.
+import { CommittedWatch } from '../node_modules/@earendil-works/pi-durable/dist/session/observation.js';
 import type { Question } from '../src/api.d.ts';
 import { createAgent } from '../src/agent/agent.ts';
 import type { DurableWorker } from '../src/agent/worker.ts';
@@ -285,6 +288,70 @@ test('after a crash, the interrupted turn is stopped and the next message works'
   // The question was never answered; the model sees it interrupted, and only one model request was made here.
   assert.equal(f.requests.length, 1);
   assert.deepEqual(userTexts(f.requests[0]!), ['Message from the user:\nAsk me something', 'Message from the user:\nHello?']);
+});
+
+test('a file whose interrupted work cannot be stopped is closed again, and its worker does not start', async t => {
+  const f = await fixture(t);
+  const opened: Harness[] = [];
+  const open = Harness.open;
+  t.mock.method(Harness, 'open', async (...args: Parameters<typeof open>) => {
+    const harness = await open(...args);
+    t.mock.method(harness, 'inspect', async () => { throw new Error('The file could not be read'); });
+    opened.push(harness);
+    return harness;
+  });
+  await assert.rejects(f.worker(), /could not be read/);
+  let closed = false;
+  void opened[0]!.closed.then(() => { closed = true; });
+  await until(() => closed, 'the file was closed');
+});
+
+test('a turn that ends while its message is still being submitted settles, also when the event stream skipped its end', async t => {
+  const f = await fixture(t);
+  // Event deliveries wait for `held`; meanwhile more than 100 waiting batches are replaced by a snapshot.
+  let held: Promise<void> | undefined;
+  const release = Promise.withResolvers<void>();
+  const delivered: AgentEvent[] = [];
+  let turn: SubmissionId | undefined;
+  const caughtUp = Promise.withResolvers<void>();
+  const start = CommittedWatch.prototype.start;
+  t.mock.method(CommittedWatch.prototype, 'start', function (this: CommittedWatch<unknown>, listener: Parameters<typeof start>[0]) {
+    start.call(this, async (value, ops, context) => {
+      await held;
+      await listener(value, ops, context);
+      delivered.push(...value as AgentEvent[]);
+      if (delivered.some(event => event.type === 'snapshot')) caughtUp.resolve();
+    });
+  });
+  // Submitting returns only after the turn ended, and after the stream replaced that end with a snapshot.
+  const open = Harness.open;
+  t.mock.method(Harness, 'open', async (...args: Parameters<typeof open>) => {
+    const harness = await open(...args);
+    const create = harness.createConversation.bind(harness);
+    t.mock.method(harness, 'createConversation', async (...created: Parameters<typeof create>) => {
+      const conversation: Conversation = await create(...created);
+      const submit = conversation.submit.bind(conversation);
+      t.mock.method(conversation, 'submit', async (...submitted: Parameters<typeof submit>) => {
+        const submission = await submit(...submitted);
+        turn = submission.id;
+        await submission.wait(submitted[1]);
+        for (let index = 0; index < 100; index++) await submit({type: 'write', entry: {kind: 'test.note', data: index}}, submitted[1]);
+        release.resolve();
+        await caughtUp.promise;
+        return submission;
+      });
+      return conversation;
+    });
+    return harness;
+  });
+  const worker = await f.worker();
+  f.reply([fauxAssistantMessage('Done.')]);
+  held = release.promise;
+  let settled = false;
+  worker.once('settled', () => { settled = true; });
+  await worker.prompt('Hi');
+  assert.ok(!delivered.some(event => event.type === 'submission' && event.record.id === turn && event.record.status === 'done'), 'the stream skipped the end');
+  await until(() => settled, 'the turn settled');
 });
 
 test('tool input is checked before it runs: no private web hosts, no images from outside the conversation', async t => {
