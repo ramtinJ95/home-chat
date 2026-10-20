@@ -235,7 +235,9 @@ svg { width: 20px; height: 20px; flex: none; }
 .chat-star { margin-right: 4px; }
 .chat-star svg { width: 16px; height: 16px; }
 .chat-star:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-/* A star, on a row or in the header, is filled while its conversation is starred. */
+/* A star, on a row or in the header, is filled while its conversation is starred. Its fill is set here, since the
+   page's content security policy refuses style attributes. */
+#star path { fill: var(--star-fill, none); }
 .chat-star[aria-pressed="true"], .star-button[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 .sidebar-section { display: grid; }
 /* Routines: their own list above Recent, a switch per routine, and delete behind a menu. */
