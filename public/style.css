@@ -189,7 +189,7 @@ svg { width: 20px; height: 20px; flex: none; }
   width: 100%; padding: 9px 12px 9px 36px; border-radius: 12px;
   border: 1px solid var(--line); background: var(--card); font-size: 1rem;
 }
-.sidebar.searching #routines, .sidebar.searching #shared, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
+.sidebar.searching #starred, .sidebar.searching #routines, .sidebar.searching #shared, .sidebar.searching #recent-label, .sidebar.searching #chat-list { display: none; }
 .search-result { display: grid; gap: 3px; width: 100%; padding: 10px 12px; border-radius: 12px; text-align: left; transition: background 140ms; }
 .search-result:hover { background: color-mix(in srgb, var(--accent) 7%, transparent); }
 .search-result strong { font-size: 0.9rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -319,6 +319,9 @@ svg { width: 20px; height: 20px; flex: none; }
 .toggle-button:hover { border-color: var(--accent); color: var(--accent); }
 .toggle-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .toggle-button:disabled { opacity: 0.55; cursor: default; }
+/* Star, in the header; filled while the conversation is starred. */
+.star-button { flex: none; width: 38px; height: 38px; }
+.star-button[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 
 .notice {
   margin: 14px auto 0; width: min(100% - 32px, 760px);

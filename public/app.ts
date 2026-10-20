@@ -22,6 +22,8 @@ const ui = {
   chatList: $('#chat-list'),
   shared: $('#shared'),
   sharedList: $('#shared-list'),
+  starred: $('#starred'),
+  starredList: $('#starred-list'),
   routines: $('#routines'),
   routineList: $('#routine-list'),
   routineBar: $('#routine-bar'),
@@ -31,6 +33,7 @@ const ui = {
   title: $('#chat-title'),
   sharedBy: $('#shared-by'),
   share: $<HTMLButtonElement>('#share-chat'),
+  star: $<HTMLButtonElement>('#star-chat'),
   shareLabel: $('#share-label'),
   research: $<HTMLButtonElement>('#research'),
   providerWarning: $('#provider-warning'),
@@ -281,6 +284,8 @@ const senderOf = (snapshot: ChatSnapshot, message: Message) => message.by ?? sna
 // The server says whether the last turn can be redone at all; only the person who sent its message may.
 const canRedo = (snapshot: ChatSnapshot) => snapshot.redoable && senderOf(snapshot, snapshot.messages.at(-2)!) === me?.user;
 let chat: ChatSnapshot | undefined;
+// The sidebar's conversations as last listed, newest first.
+let listed: ChatSummary[] = [];
 // The snapshot last drawn, as JSON, so the same one coming again is not drawn twice (update). Cleared by anything that
 // changes the page since: stream events, and a dropped stream, after which the next snapshot is drawn in full.
 let shown = '';
@@ -439,6 +444,7 @@ function renderChat(next: ChatSnapshot) {
   ui.share.title = next.shared ? `Shared with ${otherName()}; tap to make it private` : `Share this conversation with ${otherName()}`;
   ui.sharedBy.hidden = mine;
   ui.sharedBy.textContent = mine ? '' : `Shared by ${nameOf(next.owner)}`;
+  renderStar();
   ui.privacy.textContent = next.shared ? 'Shared' : 'Private';
   ui.research.hidden = !me?.deepResearch;
   ui.research.setAttribute('aria-pressed', String(next.deepResearch));
@@ -480,6 +486,15 @@ ui.share.onclick = async () => {
   if (!on && !confirm(`Make “${chat.title}” private again? It will no longer be shared with ${otherName()}.`)) return;
   try {
     update(await api<ChatSnapshot>(`/api/chats/${chat.id}/share`, 'POST', {on}));
+    await refreshSidebar();
+  } catch (error) { showError(error); }
+};
+
+ui.star.onclick = async () => {
+  if (!chat) return;
+  const on = listed.find(item => item.id === chat?.id)?.starred == null;
+  try {
+    await api(`/api/chats/${chat.id}/star`, 'POST', {on});
     await refreshSidebar();
   } catch (error) { showError(error); }
 };
@@ -877,14 +892,29 @@ async function refreshSidebar(): Promise<ChatSummary[]> {
   ui.routines.hidden = !routines.length;
   keepSwitchFocus(ui.routineList, () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
-  // The server lists oldest first; everything here wants newest first. Routine conversations sit in their own list, and
-  // shared ones in theirs.
-  const list = all.reverse();
-  const shared = list.filter(item => item.shared);
+  // The server lists oldest first; everything here wants newest first. Starred conversations come first, the earliest
+  // starred on top, and leave their usual list meanwhile. Routine conversations sit in their own list, and shared ones
+  // in theirs.
+  const list = listed = all.reverse();
+  const starred = list.filter(item => item.starred !== null).sort((a, b) => (a.starred ?? '').localeCompare(b.starred ?? ''));
+  ui.starred.hidden = !starred.length;
+  ui.starredList.replaceChildren(...starred.map(chatRow));
+  const rest = list.filter(item => item.starred === null);
+  const shared = rest.filter(item => item.shared);
   ui.shared.hidden = !shared.length;
   ui.sharedList.replaceChildren(...shared.map(chatRow));
-  ui.chatList.replaceChildren(...list.filter(item => !item.routine && !item.shared).map(chatRow));
+  ui.chatList.replaceChildren(...rest.filter(item => !item.routine && !item.shared).map(chatRow));
+  renderStar();
   return list;
+}
+
+// A star is each person's own, so the header's comes from their sidebar list, not from the conversation's snapshot.
+function renderStar() {
+  const item = listed.find(entry => entry.id === chat?.id);
+  ui.star.hidden = !item || item.routine;
+  const on = item?.starred != null;
+  ui.star.setAttribute('aria-pressed', String(on));
+  ui.star.title = on ? 'Starred; tap to unstar' : 'Star to keep it at the top of the list';
 }
 
 function chatRow(item: ChatSummary): HTMLElement {
