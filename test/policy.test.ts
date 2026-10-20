@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, symlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { ATTACHED_NOTE, allowedDestination, carriesText, composePrompt, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
+import { ALLOWED_TOOLS, ATTACHED_NOTE, allowedDestination, carriesText, composePrompt, publicAddress, pushServiceHost, pushSubscription, requireAllowedTool, allowedDocumentPath, allowedImagePath, documentInput, validateToolInput } from '../src/policy.ts';
 import { pushKeys, tempDir } from './helpers.ts';
 
 test('the rewind recognises the message Pi was given, notes and picture paths included, and nothing else', () => {
@@ -52,7 +52,7 @@ test('all private, mapped, reserved, metadata and tailnet addresses are denied',
 });
 test('execution tools are never allowlisted', () => {
   for (const name of ['exec', 'exec_command', 'write_stdin', 'bash', 'read', 'write', 'edit', 'apply_patch', 'view_image', 'browser', 'spawn_agent', 'notebook', 'ask; bash']) assert.throws(() => requireAllowedTool(name));
-  for (const name of ['ask', 'web_run', 'imagegen', 'document', 'deep_research']) assert.doesNotThrow(() => requireAllowedTool(name));
+  for (const name of ALLOWED_TOOLS) assert.doesNotThrow(() => requireAllowedTool(name));
 });
 test('image references reject traversal, secrets, sibling conversations and symlinks', async t => {
   const root = await tempDir(t, 'home-chat-policy-');

@@ -10,8 +10,7 @@ import type { Question } from '../src/api.d.ts';
 import { createAgent } from '../src/agent/agent.ts';
 import type { DurableWorker } from '../src/agent/worker.ts';
 import { ALLOWED_TOOLS, type ServerCall, type TurnMode } from '../src/policy.ts';
-import { createMemory } from '../src/memory.ts';
-import { tempDir, until, withEnv } from './helpers.ts';
+import { until, withEnv } from './helpers.ts';
 
 type Reply = AssistantMessage | ((messages: Message[]) => AssistantMessage);
 
@@ -150,16 +149,18 @@ test('a routine run cannot ask, deep research needs its mode, and a message has 
 });
 
 test('memory saves only after the user confirms, through the server', async t => {
-  // The server's side of the tool, as src/server.ts has it: a change is checked first, then made.
-  const memory = await createMemory(join(await tempDir(t, 'home-chat-memory-'), 'memory.json'));
+  // The server checks a change first, then makes it; it has no note "Never said" to forget.
+  const calls: unknown[] = [];
   const f = await fixture(t, async (path, body) => {
     if (path !== '/memory' || body === undefined) return '';
-    if ((body as {check?: boolean}).check === true) { memory.check('owner', body as never); return 'OK'; }
-    await memory.apply('owner', body as never);
-    return 'Saved under About us.';
+    calls.push(body);
+    const {check, text} = body as {check?: boolean; text: string};
+    if (check && text === 'Never said') throw new Error('There is no such note; copy it exactly as written');
+    return check ? 'OK' : 'Saved under About us.';
   });
   const worker = await f.worker();
-  const suggest = (change = {action: 'remember', text: 'Vegetarian'}) =>
+  const vegetarian = {action: 'remember', text: 'Vegetarian'};
+  const suggest = (change = vegetarian) =>
     f.reply([fauxAssistantMessage([fauxToolCall('memory', change)], {stopReason: 'toolUse'}), fauxAssistantMessage('Noted.')]);
   const asked: Question[] = [];
   // A change that cannot be made fails before the user is asked.
@@ -167,15 +168,16 @@ test('memory saves only after the user confirms, through the server', async t =>
   await turn(worker, 'Forget what I never said', {}, question => { asked.push(question); return true; });
   assert.match(toolResults(f.requests.at(-1)!).at(-1)!, /no such note/);
   assert.equal(asked.length, 0);
+  assert.deepEqual(calls.splice(0), [{action: 'forget', text: 'Never said', check: true}]);
   suggest();
   await turn(worker, 'I am vegetarian', {}, question => { asked.push(question); return false; });
   assert.match(toolResults(f.requests.at(-1)!).at(-1)!, /said no, so nothing changed/);
-  assert.deepEqual(memory.view('owner'), {version: 0, mine: [], shared: []});
+  assert.deepEqual(calls.splice(0), [{...vegetarian, check: true}]);
   suggest();
   await turn(worker, 'Really, I am vegetarian', {}, question => { asked.push(question); return true; });
   assert.deepEqual(asked.map(({method, title}) => [method, title]), [['confirm', 'Remember this about you?'], ['confirm', 'Remember this about you?']]);
   assert.equal(toolResults(f.requests.at(-1)!).at(-1), 'Saved under About us.');
-  assert.deepEqual(memory.view('owner'), {version: 1, mine: ['Vegetarian'], shared: []});
+  assert.deepEqual(calls, [{...vegetarian, check: true}, vegetarian]);
 });
 
 test('regenerate forks before the last message, and the fork is what continues after a restart', async t => {
@@ -229,7 +231,7 @@ test('a stopped reply settles, a provider failure fails the turn, and a stopped 
   await turn(worker, 'Ask me something');
   assert.equal(worker.question, null);
 
-  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: '429 Too Many Requests: usage limit'})]);
+  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'Too Many Requests\n429'})]);
   await assert.rejects(() => turn(worker, 'Hello'), /usage limit reached/);
 
   f.reply([fauxAssistantMessage([fauxToolCall('ask', {prompts: [{title: 'Still there?'}]})], {stopReason: 'toolUse'})]);
@@ -252,13 +254,6 @@ test('a reply stopped from a delta, as the response size limit does, sends no te
   await worker.prompt('Write a lot');
   await until(() => events.some(event => event.startsWith('failure')), 'the turn failed');
   assert.deepEqual(events, ['delta First block.', 'failure Response size limit reached']);
-});
-
-test('a provider error is read as its text, so a status on a line of its own still counts', async t => {
-  const f = await fixture(t);
-  const worker = await f.worker();
-  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'Too Many Requests\n429'})]);
-  await assert.rejects(() => turn(worker, 'Hello'), /usage limit reached/);
 });
 
 test('each conversation has its own file, and removing its directory after stop removes its transcript', async t => {
