@@ -490,14 +490,15 @@ ui.share.onclick = async () => {
   } catch (error) { showError(error); }
 };
 
-ui.star.onclick = async () => {
+ui.star.onclick = () => {
   if (!chat) return;
-  const on = listed.find(item => item.id === chat?.id)?.starred == null;
-  try {
-    await api(`/api/chats/${chat.id}/star`, 'POST', {on});
-    await refreshSidebar();
-  } catch (error) { showError(error); }
+  setStar(chat.id, listed.find(item => item.id === chat?.id)?.starred == null).catch(showError);
 };
+
+async function setStar(id: string, on: boolean) {
+  await api(`/api/chats/${id}/star`, 'POST', {on});
+  await refreshSidebar();
+}
 
 let stream: EventSource | undefined;
 // The assistant reply currently receiving deltas; re-rendered at most every STREAM_RENDER_MS.
@@ -937,8 +938,26 @@ function chatRow(item: ChatSummary): HTMLElement {
     lead.title = `Shared by ${otherName()}`;
     lead.append(icon('people'));
   }
-  row.append(lead, open, ...(item.unread ? [unreadDot('New messages')] : []));
+  row.append(lead, open, ...(item.unread ? [unreadDot('New messages')] : []), rowStar(item));
   return row;
+}
+
+function rowStar(item: ChatSummary): HTMLButtonElement {
+  const on = item.starred !== null;
+  const star = element('button', 'chat-star');
+  star.dataset.chat = item.id;
+  star.title = on ? 'Unstar' : 'Star to keep it at the top of the list';
+  star.setAttribute('aria-label', `Star “${item.title}”`);
+  star.setAttribute('aria-pressed', String(on));
+  star.append(icon('star'));
+  // Starring moves the row to another list, so the focus follows it there.
+  star.onclick = () => {
+    const focused = document.activeElement === star;
+    setStar(item.id, !on).then(() => {
+      if (focused) document.querySelector<HTMLElement>(`.chat-star[data-chat="${CSS.escape(item.id)}"]`)?.focus();
+    }).catch(showError);
+  };
+  return star;
 }
 
 async function deleteChat(item: ChatSummary) {
