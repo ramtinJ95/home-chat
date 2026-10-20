@@ -927,6 +927,7 @@ function renderStar() {
 
 function chatRow(item: ChatSummary): HTMLElement {
   const row = element('div', item.id === chat?.id ? 'chat-item active' : 'chat-item');
+  row.dataset.chat = item.id;
   const open = element('button', 'chat-open', item.title);
   open.onclick = () => { setDrawer(false); openChat(item.id).catch(showError); };
   // Only the owner deletes it; the other person's row has a mark there instead.
@@ -947,7 +948,6 @@ function chatRow(item: ChatSummary): HTMLElement {
 function rowStar(item: ChatSummary): HTMLButtonElement {
   const on = item.starred !== null;
   const star = element('button', 'chat-star');
-  star.dataset.chat = item.id;
   star.title = on ? 'Unstar' : 'Star to keep it at the top of the list';
   star.setAttribute('aria-label', `Star “${item.title}”`);
   star.setAttribute('aria-pressed', String(on));
@@ -1330,13 +1330,17 @@ function editRoutine(routine: RoutineSummary) {
   title.focus({preventScroll: true});
 }
 
-// Runs `redraw` on `node`. A routine switch or conversation star in it that had the focus is drawn anew, perhaps in
-// another list, so the new one for the same routine or conversation gets the focus.
+// Runs `redraw` on `node`. A control in it that had the focus is drawn anew, perhaps in another list, so the same
+// control for the same routine or conversation gets the focus back: the one `data-<key>` marks, or the one in it.
 function keepFocus(node: HTMLElement, key: 'routine' | 'chat', redraw: () => void) {
   const active = document.activeElement;
-  const id = active instanceof HTMLElement && node.contains(active) ? active.dataset[key] : undefined;
+  const holder = active instanceof HTMLElement && node.contains(active) ? active.closest<HTMLElement>(`[data-${key}]`) : null;
+  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input')];
+  const at = holder ? controls(holder).indexOf(active as HTMLElement) : -1;
   redraw();
-  if (id && !active!.isConnected) node.querySelector<HTMLElement>(`[data-${key}="${CSS.escape(id)}"]`)?.focus();
+  if (!holder || active!.isConnected) return;
+  const again = node.querySelector<HTMLElement>(`[data-${key}="${CSS.escape(holder.dataset[key]!)}"]`);
+  if (again) controls(again)[at]?.focus();
 }
 
 function routineSwitch(routine: RoutineSummary): HTMLElement {
