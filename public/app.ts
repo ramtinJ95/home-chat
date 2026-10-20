@@ -887,8 +887,13 @@ function unreadDot(label = 'New results'): HTMLElement {
   return dot;
 }
 
+let sidebarRun = 0;
 async function refreshSidebar(): Promise<ChatSummary[]> {
+  const run = ++sidebarRun;
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
+  // A refresh that a later one overtook draws nothing, so an older list never replaces a newer one, such as the list
+  // from before a star.
+  if (run !== sidebarRun) return all.reverse();
   ui.routines.hidden = !routines.length;
   keepSwitchFocus(ui.routineList, () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
