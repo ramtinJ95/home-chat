@@ -306,9 +306,11 @@ test('a file whose interrupted work cannot be stopped is closed again, and its w
   await until(() => closed, 'the file was closed');
 });
 
-test('a turn that ends while its message is still being submitted settles, also when the event stream skipped its end', async t => {
+// A turn that ends before submit() returns, while the event stream holds its deliveries back. With `overflow`, more than
+// 100 batches wait meanwhile, so a snapshot replaces them, and submit() returns once that snapshot arrived; without it,
+// submit() returns at once and the turn's events arrive after that.
+async function endsWhileSubmitting(t: TestContext, overflow: boolean) {
   const f = await fixture(t);
-  // Event deliveries wait for `held`; meanwhile more than 100 waiting batches are replaced by a snapshot.
   let held: Promise<void> | undefined;
   const release = Promise.withResolvers<void>();
   const delivered: AgentEvent[] = [];
@@ -323,7 +325,6 @@ test('a turn that ends while its message is still being submitted settles, also 
       if (delivered.some(event => event.type === 'snapshot')) caughtUp.resolve();
     });
   });
-  // Submitting returns only after the turn ended, and after the stream replaced that end with a snapshot.
   const open = Harness.open;
   t.mock.method(Harness, 'open', async (...args: Parameters<typeof open>) => {
     const harness = await open(...args);
@@ -335,9 +336,11 @@ test('a turn that ends while its message is still being submitted settles, also 
         const submission = await submit(...submitted);
         turn = submission.id;
         await submission.wait(submitted[1]);
-        for (let index = 0; index < 100; index++) await submit({type: 'write', entry: {kind: 'test.note', data: index}}, submitted[1]);
-        release.resolve();
-        await caughtUp.promise;
+        if (overflow) {
+          for (let index = 0; index < 100; index++) await submit({type: 'write', entry: {kind: 'test.note', data: index}}, submitted[1]);
+          release.resolve();
+          await caughtUp.promise;
+        }
         return submission;
       });
       return conversation;
@@ -351,9 +354,15 @@ test('a turn that ends while its message is still being submitted settles, also 
   worker.once('settled', () => { settled = true; });
   worker.on('delta', delta => { streamed += delta; });
   await worker.prompt('Hi');
-  assert.ok(!delivered.some(event => event.type === 'submission' && event.record.id === turn && event.record.status === 'done'), 'the stream skipped the end');
+  if (overflow) assert.ok(!delivered.some(event => event.type === 'submission' && event.record.id === turn && event.record.status === 'done'), 'the stream skipped the end');
   await until(() => settled, 'the turn settled');
   assert.equal(streamed, 'Done.');
+  release.resolve();
+}
+
+test('a turn that ends while its message is still being submitted settles with its whole reply', async t => {
+  await t.test('when its events arrive after submit() returns', t => endsWhileSubmitting(t, false));
+  await t.test('when a snapshot replaced its events, its end among them', t => endsWhileSubmitting(t, true));
 });
 
 test('tool input is checked before it runs: no private web hosts, no images from outside the conversation', async t => {
