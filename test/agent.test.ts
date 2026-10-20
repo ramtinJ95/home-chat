@@ -347,11 +347,13 @@ test('a turn that ends while its message is still being submitted settles, also 
   const worker = await f.worker();
   f.reply([fauxAssistantMessage('Done.')]);
   held = release.promise;
-  let settled = false;
+  let settled = false; let streamed = '';
   worker.once('settled', () => { settled = true; });
+  worker.on('delta', delta => { streamed += delta; });
   await worker.prompt('Hi');
   assert.ok(!delivered.some(event => event.type === 'submission' && event.record.id === turn && event.record.status === 'done'), 'the stream skipped the end');
   await until(() => settled, 'the turn settled');
+  assert.equal(streamed, 'Done.');
 });
 
 test('tool input is checked before it runs: no private web hosts, no images from outside the conversation', async t => {
