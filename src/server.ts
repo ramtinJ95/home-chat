@@ -23,9 +23,10 @@ interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
 // `shared`: its owner shares it with the household, and both read and write in it. `unread`: who has not seen a routine
 // run, or in a shared conversation a reply to the other person, that arrived while they were not looking; each is
-// cleared when that person opens the conversation. `starred`: when each person who starred it did so.
+// cleared when that person opens the conversation. `starred`: when each person who starred it did so. `created`: when it
+// was made, which orders the lists.
 interface Chat {
-  id: string; owner: User; title: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true;
+  id: string; owner: User; title: string; created: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true;
   unread?: User[]; starred?: Partial<Record<User, string>>;
 }
 interface RoutineRun { routine: Routine; scheduled: Date }
@@ -149,7 +150,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // A person has at most one turn at a time, counting the turns they sent, wherever they are.
   const userBusy = (user: User) => [...turns.values()].some(turn => turn.by === user);
   const canSee = (chat: Chat, user: User) => chat.owner === user || chat.shared === true;
-  const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user));
+  // In the order they were made, the same after a restart, which reads the directories in no particular order.
+  const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user))
+    .sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id));
   const markUnread = (chat: Chat, user: User) => { if (!chat.unread?.includes(user)) (chat.unread ??= []).push(user); };
   // True if it changed, so the conversation needs saving.
   const markRead = (chat: Chat, user: User) => {
@@ -183,12 +186,16 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     if (chat.id !== id || !isUser(chat.owner)) throw new Error('Invalid conversation record');
     // Saved before unread was kept per person, when only routine runs, which are the owner's, were marked.
     if ((chat.unread as unknown) === true) chat.unread = [chat.owner];
-    if (chat.replying) {
+    // Saved before conversations recorded when they were made; their directory's birth time is the closest record.
+    const undated = chat.created === undefined;
+    if (undated) chat.created = (await stat(join(chatsDirectory, id))).birthtime.toISOString();
+    const interrupted = chat.replying === true;
+    if (interrupted) {
       delete chat.replying;
       const last = chat.messages.at(-1);
       if (last?.role === 'assistant') last.error = 'Home Chat restarted before this reply finished';
-      await save(chat);
     }
+    if (undated || interrupted) await save(chat);
     chats.set(id, chat);
   }
   // Set by stop(). From then on no turn ends: stop() saves running replies and the next start marks them interrupted,
@@ -254,7 +261,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   // A new conversation, shown to anyone only once its record is saved. `full` is the error for an owner at MAX_CHATS.
   async function createChat(owner: User, title: string, full: () => Error): Promise<Chat> {
     if ([...chats.values()].filter(chat => chat.owner === owner).length >= MAX_CHATS) throw full();
-    const chat: Chat = {id: randomUUID(), owner, title, messages: [], assets: []};
+    const chat: Chat = {id: randomUUID(), owner, title, created: new Date().toISOString(), messages: [], assets: []};
     await mkdir(join(workDir(chat), 'uploads'), {recursive: true, mode: 0o700});
     try { await save(chat); } catch (error) { await discardChat(chat); throw error; }
     chats.set(chat.id, chat);

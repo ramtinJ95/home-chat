@@ -82,10 +82,15 @@ export function createAgent(options: AgentOptions): HomeAgent {
     // A reply a restart interrupted is marked as such in chat.json (src/server.ts), so its unfinished work is stopped
     // here rather than resumed behind the conversation's back. Everything is marked before the scheduler starts, so
     // it runs only the abort handlers, and the conversation is idle again before the next message.
-    const {tasks, submissions} = await harness.inspect(context);
-    for (const submission of submissions) await harness.abortSubmission(submission.id, context);
-    for (const task of tasks) await harness.abortTask(task.record.id, context);
-    if (tasks.length) await harness.waitForIdle(context);
+    try {
+      const {tasks, submissions} = await harness.inspect(context);
+      for (const submission of submissions) await harness.abortSubmission(submission.id, context);
+      for (const task of tasks) await harness.abortTask(task.record.id, context);
+      if (tasks.length) await harness.waitForIdle(context);
+    } catch (error) {
+      await harness.close(context).catch(onReport);
+      throw error;
+    }
 
     const link = async (tx: Tx, conversation: ConversationId) => { (await tx.doc(ChatLink)).conversation = conversation; };
     return {

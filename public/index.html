@@ -51,20 +51,20 @@
           autocomplete="off" enterkeyhint="search">
       </form>
       <section id="search-results" class="chat-list" aria-label="Search results" aria-live="polite" hidden></section>
-      <section id="starred" class="sidebar-section" aria-labelledby="starred-label" hidden>
+      <nav id="starred" class="sidebar-section" aria-labelledby="starred-label" hidden>
         <p id="starred-label" class="section-label"><svg viewBox="0 0 24 24" aria-hidden="true"><use href="#star"/></svg>Starred</p>
-        <nav id="starred-list" class="chat-list"></nav>
-      </section>
-      <section id="routines" class="sidebar-section" aria-labelledby="routines-label" hidden>
+        <div id="starred-list" class="chat-list"></div>
+      </nav>
+      <nav id="routines" class="sidebar-section" aria-labelledby="routines-label" hidden>
         <p id="routines-label" class="section-label">Routines</p>
-        <nav id="routine-list" class="chat-list routine-list"></nav>
-      </section>
-      <section id="shared" class="sidebar-section" aria-labelledby="shared-label" hidden>
+        <div id="routine-list" class="chat-list routine-list"></div>
+      </nav>
+      <nav id="shared" class="sidebar-section" aria-labelledby="shared-label" hidden>
         <p id="shared-label" class="section-label">Shared</p>
-        <nav id="shared-list" class="chat-list shared-list"></nav>
-      </section>
+        <div id="shared-list" class="chat-list shared-list"></div>
+      </nav>
       <p id="recent-label" class="section-label">Recent</p>
-      <nav id="chat-list" class="chat-list"></nav>
+      <nav id="chat-list" class="chat-list" aria-labelledby="recent-label"></nav>
       <div class="sidebar-actions">
         <div id="todos-entry" class="sidebar-action"></div>
         <div id="library-entry" class="sidebar-action"></div>
