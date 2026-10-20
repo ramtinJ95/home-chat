@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
-import type { RoutineSchedule, User } from './api.d.ts';
+import type { RoutineSchedule, RunOutcome, User } from './api.d.ts';
 import { readJson, serialSave } from './files.ts';
 import { MAX_ROUTINE_PROMPT, MAX_ROUTINE_TITLE, WEEKDAYS } from './policy.ts';
 
@@ -22,8 +22,6 @@ export interface Routine {
   // Self-contained instructions for each run, written by the model when the routine was set up.
   prompt: string;
   schedule: RoutineSchedule;
-  // The schedule as a cron pattern (or an ISO date-time for `once`), read in TIME_ZONE.
-  cron: string;
   enabled: boolean;
   deepResearch: boolean;
   // ISO instant; null once a one-off has run.
@@ -31,7 +29,7 @@ export interface Routine {
   // A run that came due and has not started yet (it waits for a free worker), saved so a restart still runs it.
   pending?: string;
   // `running` from start to finish; found at startup, it means the app stopped during the run.
-  lastRun?: {at: string; outcome: 'running' | 'done' | 'failed' | 'skipped'};
+  lastRun?: {at: string; outcome: RunOutcome};
 }
 
 interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown }
@@ -80,6 +78,7 @@ export function parseSchedule(value: unknown): RoutineSchedule {
   }
 }
 
+// A schedule as a cron pattern, or an ISO date-time for `once`, read in TIME_ZONE.
 export function cronFor(schedule: RoutineSchedule): string {
   const [hour, minute] = schedule.time.split(':').map(Number);
   switch (schedule.kind) {
@@ -98,12 +97,11 @@ export function nextAfter(cron: string, from: Date): Date | null {
 }
 
 // A routine's schedule from the model's or the Routines page's input, with its next run after `now`.
-function timing(value: unknown, now: Date): Pick<Routine, 'schedule' | 'cron' | 'nextRun'> {
+function timing(value: unknown, now: Date): Pick<Routine, 'schedule' | 'nextRun'> {
   const schedule = parseSchedule(value);
-  const cron = cronFor(schedule);
-  const next = nextAfter(cron, now);
+  const next = nextAfter(cronFor(schedule), now);
   if (!next) throw new RoutineError('That time has already passed');
-  return {schedule, cron, nextRun: next.toISOString()};
+  return {schedule, nextRun: next.toISOString()};
 }
 
 const ordinal = (day: number) => day + (day % 10 === 1 && day !== 11 ? 'st' : day % 10 === 2 && day !== 12 ? 'nd' : day % 10 === 3 && day !== 13 ? 'rd' : 'th');
@@ -166,7 +164,7 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
     const ready = routines.filter(routine => routine.enabled && routine.nextRun && Date.parse(routine.nextRun) <= now.getTime());
     const runs = ready.map(routine => {
       const scheduled = new Date(routine.nextRun!);
-      routine.nextRun = nextAfter(routine.cron, now)?.toISOString() ?? null;
+      routine.nextRun = nextAfter(cronFor(routine.schedule), now)?.toISOString() ?? null;
       // A run still waiting from before is overtaken by this one: one result per routine is enough.
       routine.pending = scheduled.toISOString();
       return {routine, scheduled, late: now.getTime() - scheduled.getTime() > MISSED_GRACE_MS};
@@ -212,10 +210,10 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       if (routines.filter(routine => routine.owner === owner).length >= MAX_ROUTINES) {
         throw new RoutineError(`There can be at most ${MAX_ROUTINES} routines per person; delete one first`);
       }
-      const {schedule, cron, nextRun} = timing(input.schedule, now);
+      const {schedule, nextRun} = timing(input.schedule, now);
       const deepResearch = researchSwitch(input.deepResearch);
       return {
-        id: randomUUID(), owner, title: text(input.title, 'title', MAX_ROUTINE_TITLE), prompt: text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT), schedule, cron,
+        id: randomUUID(), owner, title: text(input.title, 'title', MAX_ROUTINE_TITLE), prompt: text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT), schedule,
         enabled: true, deepResearch: deepResearch === true, nextRun,
       };
     },
@@ -242,7 +240,7 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       if (enabled && !routine.nextRun) throw new RoutineError('This one-off routine has already run; give it a new date to use it again');
       routine.enabled = enabled;
       // Resuming starts from now, so the runs missed while it was paused are not made up.
-      if (enabled) routine.nextRun = nextAfter(routine.cron, now)?.toISOString() ?? null;
+      if (enabled) routine.nextRun = nextAfter(cronFor(routine.schedule), now)?.toISOString() ?? null;
       await commit();
       return routine;
     },
@@ -259,7 +257,7 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       routine.lastRun = {at: at.toISOString(), outcome: 'running'};
       await commit();
     },
-    async finished(routine: Routine, at: Date, outcome: 'done' | 'failed' | 'skipped') {
+    async finished(routine: Routine, at: Date, outcome: Exclude<RunOutcome, 'running'>) {
       if (!routines.includes(routine)) return;
       if (routine.pending === at.toISOString()) delete routine.pending;
       routine.lastRun = {at: at.toISOString(), outcome};

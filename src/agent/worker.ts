@@ -23,13 +23,13 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   readonly call: ServerCall;
   readonly #open: OpenStore;
   #store?: ChatStore;
-  closed = false;
   turn: ChatHost['turn'] = {mode: {}, calls: 0, images: 0};
   #conversation?: Conversation;
   #stream?: AgentEventStream;
   #pending?: Pending;
   #opening?: Promise<ChatStore>;
   #stopped?: Promise<void>;
+  get closed() { return this.#stopped !== undefined; }
   // From a prompt until its submission ends; events outside a turn are ignored.
   #active = false;
   #submission?: SubmissionId;
@@ -75,15 +75,11 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   }
 
   async #handle(event: AgentEvent) {
-    if (event.type === 'submission' && (event.record.status === 'done' || event.record.status === 'unanswered')) {
-      this.#ended.set(event.record.id, event.record);
-      if (event.record.id === this.#submission) this.#finish(event.record);
-      return;
-    }
+    if (event.type === 'submission') return this.#finish(event.record);
     // Only after more than 100 batches waiting; the turn's end may be among the ones it replaced.
     if (event.type === 'snapshot' && this.#submission !== undefined) {
       const record = await (await this.#store!.harness.submission(this.#submission, context))?.status(context);
-      if (record && (record.status === 'done' || record.status === 'unanswered')) this.#finish(record);
+      if (record) this.#finish(record);
       return;
     }
     if (!this.#active) return;
@@ -124,8 +120,10 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   }
 
   #finish(record: SubmissionRecord) {
+    if (record.status !== 'done' && record.status !== 'unanswered') return;
+    this.#ended.set(record.id, record);
     if (!this.#active || record.id !== this.#submission) return;
-    this.#endTurn(); this.#ended.clear();
+    this.#endTurn();
     // Stopped from the app: the turn ends with what it has.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
     else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
@@ -134,6 +132,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
 
   #endTurn() {
     this.#active = false; this.#submission = undefined;
+    this.#ended.clear();
     this.#dismiss();
   }
 
@@ -235,16 +234,16 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   // Ends this worker: a running turn fails with `reason` and its work is aborted. Resolves once the conversation's file
   // is closed, so its directory can be removed.
   stop(reason = 'The reply was stopped before it finished'): Promise<void> {
-    if (this.closed) return this.#stopped ?? Promise.resolve();
-    this.closed = true;
+    if (this.#stopped) return this.#stopped;
+    // A file still opening is closed once it is open.
+    this.#stopped = this.#opening?.then(opened => opened.close(this.#conversation), () => {}) ?? Promise.resolve();
     this.#dismiss();
     void this.#stream?.stop();
     if (this.#active) {
       this.#endTurn();
       this.emit('failure', reason);
     }
-    // A file still opening is closed once it is open.
-    return this.#stopped = this.#opening?.then(opened => opened.close(this.#conversation), () => {}) ?? Promise.resolve();
+    return this.#stopped;
   }
 
   #require(): Conversation {

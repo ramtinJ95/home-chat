@@ -222,35 +222,36 @@ svg { width: 20px; height: 20px; flex: none; }
   text-align: left; font-size: 0.9rem;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
-/* Delete leads the row, where a long title cannot push it out of sight. */
-.chat-delete {
-  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-left: 4px;
+.chat-delete, .chat-star {
+  display: grid; place-items: center; flex: none; width: 34px; height: 34px;
   border-radius: 10px; color: var(--muted); transition: color 140ms, background 140ms;
 }
+/* Delete leads the row, where a long title cannot push it out of sight. */
+.chat-delete { margin-left: 4px; }
 .chat-delete + .chat-open { padding-left: 4px; }
 .chat-delete svg { width: 17px; height: 17px; }
-.chat-delete:hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+.chat-delete:not(.chat-mark):hover { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); }
+/* Star ends the row: filled on a starred conversation, a quiet outline on the rest. */
+.chat-star { margin-right: 4px; }
+.chat-star svg { width: 16px; height: 16px; }
+.chat-star:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+/* A star, on a row or in the header, is filled while its conversation is starred. Its fill is set here, since the
+   page's content security policy refuses style attributes. */
+#star path { fill: var(--star-fill, none); }
+.chat-star[aria-pressed="true"], .star-button[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
+.sidebar-section { display: grid; }
 /* Routines: their own list above Recent, a switch per routine, and delete behind a menu. */
-.routines { display: grid; }
-.routine-list { flex: none; max-height: 38vh; }
+.routine-list { max-height: 38vh; }
 .routine-open { display: grid; gap: 1px; }
 .routine-open strong { font-weight: inherit; overflow: hidden; text-overflow: ellipsis; }
 .routine-open span { font-size: 0.76rem; font-weight: 400; color: var(--muted); }
 /* Shared conversations: both people's, above Recent. Only the owner deletes one; the other person's rows have a mark
    in that place, the same size, so the titles line up. */
-.shared-list { flex: none; max-height: 30vh; }
-.chat-delete.chat-mark, .chat-delete.chat-mark:hover { color: var(--muted); background: none; }
+.shared-list { max-height: 30vh; }
 .unread-dot { flex: none; width: 8px; height: 8px; margin: 0 2px 0 -4px; border-radius: 50%; background: var(--accent); }
-/* Star ends the row: filled on a starred conversation, a quiet outline on the rest. */
-.chat-star {
-  display: grid; place-items: center; flex: none; width: 34px; height: 34px; margin-right: 4px;
-  border-radius: 10px; color: var(--muted); transition: color 140ms, background 140ms;
-}
-.chat-star svg { width: 16px; height: 16px; }
-.chat-star:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
-.chat-star[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 .switch { position: relative; flex: none; display: inline-grid; place-items: center; width: 44px; height: 34px; cursor: pointer; }
-.switch input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
+/* A switch or a day chip is a checkbox drawn by the span after it, over which the real one lies unseen. */
+.switch input, .day-chip input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .switch span {
   width: 34px; height: 20px; border-radius: 999px; background: var(--line); position: relative; transition: background 160ms;
 }
@@ -260,7 +261,7 @@ svg { width: 20px; height: 20px; flex: none; }
 }
 .switch input:checked + span { background: var(--accent); }
 .switch input:checked + span::after { transform: translateX(14px); }
-.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch input:focus-visible + span, .day-chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .row-menu { position: relative; flex: none; }
 .row-menu summary {
   display: grid; place-items: center; width: 34px; height: 34px; margin-right: 2px; border-radius: 10px;
@@ -331,9 +332,8 @@ svg { width: 20px; height: 20px; flex: none; }
 .toggle-button:hover { border-color: var(--accent); color: var(--accent); }
 .toggle-button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .toggle-button:disabled { opacity: 0.55; cursor: default; }
-/* Star, in the header; filled while the conversation is starred. */
+/* Star, in the header. */
 .star-button { flex: none; width: 38px; height: 38px; }
-.star-button[aria-pressed="true"] { color: var(--accent); --star-fill: currentColor; }
 
 .notice {
   margin: 14px auto 0; width: min(100% - 32px, 760px);
@@ -377,7 +377,6 @@ svg { width: 20px; height: 20px; flex: none; }
 .setup-actions { flex: none; display: flex; align-items: center; gap: 6px; }
 .setup-actions .primary { padding: 9px 16px; border-radius: 12px; }
 .sidebar-actions { display: grid; gap: 2px; padding: 6px 0 10px; }
-.sidebar-actions:not(:has(.sidebar-action:not([hidden]))) { display: none; }
 .sidebar-action button, .sidebar-action summary {
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border-radius: 12px;
   color: var(--ink-soft); font-size: 0.9rem; cursor: pointer; list-style: none; transition: background 140ms, color 140ms;
@@ -642,13 +641,11 @@ svg { width: 20px; height: 20px; flex: none; }
 .routine-days { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; border: 0; }
 .routine-days legend { width: 100%; margin-bottom: 5px; padding: 0; font-weight: 600; font-size: 0.9rem; }
 .day-chip { position: relative; }
-.day-chip input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
 .day-chip span {
   display: inline-grid; place-items: center; min-width: 46px; height: 40px; padding: 0 10px; border-radius: 999px;
   border: 1px solid var(--line); font-size: 0.86rem; font-weight: 600; color: var(--ink-soft);
 }
 .day-chip input:checked + span { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.day-chip input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
 .routine-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .routine-form-actions .primary { padding: 10px 20px; border-radius: 12px; }
 
@@ -725,10 +722,8 @@ svg { width: 20px; height: 20px; flex: none; }
 
 /* 44px touch targets wherever the pointer is a finger, whatever the window width. */
 @media (pointer: coarse) {
-  .icon-button, .attach, .send { width: 44px; height: 44px; }
+  .icon-button, .attach, .send, .sidebar-foot .icon-button, .chat-delete, .chat-star, .row-menu summary, .switch { width: 44px; height: 44px; }
   .stop, .toggle-button { height: 44px; }
-  .sidebar-foot .icon-button, .chat-delete, .chat-star { width: 44px; height: 44px; }
-  .row-menu summary, .switch { width: 44px; height: 44px; }
   .row-menu .menu button { padding: 13px 16px; }
   .chat-open, .sidebar-action button, .sidebar-action summary, .search-result { padding: 13px 12px; }
   .search input { padding-top: 11px; padding-bottom: 11px; }

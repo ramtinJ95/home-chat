@@ -371,14 +371,14 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
   } else {
     content.textContent = message.text;
   }
-  const shown = new Set<string>();
+  const carded = new Set<string>();
   for (const id of message.assets) {
     const url = `/api/chats/${snapshot.id}/assets/${id}`;
     const info = snapshot.assets.find(asset => asset.id === id)?.document;
     if (info) {
       // A document revised within one reply gets one card.
-      if (!shown.has(info.doc)) bubble.append(documentCard(snapshot, info));
-      shown.add(info.doc);
+      if (!carded.has(info.doc)) bubble.append(documentCard(snapshot, info));
+      carded.add(info.doc);
       continue;
     }
     const figure = element('figure', 'picture');
@@ -490,11 +490,6 @@ ui.share.onclick = async () => {
   } catch (error) { showError(error); }
 };
 
-ui.star.onclick = () => {
-  if (!chat) return;
-  setStar(chat.id, listed.find(item => item.id === chat?.id)?.starred == null).catch(showError);
-};
-
 async function setStar(id: string, on: boolean) {
   await api(`/api/chats/${id}/star`, 'POST', {on});
   await refreshSidebar();
@@ -546,9 +541,9 @@ async function connect(id: string) {
   if (attempt !== connection) return;
   renderChat(snapshot);
   // The sidebar too, which may have changed while this page was elsewhere or hidden.
-  const listed = refreshSidebar();
+  const sidebar = refreshSidebar();
   if (!document.hidden) listen(id);
-  await listed;
+  await sidebar;
 }
 
 function listen(id: string) {
@@ -892,16 +887,17 @@ let sidebarRun = 0;
 async function refreshSidebar(): Promise<ChatSummary[]> {
   const run = ++sidebarRun;
   const [all, routines] = await Promise.all([api<ChatSummary[]>('/api/chats'), api<RoutineSummary[]>('/api/routines'), refreshLibrary()]);
+  // The server lists oldest first; everything here wants newest first.
+  const list = all.reverse();
   // A refresh that a later one overtook draws nothing, so an older list never replaces a newer one, such as the list
   // from before a star.
-  if (run !== sidebarRun) return all.reverse();
+  if (run !== sidebarRun) return list;
   ui.routines.hidden = !routines.length;
   keepFocus(ui.routineList, 'routine', () => ui.routineList.replaceChildren(...routines.map(routineRow)));
   if (sheet?.node === ui.routinesPage) renderRoutineCards(routines);
-  // The server lists oldest first; everything here wants newest first. Starred conversations come first, the earliest
-  // starred on top, and leave their usual list meanwhile. Routine conversations sit in their own list, and shared ones
-  // in theirs.
-  const list = listed = all.reverse();
+  // Starred conversations come first, the earliest starred on top, and leave their usual list meanwhile. Routine
+  // conversations sit in their own list, and shared ones in theirs.
+  listed = list;
   const starred = list.filter(item => item.starred !== null).sort((a, b) => (a.starred ?? '').localeCompare(b.starred ?? ''));
   const rest = list.filter(item => item.starred === null);
   const shared = rest.filter(item => item.shared);
@@ -923,6 +919,7 @@ function renderStar() {
   const on = item?.starred != null;
   ui.star.setAttribute('aria-pressed', String(on));
   ui.star.title = on ? 'Starred; tap to unstar' : 'Star to keep it at the top of the list';
+  ui.star.onclick = item ? () => setStar(item.id, !on).catch(showError) : null;
 }
 
 function chatRow(item: ChatSummary): HTMLElement {
@@ -1055,6 +1052,7 @@ ui.scrim.onclick = () => setDrawer(false);
 let sheet: {node: HTMLElement; opener?: HTMLElement; parent?: HTMLElement; from?: HTMLElement} | undefined;
 const sheetInHistory = () => (history.state as {sheet?: boolean} | null)?.sheet === true;
 function showSheet(node: HTMLElement, parent?: HTMLElement) {
+  setDrawer(false);
   const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined;
   const opener = sheet?.opener ?? focused;
   if (sheet && sheet.node !== node) sheet.node.hidden = true;
@@ -1114,9 +1112,9 @@ async function openReader(url: string, {share, parent}: {share?: () => Promise<v
   const list = element('ol');
   list.append(...headings.map(heading => {
     const item = element('li', heading.tagName === 'H4' ? 'sub' : undefined);
-    const jump = element('button', undefined, heading.textContent ?? '');
-    jump.onclick = () => { ui.readerContents.open = false; heading.scrollIntoView({behavior: 'smooth', block: 'start'}); };
-    item.append(jump);
+    const link = element('button', undefined, heading.textContent ?? '');
+    link.onclick = () => { ui.readerContents.open = false; heading.scrollIntoView({behavior: 'smooth', block: 'start'}); };
+    item.append(link);
     return item;
   }));
   ui.readerContents.querySelector('ol')?.replaceWith(list);
@@ -1154,7 +1152,6 @@ function fillAbout(view: MemoryView, keepEdits = false) {
 
 async function openAbout() {
   fillAbout(await api<MemoryView>('/api/memory'));
-  setDrawer(false);
   showSheet(ui.about);
 }
 
@@ -1188,27 +1185,24 @@ const routineEdited = () => sheet?.node === ui.routinesPage && routineEdit !== u
 async function openRoutines(edit?: string) {
   routineEdit = undefined;
   renderRoutineCards(await api<RoutineSummary[]>('/api/routines'));
-  setDrawer(false);
   showSheet(ui.routinesPage);
   const routine = routineList.find(item => item.id === edit);
   if (routine) editRoutine(routine);
 }
 
 function renderRoutineCards(list: RoutineSummary[]) {
-  keepFocus(ui.routineCards, 'routine', () => drawRoutineCards(list));
-}
-
-function drawRoutineCards(list: RoutineSummary[]) {
   routineList = list;
   if (routineEdit && !list.some(item => item.id === routineEdit!.id)) routineEdit = undefined;
   const nodes = list.length ? list.map(item => item.id === routineEdit?.id ? routineEdit.form : routineCard(item))
     : [element('p', 'empty-note', 'No routines yet.')];
   const form = routineEdit?.form.parentNode === ui.routineCards ? routineEdit.form : undefined;
-  if (!form) return ui.routineCards.replaceChildren(...nodes);
-  // Moving the form would take the focus out of it mid-typing, so the cards are put around it instead.
-  for (const child of [...ui.routineCards.children]) if (child !== form) child.remove();
-  const at = nodes.indexOf(form);
-  form.before(...nodes.slice(0, at)); form.after(...nodes.slice(at + 1));
+  keepFocus(ui.routineCards, 'routine', () => {
+    if (!form) return ui.routineCards.replaceChildren(...nodes);
+    // Moving the form would take the focus out of it mid-typing, so the cards are put around it instead.
+    for (const child of [...ui.routineCards.children]) if (child !== form) child.remove();
+    const at = nodes.indexOf(form);
+    form.before(...nodes.slice(0, at)); form.after(...nodes.slice(at + 1));
+  });
 }
 
 function routineCard(routine: RoutineSummary): HTMLElement {
@@ -1267,12 +1261,12 @@ function editRoutine(routine: RoutineSummary) {
     return box;
   });
   const dayOfMonth = element('input');
-  dayOfMonth.type = 'number'; dayOfMonth.min = '1'; dayOfMonth.max = '28'; dayOfMonth.inputMode = 'numeric';
+  dayOfMonth.type = 'number'; dayOfMonth.required = true; dayOfMonth.min = '1'; dayOfMonth.max = '28'; dayOfMonth.inputMode = 'numeric';
   dayOfMonth.value = String(rule.kind === 'monthly' ? rule.day : 1);
   const monthly = field('Day of the month (1 to 28)', dayOfMonth);
   const date = element('input');
   // No minimum: the server reads the date in its own time zone and refuses one that has passed.
-  date.type = 'date';
+  date.type = 'date'; date.required = true;
   date.value = rule.kind === 'once' ? rule.date : new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
   const once = field('Date', date);
   const research = element('input');
@@ -1283,8 +1277,8 @@ function editRoutine(routine: RoutineSummary) {
   // Fields for other kinds of schedule are disabled too, so a leftover value in them cannot block Save.
   const showRepeats = () => {
     days.hidden = days.disabled = repeats.value !== 'weekly';
-    monthly.hidden = dayOfMonth.disabled = repeats.value !== 'monthly'; dayOfMonth.required = true;
-    once.hidden = date.disabled = repeats.value !== 'once'; date.required = true;
+    monthly.hidden = dayOfMonth.disabled = repeats.value !== 'monthly';
+    once.hidden = date.disabled = repeats.value !== 'once';
   };
   repeats.onchange = showRepeats;
   showRepeats();
@@ -1331,11 +1325,12 @@ function editRoutine(routine: RoutineSummary) {
 }
 
 // Runs `redraw` on `node`. A control in it that had the focus is drawn anew, perhaps in another list, so the same
-// control for the same routine or conversation gets the focus back: the one `data-<key>` marks, or the one in it.
-function keepFocus(node: HTMLElement, key: 'routine' | 'chat', redraw: () => void) {
+// control for the same routine, conversation or Library item gets the focus back: the one `data-<key>` marks, or the
+// one in it.
+function keepFocus(node: HTMLElement, key: 'routine' | 'chat' | 'item', redraw: () => void) {
   const active = document.activeElement;
   const holder = active instanceof HTMLElement && node.contains(active) ? active.closest<HTMLElement>(`[data-${key}]`) : null;
-  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input')];
+  const controls = (from: HTMLElement) => [from, ...from.querySelectorAll<HTMLElement>('button, input, a')];
   const at = holder ? controls(holder).indexOf(active as HTMLElement) : -1;
   redraw();
   if (!holder || active!.isConnected) return;
@@ -1397,7 +1392,6 @@ const todoPath = (list: TodoList) => `/api/todos/${encodeURIComponent(list.id)}`
 
 async function openTodos() {
   await refreshTodos();
-  setDrawer(false);
   showSheet(ui.todosPage);
 }
 
@@ -1556,10 +1550,15 @@ ui.todoNew.onsubmit = async event => {
 // The Library: copies of documents and pictures shared on their own, for both people. Opening it marks what the other
 // person shared as seen, which clears the dot on its sidebar entry.
 async function openLibrary() {
-  setDrawer(false);
   showSheet(ui.libraryPage);
   await refreshLibrary();
 }
+
+const libraryDot = unreadDot('Newly shared');
+libraryDot.hidden = true;
+const libraryButton = actionButton('document', 'Library', openLibrary);
+libraryButton.append(libraryDot);
+ui.libraryEntry.replaceChildren(libraryButton);
 
 // Drawn into the page if it is open, which counts as seeing it; otherwise the sidebar entry shows whether anything is
 // new. `libraryRun` keeps an answer that newer requests overtook from drawing over theirs.
@@ -1573,26 +1572,15 @@ async function refreshLibrary() {
   // Opened while the plain read was on its way.
   if (open() && library.unseen) library = await markSeen();
   if (run !== libraryRun) return;
-  renderLibraryEntry(library.unseen);
+  libraryDot.hidden = !library.unseen;
   if (open()) renderLibrary(library);
-}
-
-function renderLibraryEntry(unseen: boolean) {
-  const open = actionButton('document', 'Library', openLibrary);
-  if (unseen) open.append(unreadDot('Newly shared'));
-  ui.libraryEntry.replaceChildren(open);
 }
 
 function renderLibrary(library: Library) {
   ui.libraryLede.textContent = `Documents and pictures you and ${otherName()} shared from your conversations, newest first. `
     + 'The conversations they came from stay as private as they were.';
-  // The cards are drawn again, so a focused button or link gets the focus back on its item's new card, as when the
-  // reader closes back to this page.
-  const focused = document.activeElement instanceof HTMLElement && ui.libraryCards.contains(document.activeElement) ? document.activeElement : undefined;
-  const item = focused?.closest<HTMLElement>('.library-card')?.dataset.item;
-  ui.libraryCards.replaceChildren(...(library.items.length ? library.items.map(libraryCard)
-    : [element('p', 'empty-note', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)]));
-  if (item) [...ui.libraryCards.querySelectorAll<HTMLElement>(`[data-item="${item}"] .ghost`)].find(control => control.textContent === focused?.textContent)?.focus();
+  keepFocus(ui.libraryCards, 'item', () => ui.libraryCards.replaceChildren(...(library.items.length ? library.items.map(libraryCard)
+    : [element('p', 'empty-note', `Nothing here yet. Tap “Share with ${otherName()}” on a picture or in a document.`)])));
 }
 
 function libraryCard(item: LibraryItem): HTMLElement {
@@ -1635,7 +1623,6 @@ async function shareAsset(chatId: string, assetId: string) {
   showNotice(`Shared with ${otherName()}. It’s in the Library.`);
 }
 
-renderLibraryEntry(false);
 
 // Adding to the Home Screen: Chromium browsers (Edge, Chrome, Android) hand over a prompt the page can show; iPhone and
 // iPad only install through the browser's Share sheet, so they get instructions instead. Neither is in TypeScript's DOM.

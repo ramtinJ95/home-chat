@@ -4,7 +4,7 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/p
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
+import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, RunOutcome, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
 import { accessConfigFromEnv, type AccessConfig, type AccessKeySource } from './access.ts';
@@ -64,7 +64,7 @@ export function namesFromEnv(env: NodeJS.ProcessEnv): Record<User, string> {
 }
 
 const jsonHeaders = {'Content-Type': 'application/json; charset=utf-8'};
-// Thrown by startTurn while the conversation, its owner or both workers are busy; a routine run waits and tries again.
+// Thrown by startTurn while the conversation, its sender or both workers are busy; a routine run waits and tries again.
 class Busy extends HttpError { constructor(message: string, status = 409) { super(status, message); } }
 // Thrown by startTurn for a turn that was admitted and then failed; its thread already says so.
 class TurnFailed extends HttpError { constructor(message: string) { super(503, message); } }
@@ -148,11 +148,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const release = (id: string, turn: Turn) => { if (turns.get(id) === turn) turns.delete(id); };
   // A person has at most one turn at a time, counting the turns they sent, wherever they are.
   const userBusy = (user: User) => [...turns.values()].some(turn => turn.by === user);
-  const ownChats = (user: User) => [...chats.values()].filter(chat => chat.owner === user);
   const canSee = (chat: Chat, user: User) => chat.owner === user || chat.shared === true;
   const visibleChats = (user: User) => [...chats.values()].filter(chat => canSee(chat, user));
-  // Who sent a user message; older messages, from before sharing, are the owner's.
-  const sender = (chat: Chat, message: Message) => message.by ?? chat.owner;
   const markUnread = (chat: Chat, user: User) => { if (!chat.unread?.includes(user)) (chat.unread ??= []).push(user); };
   // True if it changed, so the conversation needs saving.
   const markRead = (chat: Chat, user: User) => {
@@ -212,7 +209,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const memory = await createMemory(join(data, 'memory.json'));
   const todos = await createTodos(join(data, 'todos.json'));
   const library = await createLibrary(data);
-  const recordRun = ({routine, scheduled}: RoutineRun, outcome: 'done' | 'failed' | 'skipped') =>
+  const recordRun = ({routine, scheduled}: RoutineRun, outcome: Exclude<RunOutcome, 'running'>) =>
     routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
   const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
   // Routine runs per owner, for the daily budget. Kept in memory: a restart forgets the day's count.
@@ -256,7 +253,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
 
   // A new conversation, shown to anyone only once its record is saved. `full` is the error for an owner at MAX_CHATS.
   async function createChat(owner: User, title: string, full: () => Error): Promise<Chat> {
-    if (ownChats(owner).length >= MAX_CHATS) throw full();
+    if ([...chats.values()].filter(chat => chat.owner === owner).length >= MAX_CHATS) throw full();
     const chat: Chat = {id: randomUUID(), owner, title, messages: [], assets: []};
     await mkdir(join(workDir(chat), 'uploads'), {recursive: true, mode: 0o700});
     try { await save(chat); } catch (error) { await discardChat(chat); throw error; }
@@ -383,7 +380,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     if (!(chat.messages.length >= 2 && question.role === 'user' && !question.run && answer.role === 'assistant' && !answer.run)) {
       return 'Only your last message and its reply can be redone';
     }
-    if (by && sender(chat, question) !== by) return 'Only the person who sent the last message can redo it';
+    if (by && (question.by ?? chat.owner) !== by) return 'Only the person who sent the last message can redo it';
     if (question.delivery === 'unknown') return 'This message was cut off before Pi confirmed it, so it cannot be redone; send it again as a new message';
   }
 
@@ -602,7 +599,6 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       return input.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.';
     } catch (error) {
       if (error instanceof RoutineError || error instanceof MemoryError || error instanceof TodoError) throw fail(400, error.message);
-      if (error instanceof HttpError) throw error;
       throw fail(500, 'Home Chat could not save that');
     }
   }
@@ -616,6 +612,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     res.setHeader('Content-Security-Policy', "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' blob:; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     const send = (status: number, value: unknown, headers: http.OutgoingHttpHeaders = jsonHeaders) =>
       res.writeHead(status, headers).end(typeof value === 'string' || Buffer.isBuffer(value) ? value : JSON.stringify(value));
+    // The body of a switch, such as Share or Star: `{<key>: true}` or `{<key>: false}`.
+    const setting = async (key: string) => {
+      const value = (await jsonBody(req, 1024))[key];
+      if (typeof value !== 'boolean') throw fail(400, 'Invalid setting');
+      return value;
+    };
     // A picture, or a document as the reader shows it; `download` sends either as a file to save.
     const sendPicture = async (id: string, path: string, download: boolean) => {
       if (download) res.setHeader('Content-Disposition', `attachment; filename="home-chat-${id}.png"`);
@@ -646,13 +648,11 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       const {session, sessionKey} = await signIn.authenticate(req);
       if (mutation && req.headers['x-csrf-token'] !== session.csrf) throw fail(403, 'CSRF check failed');
       if (path === '/api/me' && req.method === 'GET') {
-        const me: Me = {user: session.user, names, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
-          deepResearch: researchReady};
-        return send(200, me);
+        return send(200, {user: session.user, names, csrf: session.csrf, codexConfigured: await providerReady(), mode: access ? 'access' : 'local',
+          deepResearch: researchReady} satisfies Me);
       }
       if (path === '/api/push' && req.method === 'GET') {
-        const info: PushInfo = {publicKey: push.publicKey};
-        return send(200, info);
+        return send(200, {publicKey: push.publicKey} satisfies PushInfo);
       }
       if (path === '/api/push/subscriptions' && (req.method === 'POST' || req.method === 'DELETE')) {
         const body = await jsonBody(req, 8_000);
@@ -672,10 +672,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(200, {ok: true});
       }
       if (path === '/api/chats' && req.method === 'GET') {
-        const list: ChatSummary[] = visibleChats(session.user).map(({id, title, owner, shared, unread, starred}) => ({id, title,
+        return send(200, visibleChats(session.user).map(({id, title, owner, shared, unread, starred}) => ({id, title,
           unread: unread?.includes(session.user) === true, routine: routines.byChat(id) !== undefined, shared: shared === true, mine: owner === session.user,
-          starred: starred?.[session.user] ?? null}));
-        return send(200, list);
+          starred: starred?.[session.user] ?? null})) satisfies ChatSummary[]);
       }
       if (path === '/api/search' && req.method === 'GET') {
         const query = url.searchParams.get('q') ?? '';
@@ -701,8 +700,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(200, memory.view(session.user) satisfies MemoryView);
       }
       if (path === '/api/routines' && req.method === 'GET') {
-        const list: RoutineSummary[] = routines.list(session.user).map(routineSummary);
-        return send(200, list);
+        return send(200, routines.list(session.user).map(routineSummary) satisfies RoutineSummary[]);
       }
       if (path === '/api/chats' && req.method === 'POST') {
         const chat = await createChat(session.user, 'New conversation', () => fail(429, `Prototype limit: ${MAX_CHATS} conversations per user`));
@@ -742,9 +740,8 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         if (!routine || routine.owner !== session.user) throw fail(404, 'Not found');
         let changed;
         if (req.method === 'POST') {
-          const body = await jsonBody(req, 1024);
-          if (typeof body.enabled !== 'boolean') throw fail(400, 'Invalid setting');
-          try { changed = await routines.setEnabled(session.user, routine.id, body.enabled); }
+          const enabled = await setting('enabled');
+          try { changed = await routines.setEnabled(session.user, routine.id, enabled); }
           catch (error) { if (error instanceof RoutineError) throw fail(409, error.message); throw error; }
         } else if (req.method === 'PATCH') {
           const body = await jsonBody(req, 32 * 1024);
@@ -798,12 +795,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(200, {ok: true});
       }
       if (route === 'POST share') {
-        const body = await jsonBody(req, 1024);
-        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        const on = await setting('on');
+        stillVisible();
         if (routines.byChat(chat.id)) throw fail(409, 'A routine’s conversation stays private');
         // A reply running for the other person would otherwise go on in a conversation they can no longer see.
-        if (!body.on && occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
-        if (body.on) chat.shared = true;
+        if (!on && occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
+        if (on) chat.shared = true;
         else {
           delete chat.shared;
           for (const user of USERS) if (user !== chat.owner) { markRead(chat, user); unstar(chat, user); }
@@ -816,11 +813,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       }
       // Each person's own: it lists the conversation first in their sidebar. Starring it again keeps its place.
       if (route === 'POST star') {
-        const body = await jsonBody(req, 1024);
-        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        const on = await setting('on');
         stillVisible();
         if (routines.byChat(chat.id)) throw fail(409, 'A routine’s conversation is listed under Routines');
-        if (!body.on) unstar(chat, session.user);
+        if (!on) unstar(chat, session.user);
         else if (!chat.starred?.[session.user]) (chat.starred ??= {})[session.user] = new Date().toISOString();
         await save(chat);
         return send(200, {ok: true});
@@ -917,13 +913,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return send(202, {ok: true});
       }
       if (route === 'POST research') {
-        const body = await jsonBody(req, 1024);
-        if (typeof body.on !== 'boolean') throw fail(400, 'Invalid setting');
+        const on = await setting('on');
         stillVisible();
-        if (body.on && !researchReady) throw fail(503, 'Deep research is not set up on this Home Chat');
+        if (on && !researchReady) throw fail(503, 'Deep research is not set up on this Home Chat');
         // It applies from the next message; changing it during a reply would leave that reply's mode unclear.
         if (occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
-        if (body.on) chat.deepResearch = true; else delete chat.deepResearch;
+        if (on) chat.deepResearch = true; else delete chat.deepResearch;
         await publish(chat);
         // The answer shows the conversation as it is now, which may no longer be this person's to see.
         stillVisible();

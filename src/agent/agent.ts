@@ -6,7 +6,7 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { BACKGROUND_CONTEXT as context } from '@earendil-works/chord/context';
-import type { MutableModels, ThinkingLevel } from '@earendil-works/pi-ai';
+import type { MutableModels } from '@earendil-works/pi-ai';
 import { closeOpenAICodexWebSocketSessions } from '@earendil-works/pi-ai/api/openai-codex-responses';
 import { createRegistry, defineDoc, Harness, ResetEntry, type Conversation, type ConversationId, type EntryId, type Tx } from '@earendil-works/pi-durable';
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
@@ -27,7 +27,6 @@ export interface AgentOptions {
   models?: MutableModels;
   authPath?: string;
   model?: {provider: string; modelId: string};
-  thinkingLevel?: ThinkingLevel;
   instructions: string;
   // Model request retries after a failed attempt.
   maxRetries?: number;
@@ -61,7 +60,7 @@ export function createAgent(options: AgentOptions): HomeAgent {
   const models = options.models ?? codexModels(options.authPath ?? '/data/profile/auth.json');
   const agent = {
     model: options.model ?? {provider: 'openai-codex', modelId: process.env.HOME_CHAT_MODEL ?? 'gpt-6.1-sol'},
-    thinkingLevel: options.thinkingLevel ?? 'high' as const,
+    thinkingLevel: 'high' as const,
   };
   // Errors may carry request details, so only their message is logged.
   const onReport = options.onReport ?? (error => console.warn('Agent report:', error instanceof Error ? error.message : 'unknown'));

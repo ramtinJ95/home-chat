@@ -2,7 +2,7 @@ import { StringEnum } from '@earendil-works/pi-ai';
 import { Type, type Static } from 'typebox';
 
 // Exa deep research. The key comes only from EXA_API_KEY, which compose passes to the app; requests leave through the
-// egress proxy, which allows api.exa.ai. Calls outside deep research mode are refused (src/agent/extension.ts).
+// egress proxy, which allows api.exa.ai. Calls outside deep research mode are refused (refusedInTurn in src/policy.ts).
 const EXA_SEARCH_URL = 'https://api.exa.ai/search';
 const REQUEST_TIMEOUT_MS = 90_000;
 const MAX_SOURCES = 8;

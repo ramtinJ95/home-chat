@@ -56,7 +56,7 @@ export interface ChatSnapshot {
 }
 
 // `unread`: a routine run, or in a shared conversation a reply to the other person, arrived while this person was not
-// looking. Routine conversations are listed under /api/routines. `mine`: this person owns it; the other's are shared.
+// looking. `routine`: a routine's conversation, also listed under /api/routines. `mine`: this person owns it; the other's are shared.
 // `starred`: when the signed-in person starred it (POST /api/chats/<id>/star {on}), or null. The sidebar lists starred
 // conversations first, the earliest starred on top.
 export interface ChatSummary { id: string; title: string; unread: boolean; routine: boolean; shared: boolean; mine: boolean; starred: string | null }
@@ -66,6 +66,8 @@ export interface ChatSummary { id: string; title: string; unread: boolean; routi
 // ranges in `snippet` where the words appear.
 export interface SearchResult { chat: string; title: string; message: number | null; snippet: string; marks: [number, number][] }
 
+// `running` from a run's start to its end.
+export type RunOutcome = 'running' | 'done' | 'failed' | 'skipped';
 export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 // Times are HH:MM in the household's time zone (src/routines.ts).
 export type RoutineSchedule =
@@ -91,7 +93,7 @@ export interface RoutineSummary {
   // "Tomorrow 07:30", "Paused" or "Done"
   next: string;
   // The latest run: when it was due ("Today 07:30") and how it went; null before the first.
-  lastRun: {when: string; outcome: 'running' | 'done' | 'failed' | 'skipped'} | null;
+  lastRun: {when: string; outcome: RunOutcome} | null;
   unread: boolean;
 }
 
