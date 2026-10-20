@@ -40,7 +40,7 @@ async function fixture(t: TestContext, call: ServerCall = async () => '', data?:
   };
   // As the server stops: every worker, then the files. Only once, however often it is asked.
   let closing: Promise<void> | undefined;
-  const close = () => closing ??= (async () => { for (const each of workers) void each.stop(); await agent.close(); })();
+  const close = () => closing ??= (async () => { await Promise.all(workers.map(each => each.stop())); await agent.close(); })();
   t.after(async () => { await close().catch(() => {}); if (!data) await rm(root, {recursive: true, force: true}); });
   return {root, agent, reply, requests, worker, close};
 }
