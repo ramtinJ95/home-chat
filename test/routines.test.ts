@@ -61,7 +61,7 @@ test('the store saves routines, runs them when due, and flags runs missed for ho
   assert.equal(store.list('owner')[0].enabled, false);
   await store.setEnabled('owner', routine.id, true);
   await store.update('owner', routine.id, {schedule: {kind: 'weekdays', time: '08:00'}});
-  assert.equal(store.get(routine.id)?.cron, '0 8 * * 1-5');
+  assert.deepEqual(store.get(routine.id)?.schedule, {kind: 'weekdays', time: '08:00'});
   store.stop();
   // One run due a minute ago and one due five hours ago, as after the app was down.
   const saved: Routine[] = JSON.parse(await readFile(path, 'utf8'));
