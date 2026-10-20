@@ -579,7 +579,7 @@ test('push notifications reach a device only while nobody is looking', async t =
   const page = await f.watch(chat.id, owner);
   assert.equal((await f.send(chat.id, owner, 'again')).status, 202);
   await f.asked();
-  await f.settles(chat.id, owner);
+  await f.settles(chat.id, owner, async () => assert.equal((await f.answer(chat.id, owner, 'Two')).status, 200));
   await quiet();
   assert.equal(f.deliveries.length, 3);
   page.close();
