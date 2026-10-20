@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Cron } from 'croner';
-import type { RoutineSchedule, User } from './api.d.ts';
+import type { RoutineSchedule, RunOutcome, User } from './api.d.ts';
 import { readJson, serialSave } from './files.ts';
 import { MAX_ROUTINE_PROMPT, MAX_ROUTINE_TITLE, WEEKDAYS } from './policy.ts';
 
@@ -29,7 +29,7 @@ export interface Routine {
   // A run that came due and has not started yet (it waits for a free worker), saved so a restart still runs it.
   pending?: string;
   // `running` from start to finish; found at startup, it means the app stopped during the run.
-  lastRun?: {at: string; outcome: 'running' | 'done' | 'failed' | 'skipped'};
+  lastRun?: {at: string; outcome: RunOutcome};
 }
 
 interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown }
@@ -257,7 +257,7 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       routine.lastRun = {at: at.toISOString(), outcome: 'running'};
       await commit();
     },
-    async finished(routine: Routine, at: Date, outcome: 'done' | 'failed' | 'skipped') {
+    async finished(routine: Routine, at: Date, outcome: Exclude<RunOutcome, 'running'>) {
       if (!routines.includes(routine)) return;
       if (routine.pending === at.toISOString()) delete routine.pending;
       routine.lastRun = {at: at.toISOString(), outcome};
