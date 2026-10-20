@@ -796,6 +796,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       }
       if (route === 'POST share') {
         const on = await setting('on');
+        stillVisible();
         if (routines.byChat(chat.id)) throw fail(409, 'A routine’s conversation stays private');
         // A reply running for the other person would otherwise go on in a conversation they can no longer see.
         if (!on && occupied(chat.id)) throw fail(409, 'Wait for the current reply to finish');
