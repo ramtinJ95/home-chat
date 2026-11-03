@@ -12,7 +12,7 @@ import { createRegistry, defineDoc, Harness, ResetEntry, type Conversation, type
 import { openNodeSqliteStorage } from '@earendil-works/pi-durable/storage/sqlite/node';
 import type { Message } from '../api.d.ts';
 import type { ServerCall } from '../policy.ts';
-import { codexModels } from './codex.ts';
+import { codexModels, expireLogin, FileCredentialStore, LOGIN_REFUSED, redact } from './codex.ts';
 import { homeExtension, type ChatHost } from './extension.ts';
 import { DurableWorker } from './worker.ts';
 
@@ -57,7 +57,8 @@ export interface HomeAgent {
 }
 
 export function createAgent(options: AgentOptions): HomeAgent {
-  const models = options.models ?? codexModels(options.authPath ?? '/data/profile/auth.json');
+  const credentials = new FileCredentialStore(options.authPath ?? '/data/profile/auth.json');
+  const models = options.models ?? codexModels(credentials);
   const agent = {
     model: options.model ?? {provider: 'openai-codex', modelId: process.env.HOME_CHAT_MODEL ?? 'gpt-6.1-sol'},
     thinkingLevel: 'high' as const,
@@ -66,6 +67,12 @@ export function createAgent(options: AgentOptions): HomeAgent {
   const onReport = options.onReport ?? (error => console.warn('Agent report:', error instanceof Error ? error.message : 'unknown'));
   // A file is opened only after the previous Harness on it has closed: one process, one owner at a time.
   const closing = new Map<string, Promise<void>>();
+  // A model request that failed for good, after any retries. The user sees only a summary of why, so the provider's
+  // own words go to the server log, redacted. A refused login is marked expired before the user is told to send again.
+  const modelFailed = async (detail: string) => {
+    onReport(new Error('Model request failed: ' + redact(detail, 500)));
+    if (LOGIN_REFUSED.test(detail)) await expireLogin(credentials).catch(onReport);
+  };
 
   const open: OpenStore = async (directory, host) => {
     await closing.get(directory);
@@ -126,7 +133,7 @@ export function createAgent(options: AgentOptions): HomeAgent {
   };
 
   return {
-    worker: (directory, call) => new DurableWorker(open, directory, call),
+    worker: (directory, call) => new DurableWorker(open, directory, call, modelFailed),
     released: async directory => { await closing.get(directory); },
     close: async () => {
       await Promise.all(closing.values());

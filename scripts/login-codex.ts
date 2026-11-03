@@ -1,5 +1,5 @@
-import { codexModels } from '../src/agent/codex.ts';
-const models = codexModels('/data/profile/auth.json');
+import { codexModels, FileCredentialStore } from '../src/agent/codex.ts';
+const models = codexModels(new FileCredentialStore('/data/profile/auth.json'));
 try {
   await models.login('openai-codex', 'oauth', {
     signal: AbortSignal.timeout(12 * 60_000),
