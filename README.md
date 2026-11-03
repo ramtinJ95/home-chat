@@ -62,6 +62,11 @@ node scripts/import-existing-codex.ts --i-accept-shared-refresh-session
 The import leaves `~/.codex/auth.json` untouched. A copied refresh token can
 conflict with the CLI's own session, so prefer the device-code login.
 
+When ChatGPT refuses the access token early, Home Chat renews it on the next
+message. A reply that fails with "Codex needs signing in again on the server"
+means the renewal failed too, so run the device-code login again. The server
+log has the provider's own words after `Model request failed:`.
+
 ### Stop and data
 
 ```sh

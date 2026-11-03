@@ -2,7 +2,7 @@ import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall, type AssistantMessage, type Message, type SystemMessage } from '@earendil-works/pi-ai';
@@ -24,8 +24,9 @@ async function fixture(t: TestContext, call: ServerCall = async () => '', data?:
   const faux = fauxProvider({provider: 'faux', models: [{id: 'faux-1', input: ['text', 'image']}], tokensPerSecond});
   const models = createModels();
   models.setProvider(faux.provider);
-  const agent = createAgent({models, model: {provider: 'faux', modelId: 'faux-1'},
-    instructions: 'You are Home Chat (test instructions).', maxRetries: 0, onReport: () => {}});
+  const reports: unknown[] = [];
+  const agent = createAgent({models, model: {provider: 'faux', modelId: 'faux-1'}, authPath: join(root, 'profile/auth.json'),
+    instructions: 'You are Home Chat (test instructions).', maxRetries: 0, onReport: error => reports.push(error)});
   const requests: Message[][] = [];
   const reply = (replies: Reply[]) => faux.setResponses(replies.map(item => (context: {messages: Message[]}) => {
     requests.push(context.messages);
@@ -44,7 +45,7 @@ async function fixture(t: TestContext, call: ServerCall = async () => '', data?:
   let closing: Promise<void> | undefined;
   const close = () => closing ??= (async () => { await Promise.all(workers.map(each => each.stop())); await agent.close(); })();
   t.after(async () => { await close().catch(() => {}); if (!data) await rm(root, {recursive: true, force: true}); });
-  return {root, agent, reply, requests, worker, close};
+  return {root, agent, reply, requests, reports, worker, close};
 }
 
 // Sends `text` and resolves with the streamed reply once the turn settles, or rejects with its failure.
@@ -245,6 +246,39 @@ test('a stopped reply settles, a provider failure fails the turn, and a stopped 
   const next = await f.worker();
   f.reply([fauxAssistantMessage('Back.')]);
   assert.equal(await turn(next, 'Hello again'), 'Back.');
+});
+
+test('a refused Codex sign-in is logged, explained, and marked expired so the next request renews it', async t => {
+  const f = await fixture(t);
+  const authPath = join(f.root, 'profile/auth.json');
+  await mkdir(join(f.root, 'profile'));
+  const login = {type: 'oauth', access: 'access-token', refresh: 'refresh-token', expires: Date.now() + 3 * 86_400_000};
+  await writeFile(authPath, JSON.stringify({'openai-codex': login}));
+  const stored = async () => JSON.parse(await readFile(authPath, 'utf8'))['openai-codex'];
+  const worker = await f.worker();
+
+  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'fetch failed'})]);
+  await assert.rejects(() => turn(worker, 'Hello'), /The model request failed/);
+  assert.deepEqual(await stored(), login, 'an unrelated failure leaves the login as it is');
+
+  const refused = 'Your authentication token has expired. Please try signing in again. eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9';
+  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: refused})]);
+  await assert.rejects(() => turn(worker, 'Hello again'), /Codex refused the sign-in\. Send the message again/);
+  assert.deepEqual(await stored(), {...login, expires: 0}, 'marked expired before the user is told to send again, keeping the refresh token');
+
+  const logged = f.reports.map(report => (report as Error).message);
+  assert.ok(logged.includes('Model request failed: fetch failed'), 'the provider text is logged');
+  assert.ok(logged.includes('Model request failed: Your authentication token has expired. Please try signing in again. [redacted]'),
+    'token-like text is redacted from the log');
+});
+
+test('a Codex sign-in that cannot be renewed asks for signing in again', async t => {
+  const f = await fixture(t);
+  const worker = await f.worker();
+  f.reply([fauxAssistantMessage('', {stopReason: 'error', errorMessage: 'OAuth refresh failed for openai-codex: {"error":"invalid_grant","user":"someone@example.com"}'})]);
+  await assert.rejects(() => turn(worker, 'Hello'), /could not be renewed\. Codex needs signing in again on the server/);
+  assert.deepEqual(f.reports.map(report => (report as Error).message),
+    ['Model request failed: OAuth refresh failed for openai-codex: {"error":"invalid_grant","user":"[email]"}'], 'no email address reaches the log');
 });
 
 test('a reply stopped from a delta, as the response size limit does, sends no text after it fails', async t => {

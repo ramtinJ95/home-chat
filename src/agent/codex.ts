@@ -47,10 +47,25 @@ export class FileCredentialStore implements CredentialStore {
   }
 }
 
-export function codexModels(authPath: string): MutableModels {
-  const models = createModels({credentials: new FileCredentialStore(authPath)});
+export function codexModels(credentials: CredentialStore): MutableModels {
+  const models = createModels({credentials});
   models.setProvider(openaiCodexProvider());
   return models;
+}
+
+// The Codex endpoints' wording for an access token they refuse.
+export const LOGIN_REFUSED = /authentication token|\btoken(?: has | |_)expired|\btoken_invalidated|\binvalid_token/i;
+
+// ChatGPT can revoke an access token before the expiry stored with it, and pi-ai refreshes only near that expiry, so
+// the refused token would be sent until then. Marked expired, the next request refreshes it under pi-ai's lock.
+export async function expireLogin(credentials: CredentialStore): Promise<void> {
+  await credentials.modify('openai-codex', async current =>
+    current?.type === 'oauth' && current.expires > 0 ? {...current, expires: 0} : undefined);
+}
+
+// Provider error text with anything token-like and any email address removed, cut short.
+export function redact(text: string, length = 200): string {
+  return text.replace(/[A-Za-z0-9_\-.]{32,}/g, '[redacted]').replace(/[^\s"'<>@]+@[^\s"'<>@]+/g, '[email]').slice(0, length);
 }
 
 // The account id sits in the access token's claims; the endpoints want it as a header.
@@ -65,7 +80,7 @@ function accountId(token: string): string {
 async function reason(response: Response): Promise<string> {
   const body = await response.json().catch(() => undefined) as {error?: {message?: unknown}; detail?: unknown} | undefined;
   const message = body?.error?.message ?? body?.detail;
-  return typeof message === 'string' ? ': ' + message.replace(/[A-Za-z0-9_\-.]{32,}/g, '[redacted]').slice(0, 200) : '';
+  return typeof message === 'string' ? ': ' + redact(message) : '';
 }
 
 // POST to a Codex endpoint (e.g. /alpha/search, /images/generations). Of a refused request only `reason` is shown,

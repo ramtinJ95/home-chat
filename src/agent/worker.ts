@@ -11,6 +11,7 @@ import type { Question } from '../api.d.ts';
 import { MAX_QUESTION_OPTIONS, carriesText, composePrompt, isAllowedTool, type ServerCall, type TurnMode } from '../policy.ts';
 import { PiRejected, type ChatWorker, type PromptImage, type WorkerEvents } from '../chat-worker.ts';
 import type { ChatStore, OpenStore } from './agent.ts';
+import { LOGIN_REFUSED } from './codex.ts';
 import type { ChatHost } from './extension.ts';
 
 // The question the app shows, and the tool waiting for its answer.
@@ -22,6 +23,7 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   readonly cwd: string;
   readonly call: ServerCall;
   readonly #open: OpenStore;
+  readonly #modelFailed: (detail: string) => Promise<void>;
   #store?: ChatStore;
   turn: ChatHost['turn'] = {mode: {}, calls: 0, images: 0};
   #conversation?: Conversation;
@@ -42,9 +44,10 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   #behind = false;
   #catchingUp?: Promise<void>;
 
-  constructor(open: OpenStore, directory: string, call: ServerCall) {
+  constructor(open: OpenStore, directory: string, call: ServerCall, modelFailed: (detail: string) => Promise<void>) {
     super();
     this.#open = open;
+    this.#modelFailed = modelFailed;
     this.directory = directory;
     this.chat = basename(directory);
     this.cwd = join(directory, 'work');
@@ -145,7 +148,10 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
     this.#endTurn();
     // Stopped from the app: the turn ends with what it has.
     if (record.status === 'done' || record.reason === 'aborted') this.emit('settled');
-    else if (record.reason === 'model_error') this.emit('failure', providerFailure(record.detail));
+    else if (record.reason === 'model_error') {
+      const detail = String(record.detail ?? '');
+      void this.#modelFailed(detail).then(() => this.emit('failure', providerFailure(detail)));
+    }
     else this.emit('failure', `The reply could not be finished (${record.reason})`);
   }
 
@@ -294,10 +300,11 @@ export class DurableWorker extends EventEmitter<WorkerEvents> implements ChatWor
   }
 }
 
-function providerFailure(value: unknown): string {
-  const text = String(value ?? '');
-  const code = text.match(/refresh_token_(?:reused|expired|invalid)|invalid_grant|invalid_token/);
-  if (code) return `Subscription login needs refreshing (${code[0]})`;
+function providerFailure(text: string): string {
+  if (/OAuth refresh failed|refresh_token_(?:reused|expired|invalid)|invalid_grant/.test(text)) {
+    return 'The Codex sign-in has expired and could not be renewed. Codex needs signing in again on the server.';
+  }
+  if (LOGIN_REFUSED.test(text)) return 'Codex refused the sign-in. Send the message again to renew it; if that fails too, Codex needs signing in again on the server.';
   if (/\b429\b|quota|rate.limit/i.test(text)) return 'Subscription usage limit reached; try again after the provider limit resets';
   const status = text.match(/\b(?:401|403|502|503)\b/);
   if (status) return `Provider request failed (HTTP ${status[0]})`;
