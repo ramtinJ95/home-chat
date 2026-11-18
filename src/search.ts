@@ -15,7 +15,7 @@ interface Searchable { id: string; title: string; messages: Message[] }
 // Decomposed, accents dropped, lower case. Lower-casing a whole string differs from lower-casing it a character at a
 // time only for Greek final sigma, which is made an ordinary sigma, so both ways give the same text and snippets can
 // map the folded text back character by character.
-const foldText = (text: string) => text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replaceAll('ς', 'σ');
+export const foldText = (text: string) => text.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replaceAll('ς', 'σ');
 
 // One character folded; ASCII, most of any text, without the general path.
 const foldCharacter = (character: string) => character.length === 1 && character < '\x80' ? character.toLowerCase() : foldText(character);
@@ -76,7 +76,7 @@ function foldedMessage(message: Message): string {
   return folded;
 }
 
-const queryWords = (query: string): string[] => [...new Set(foldText(query).split(/\s+/).filter(Boolean))];
+export const queryWords = (query: string): string[] => [...new Set(foldText(query).split(/\s+/).filter(Boolean))];
 
 // Moves an index off the second half of a surrogate pair, so a snippet never splits an emoji.
 const whole = (text: string, index: number) => (index > 0 && index < text.length && /[\uDC00-\uDFFF]/.test(text[index]) ? index - 1 : index);

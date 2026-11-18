@@ -21,4 +21,7 @@ export const parameters = Type.Object({
     date: Type.Optional(Type.String({pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'YYYY-MM-DD, for once'})),
   })),
   deepResearch: Type.Optional(Type.Boolean({description: 'Use deep research in each run; only when the user asks for it'})),
+  trackFindings: Type.Optional(Type.Boolean({description: 'Keep a list of what the routine finds, so each item (a job ad, a '
+    + 'listing, an article) is shared once and the user can look back through them. For routines that look for new things; '
+    + 'not for summaries such as the weather or a daily plan'})),
 });

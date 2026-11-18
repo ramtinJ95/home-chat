@@ -4,20 +4,21 @@ import { readFile, writeFile, mkdir, readdir, stat, rename, rm } from 'node:fs/p
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
-import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, RunOutcome, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
+import type { AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, FindingsRun, FindingsView, LibraryContent, Me, MemoryView, Message, PushInfo, RoutineSummary, RunOutcome, SearchResult, StreamEvent, TodoList, User } from './api.d.ts';
 import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts';
 import { createAgent } from './agent/agent.ts';
 import { accessConfigFromEnv, type AccessConfig, type AccessKeySource } from './access.ts';
 import { readJson, serialSave } from './files.ts';
+import { FindingError, createFindings, findingItems, type Finding } from './findings.ts';
 import { HttpError, fail, jsonBody, recent } from './http.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
 import { LibraryError, LibraryMissing, createLibrary } from './library.ts';
 import { createPush } from './push.ts';
 import { createSignIn } from './sign-in.ts';
-import { MAX_QUERY, searchChats } from './search.ts';
+import { MAX_QUERY, foldText, queryWords, searchChats } from './search.ts';
 import { MAX_RUNS_PER_DAY, MISSED_GRACE_MS, RoutineError, createRoutines, describeSchedule, nextLabel, runLabel, whenLabel, type Routine } from './routines.ts';
-import { ATTACHED_NOTE, DOCUMENT_FILE, IMAGE_DIRECTORY, IMAGE_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
+import { ATTACHED_NOTE, DOCUMENT_FILE, IMAGE_DIRECTORY, IMAGE_FILE, TURN_LIMITS, ID_PATTERN, LOCAL_HOSTS, MAX_FINDINGS_PER_RUN, MAX_UPLOAD, MAX_DATA, USERS, allowedDocumentPath, allowedImagePath, documentInput, isUser, pushSubscription, type ServerCall } from './policy.ts';
 
 interface StoredAsset { id: string; path: string; document?: DocumentInfo }
 // `replying` is saved while a reply streams; finding it at startup means the app stopped before the reply finished.
@@ -29,7 +30,8 @@ interface Chat {
   id: string; owner: User; title: string; created: string; messages: Message[]; assets: StoredAsset[]; replying?: true; deepResearch?: true; shared?: true;
   unread?: User[]; starred?: Partial<Record<User, string>>;
 }
-interface RoutineRun { routine: Routine; scheduled: Date }
+// `found`: what the run handed to the findings tool that was not shared before, shown under its reply when the turn ends.
+interface RoutineRun { routine: Routine; scheduled: Date; found?: Finding[] }
 // What a conversation is busy with, from a message's admission until its reply's end is saved, or during a delete.
 // `by`: who sent the message, or deletes; a routine run is its owner's. `run`: the routine run being answered, with
 // nobody watching. `deadline`: the reply's time limit.
@@ -216,6 +218,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const memory = await createMemory(join(data, 'memory.json'));
   const todos = await createTodos(join(data, 'todos.json'));
   const library = await createLibrary(data);
+  const findings = await createFindings(join(data, 'findings.json'));
   const recordRun = ({routine, scheduled}: RoutineRun, outcome: Exclude<RunOutcome, 'running'>) =>
     routines.finished(routine, scheduled, outcome).catch(() => console.warn('Could not save a routine run'));
   const runTag = ({routine, scheduled}: RoutineRun) => `${routine.title} · ${runLabel(scheduled)}`;
@@ -223,8 +226,27 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
   const runTimes = new Map<User, number[]>();
   const routineSummary = (routine: Routine): RoutineSummary => ({id: routine.id, title: routine.title, chat: routine.chat, enabled: routine.enabled,
     schedule: describeSchedule(routine.schedule), rule: routine.schedule, prompt: routine.prompt, deepResearch: routine.deepResearch,
+    trackFindings: routine.trackFindings === true, findings: findings.count(routine.id),
     next: nextLabel(routine), lastRun: routine.lastRun ? {when: whenLabel(new Date(routine.lastRun.at)), outcome: routine.lastRun.outcome} : null,
     unread: chats.get(routine.chat)?.unread?.includes(routine.owner) === true});
+  // The routine's findings that have every word of `query` in their title, summary or site, by run, newest first.
+  const findingsView = (routine: Routine, query: string): FindingsView => {
+    const words = queryWords(query);
+    const all = findings.list(routine.id);
+    const messages = chats.get(routine.chat)?.messages ?? [];
+    const runs: FindingsRun[] = [];
+    // Newest first, so each run's items go in front of the ones already listed, which keeps them in the order shown.
+    let group: {run: string; view: FindingsRun} | undefined;
+    for (const finding of [...all].reverse()) {
+      if (!words.every(word => foldText(`${finding.title} ${finding.summary} ${finding.site}`).includes(word))) continue;
+      const item = {id: finding.id, url: finding.url, title: finding.title, summary: finding.summary, site: finding.site};
+      if (group?.run === finding.run) { group.view.items.unshift(item); continue; }
+      const digest = messages.findIndex(message => message.findings?.some(shown => shown.id === finding.id));
+      group = {run: finding.run, view: {when: runLabel(new Date(finding.run)), digest: digest === -1 ? null : digest, items: [item]}};
+      runs.push(group.view);
+    }
+    return {routine: routineSummary(routine), total: all.length, runs};
+  };
   // Open copies of a routine's conversation show its new state: the switch at the top of the thread.
   const showRoutine = (routine: Routine) => {
     const chat = chats.get(routine.chat);
@@ -283,6 +305,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     const last = chat.messages.at(-1);
     const reply = last?.role === 'assistant' ? last : undefined;
     if (error && reply) reply.error = error;
+    // What the run found goes under its reply, whether or not the run finished, and counts as shared once that is saved.
+    const found = reply ? run?.found ?? [] : [];
+    if (found.length) reply!.findings = found.map(({id, url, title, summary, site}) => ({id, url, title, summary, site}));
     delete chat.replying;
     // Who missed the reply: a routine run's owner, and in a shared conversation the person who did not send the message.
     for (const user of USERS) {
@@ -291,6 +316,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     // Clients see the turn end now, but the conversation stays occupied until it is saved, so a delete cannot remove the files under the save.
     const saving: Turn = {by};
     turns.set(chat.id, saving);
+    let saved = true;
     try { await publish(chat); }
     catch {
       if (!error) {
@@ -298,12 +324,19 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         if (reply) reply.error = error;
         emit(chat.id, {type: 'error', message: error});
       }
-      await publish(chat).catch(() => console.warn('Could not save a conversation'));
+      await publish(chat).catch(() => { saved = false; console.warn('Could not save a conversation'); });
     } finally { release(chat.id, saving); }
+    // Unsaved, they were never shown, so a later run finds them again. A routine deleted meanwhile has no list to add to.
+    if (run && found.length && saved && routines.get(run.routine.id) === run.routine) {
+      try { await findings.record(run.routine.id, found); showRoutine(run.routine); }
+      catch { console.warn('Could not save a routine’s findings'); }
+    }
     if (run) await recordRun(run, error ? 'failed' : 'done');
     if (!watching(chat.id, by)) {
+      const result = !run?.routine.trackFindings ? 'New results are ready.'
+        : found.length ? `${found.length} new finding${found.length === 1 ? '' : 's'}.` : 'Nothing new this time.';
       push.notify(by, run
-        ? {title: run.routine.title, body: error ? 'This run stopped before it finished.' : 'New results are ready.', chat: chat.id, routine: run.routine.id}
+        ? {title: run.routine.title, body: error ? 'This run stopped before it finished.' : result, chat: chat.id, routine: run.routine.id}
         : {title: chat.title, body: error ? 'The reply stopped before it finished.' : 'Your reply is ready.', chat: chat.id});
     }
     void drainRuns();
@@ -359,7 +392,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         turn.deadline = setTimeout(() => worker.stop(), TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes * 60_000); turn.deadline.unref();
         try {
           await worker.prompt(text + (attached.length ? ATTACHED_NOTE + attached.map(item => item.path).join('\n') : ''), images,
-            {deepResearch, routineRun: due, ...(chat.shared && {from: names[by]})});
+            {deepResearch, routineRun: due, ...(run?.routine.trackFindings && {findings: true}), ...(chat.shared && {from: names[by]})});
           delete asked.delivery;
         } catch (error) {
           worker.stop();
@@ -531,7 +564,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         const list = routines.list(owner);
         if (!list.length) return 'There are no routines yet.';
         return list.map(routine => `- “${routine.title}” (id ${routine.id}): ${describeSchedule(routine.schedule)}; ${nextLabel(routine)}`
-          + `${routine.deepResearch ? '; deep research' : ''}. Task: ${routine.prompt}`).join('\n');
+          + `${routine.deepResearch ? '; deep research' : ''}${routine.trackFindings ? '; keeps findings' : ''}. Task: ${routine.prompt}`).join('\n');
       }
       case 'create': {
         const prepared = routines.prepare(owner, body);
@@ -554,12 +587,41 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
         return body.action === 'pause' ? `Paused “${routine.title}”. It will not run until resumed.` : `Resumed “${routine.title}”. Next run: ${nextLabel(routine)}.`;
       }
       case 'delete': {
-        const routine = await routines.remove(owner, body.id);
-        showRoutine(routine);
-        return `Deleted “${routine.title}”. Its earlier results stay in the conversation “${routine.title}”, which the user can delete like any other.`;
+        const routine = await removeRoutine(owner, body.id);
+        return `Deleted “${routine.title}”. Its earlier results stay in the conversation “${routine.title}”, which the user can delete like any other`
+          + (routine.trackFindings ? '; its list of findings is gone.' : '.');
       }
       default: throw new RoutineError('action must be list, create, update, pause, resume or delete');
     }
+  }
+
+  // A routine goes with its list of findings; its conversation stays, with the findings each reply showed.
+  async function removeRoutine(owner: User, id: unknown): Promise<Routine> {
+    const routine = await routines.remove(owner, id);
+    showRoutine(routine);
+    await findings.remove(routine.id).catch(() => console.warn('Could not remove a deleted routine’s findings'));
+    return routine;
+  }
+
+  // The findings tool, during a run of a routine that keeps findings: the items not shared before wait in the run until
+  // its turn ends (endTurn). Returns what the model is told.
+  function addFindings(run: RoutineRun, input: Record<string, unknown>): string {
+    const {routine} = run;
+    if (!routine.trackFindings) throw new FindingError('This routine no longer keeps a list of findings');
+    const found = run.found ??= [];
+    const added: string[] = []; const earlier: string[] = []; let full = false;
+    for (const item of findingItems(input.items)) {
+      if (findings.known(routine.id, item.key)) earlier.push(item.title);
+      else if (found.some(finding => finding.key === item.key)) continue;
+      else if (found.length >= MAX_FINDINGS_PER_RUN) full = true;
+      else { found.push({...item, run: run.scheduled.toISOString()}); added.push(item.title); }
+    }
+    return [
+      added.length ? `Shown under your reply as new: ${added.join('; ')}.` : 'Nothing new added.',
+      earlier.length && `Already shared in an earlier run, so left out: ${earlier.join('; ')}.`,
+      full && `Only ${MAX_FINDINGS_PER_RUN} findings fit in one run; the rest were left out.`,
+      `${found.length} new so far in this run. Do not list them again in your reply.`,
+    ].filter(Boolean).join('\n');
   }
 
   // The Todos page. Every change answers with the list as it is now, and a list this person cannot see is not found.
@@ -594,18 +656,20 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     const turn = turns.get(chat.id);
     const user = turn?.by ?? chat.owner;
     if (path === '/memory' && body === undefined) return memory.prompt(user);
-    if (path !== '/todo' && turn?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
+    if (path === '/findings' && !turn?.run) throw fail(403, 'Findings are only kept during a routine run');
+    if (path !== '/todo' && path !== '/findings' && turn?.run) throw fail(403, 'Routines and household notes cannot be changed during a routine run');
     if (typeof body !== 'object' || body === null || Array.isArray(body)) throw fail(400, 'Invalid request');
     const input = body as Record<string, unknown>;
     try {
       if (path === '/todo') return await todoAction(todos, user, input);
+      if (path === '/findings') return addFindings(turn!.run!, input);
       if (path === '/routine') return await routineAction(user, input);
       // The memory tool checks a change first, then asks the user, then makes it (src/agent/tools/memory.ts).
       if (input.check === true) { memory.check(user, input); return 'OK'; }
       await memory.apply(user, input);
       return input.action === 'forget' ? 'Forgotten.' : 'Saved under About us; you will be told it in every conversation from now on.';
     } catch (error) {
-      if (error instanceof RoutineError || error instanceof MemoryError || error instanceof TodoError) throw fail(400, error.message);
+      if (error instanceof RoutineError || error instanceof MemoryError || error instanceof TodoError || error instanceof FindingError) throw fail(400, error.message);
       throw fail(500, 'Home Chat could not save that');
     }
   }
@@ -741,6 +805,14 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           throw error;
         }
       }
+      // A routine's findings page, for its owner.
+      if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 4 && parts[3] === 'findings' && req.method === 'GET') {
+        const routine = routines.get(parts[2]);
+        if (!routine || routine.owner !== session.user) throw fail(404, 'Not found');
+        const query = url.searchParams.get('q') ?? '';
+        if (query.length > MAX_QUERY) throw fail(400, `Search for at most ${MAX_QUERY} characters`);
+        return send(200, findingsView(routine, query) satisfies FindingsView);
+      }
       // The Routines page: its on/off switch, edits and delete. Creating one happens by asking the model.
       if (parts[0] === 'api' && parts[1] === 'routines' && parts.length === 3 && ['POST', 'PATCH', 'DELETE'].includes(req.method ?? '')) {
         const routine = routines.get(parts[2]);
@@ -752,10 +824,10 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
           catch (error) { if (error instanceof RoutineError) throw fail(409, error.message); throw error; }
         } else if (req.method === 'PATCH') {
           const body = await jsonBody(req, 32 * 1024);
-          const edit = {title: body.title, prompt: body.prompt, schedule: body.rule, deepResearch: body.deepResearch};
+          const edit = {title: body.title, prompt: body.prompt, schedule: body.rule, deepResearch: body.deepResearch, trackFindings: body.trackFindings};
           try { changed = await routines.update(session.user, routine.id, edit); }
           catch (error) { if (error instanceof RoutineError) throw fail(400, error.message); throw error; }
-        } else changed = await routines.remove(session.user, routine.id);
+        } else return send(200, routineSummary(await removeRoutine(session.user, routine.id)));
         showRoutine(changed);
         return send(200, routineSummary(changed));
       }

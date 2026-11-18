@@ -1,5 +1,5 @@
 // Home Chat's tools, rules and instructions as one Pi Durable extension. Every conversation runs with exactly this
-// extension, so the model has these eight tools and nothing else: no read, write, edit or bash.
+// extension, so the model has these nine tools and nothing else: no read, write, edit or bash.
 import type { Context } from '@earendil-works/chord/context';
 import type { ImageContent, MutableModels } from '@earendil-works/pi-ai';
 import { defineExtension, defineTool, hook, section, ToolTask, type ConversationId } from '@earendil-works/pi-durable';
@@ -8,6 +8,7 @@ import { TURN_LIMITS, refusedInTurn, validateToolInput, type ServerCall, type Tu
 import * as ask from './tools/ask.ts';
 import * as deepResearch from './tools/deep-research.ts';
 import * as document from './tools/document.ts';
+import * as findings from './tools/findings.ts';
 import * as imagegen from './tools/imagegen.ts';
 import * as memory from './tools/memory.ts';
 import * as routine from './tools/routine.ts';
@@ -79,6 +80,10 @@ export function homeExtension({models, instructions, hostFor}:
     defineTool({
       name: 'routine', description: routine.description, parameters: routine.parameters,
       async execute(args, api) { return {output: text(await host(api.conversationId).call('/routine', args))}; },
+    }),
+    defineTool({
+      name: 'findings', description: findings.description, parameters: findings.parameters,
+      async execute(args, api) { return {output: text(await host(api.conversationId).call('/findings', args))}; },
     }),
     defineTool({
       name: 'todo', description: todo.description, parameters: todo.parameters,
