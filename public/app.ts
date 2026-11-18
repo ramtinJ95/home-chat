@@ -299,7 +299,15 @@ let shown = '';
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
 let following = true;
 
+// Under the reply that is running, in the thread where it is being read: what it is doing now (renderChat places it).
+const working = element('p', 'working');
+const workingLabel = element('span');
+working.setAttribute('role', 'status');
+working.append(element('span', 'dots'), workingLabel);
+
 function setBusy(busy: boolean) {
+  // A reply that starts thinks first; a snapshot of one already running keeps what the stream last said it does.
+  if (busy && ui.send.hidden === false) workingLabel.textContent = 'Thinking…';
   ui.send.disabled = busy;
   // The switch applies from the next message, so it waits while a reply runs.
   ui.research.disabled = busy;
@@ -307,7 +315,9 @@ function setBusy(busy: boolean) {
   ui.stop.hidden = !busy;
   ui.messages.classList.toggle('busy', busy);
   ui.composer.classList.toggle('busy', busy);
-  ui.activity.textContent = busy ? 'Thinking…' : '';
+  if (!busy) working.remove();
+  // The composer's line holds notes for the moment: a dropped stream, or Enter pressed while a reply runs.
+  ui.activity.textContent = '';
 }
 
 function scrollToEnd() { ui.messages.scrollTop = ui.messages.scrollHeight; following = true; }
@@ -485,6 +495,7 @@ function renderChat(next: ChatSnapshot) {
   const last = next.messages.at(-1);
   const content = ui.messages.lastElementChild?.querySelector<HTMLElement>('.content');
   streaming = last?.role === 'assistant' && content ? {node: content, text: last.text} : undefined;
+  if (next.busy) (streaming ? content!.parentElement! : ui.messages).append(working);
   markFound();
   // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
@@ -582,8 +593,8 @@ function listen(id: string) {
     switch (event.type) {
       // The stream opens with the snapshot connect just drew, which is not drawn again.
       case 'snapshot': if (update(event.chat)) refreshSidebar().catch(showError); break;
-      case 'delta': appendDelta(event.text); break;
-      case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
+      case 'delta': workingLabel.textContent = 'Writing…'; appendDelta(event.text); break;
+      case 'tool': workingLabel.textContent = TOOL_ACTIVITY[event.name]; break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
       case 'library': refreshLibrary().catch(showError); break;
@@ -684,7 +695,9 @@ ui.draft.onkeydown = event => {
   if (event.key === 'Escape' && editing) { stopEditing(); return; }
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || touchKeyboard.matches) return;
   event.preventDefault();
-  if (!ui.send.disabled) ui.composer.requestSubmit();
+  // While a reply runs the draft waits; saying so beats a key that seems to do nothing.
+  if (ui.send.disabled) ui.activity.textContent = 'Wait for this reply to finish, or press Stop';
+  else ui.composer.requestSubmit();
 };
 
 // Editing the last message happens in the composer. `draft` is whatever was there before, given back when the edit
