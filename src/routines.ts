@@ -24,6 +24,8 @@ export interface Routine {
   schedule: RoutineSchedule;
   enabled: boolean;
   deepResearch: boolean;
+  // Keeps a list of what it finds (src/findings.ts); absent on routines from before there was one.
+  trackFindings?: boolean;
   // ISO instant; null once a one-off has run.
   nextRun: string | null;
   // A run that came due and has not started yet (it waits for a free worker), saved so a restart still runs it.
@@ -32,7 +34,7 @@ export interface Routine {
   lastRun?: {at: string; outcome: RunOutcome};
 }
 
-interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown }
+interface RoutineInput { title?: unknown; prompt?: unknown; schedule?: unknown; deepResearch?: unknown; trackFindings?: unknown }
 
 const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
 
@@ -43,9 +45,9 @@ const text = (value: unknown, name: string, maximum: number): string => {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum) throw new RoutineError(`${name} must be 1 to ${maximum} characters`);
   return value.trim();
 };
-const researchSwitch = (value: unknown): boolean | undefined => {
+const optionalSwitch = (value: unknown, name: string): boolean | undefined => {
   if (value === undefined || typeof value === 'boolean') return value;
-  throw new RoutineError('deepResearch must be true or false');
+  throw new RoutineError(`${name} must be true or false`);
 };
 
 export function parseSchedule(value: unknown): RoutineSchedule {
@@ -211,10 +213,11 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
         throw new RoutineError(`There can be at most ${MAX_ROUTINES} routines per person; delete one first`);
       }
       const {schedule, nextRun} = timing(input.schedule, now);
-      const deepResearch = researchSwitch(input.deepResearch);
+      const deepResearch = optionalSwitch(input.deepResearch, 'deepResearch');
+      const trackFindings = optionalSwitch(input.trackFindings, 'trackFindings');
       return {
         id: randomUUID(), owner, title: text(input.title, 'title', MAX_ROUTINE_TITLE), prompt: text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT), schedule,
-        enabled: true, deepResearch: deepResearch === true, nextRun,
+        enabled: true, deepResearch: deepResearch === true, trackFindings: trackFindings === true, nextRun,
       };
     },
     async create(routine: Omit<Routine, 'chat'>, chat: string): Promise<Routine> {
@@ -228,8 +231,10 @@ export async function createRoutines(path: string, due: (routine: Routine, sched
       const changed = {...routine};
       if (input.title !== undefined) changed.title = text(input.title, 'title', MAX_ROUTINE_TITLE);
       if (input.prompt !== undefined) changed.prompt = text(input.prompt, 'prompt', MAX_ROUTINE_PROMPT);
-      const deepResearch = researchSwitch(input.deepResearch);
+      const deepResearch = optionalSwitch(input.deepResearch, 'deepResearch');
       if (deepResearch !== undefined) changed.deepResearch = deepResearch;
+      const trackFindings = optionalSwitch(input.trackFindings, 'trackFindings');
+      if (trackFindings !== undefined) changed.trackFindings = trackFindings;
       if (input.schedule !== undefined) Object.assign(changed, timing(input.schedule, now));
       Object.assign(routine, changed);
       await commit();

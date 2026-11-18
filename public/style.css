@@ -651,6 +651,25 @@ svg { width: 20px; height: 20px; flex: none; }
 .routine-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .routine-form-actions .primary { padding: 10px 20px; border-radius: 12px; }
 
+/* Findings: what a routine shared, under a run's reply and on its Findings page, where each run is a card. */
+.findings { display: grid; margin: 0; padding: 0; list-style: none; }
+.finding { display: grid; gap: 1px; padding: 11px 0; border-top: 1px solid var(--line); }
+.finding:first-child { padding-top: 4px; border-top: 0; }
+.finding:last-child { padding-bottom: 0; }
+.finding-title { font-weight: 600; color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+.finding-title:hover { text-decoration: underline; }
+.finding-site { font-size: 0.78rem; color: var(--muted); overflow-wrap: anywhere; }
+.finding-summary { margin: 3px 0 0; font-size: 0.92rem; line-height: 1.5; color: var(--ink-soft); }
+.findings-block {
+  margin-top: 14px; padding: 12px 16px 14px; border-radius: 16px;
+  background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-soft);
+}
+.findings-label { margin: 0 0 6px; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--oak); }
+.findings-search { margin: 2px 0 12px; }
+.findings-run .card-head { padding-bottom: 2px; }
+.findings-run:not(:has(.card-actions)) { padding-bottom: 16px; }
+.findings-run .card-head .card-note { flex: none; }
+
 /* Todos: a form for a new list, then one card per list with its items, an add field and the list's actions. */
 .todo-new { display: grid; gap: 10px; margin: 0 0 16px; }
 .todo-new input:not([type]) { width: 100%; background: var(--card); }

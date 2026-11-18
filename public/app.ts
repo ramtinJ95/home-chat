@@ -1,4 +1,4 @@
-import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, Library, LibraryItem, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, User, Weekday } from '../src/api.d.ts';
+import type { ApiError, AssetRef, ChatSnapshot, ChatSummary, DocumentContent, DocumentInfo, FindingItem, FindingsRun, FindingsView, Library, LibraryItem, Me, MemoryView, Message, PushInfo, SearchResult, Question, RoutineEdit, RoutineSchedule, RoutineSummary, StreamEvent, TodoList, ToolName, User, Weekday } from '../src/api.d.ts';
 
 function $<T extends HTMLElement = HTMLElement>(selector: string): T {
   const node = document.querySelector<T>(selector);
@@ -71,6 +71,13 @@ const ui = {
   routinesEntry: $('#routines-entry'),
   routinesPage: $('#routines-page'),
   routineCards: $('#routine-cards'),
+  findingsPage: $('#findings-page'),
+  findingsClose: $<HTMLButtonElement>('#findings-close'),
+  findingsRoutine: $('#findings-routine'),
+  findingsLede: $('#findings-lede'),
+  findingsForm: $<HTMLFormElement>('#findings-form'),
+  findingsSearch: $<HTMLInputElement>('#findings-search'),
+  findingsRuns: $('#findings-runs'),
   todosEntry: $('#todos-entry'),
   libraryEntry: $('#library-entry'),
   libraryPage: $('#library-page'),
@@ -371,6 +378,13 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
   } else {
     content.textContent = message.text;
   }
+  if (message.findings?.length) {
+    const block = element('section', 'findings-block');
+    const count = message.findings.length;
+    block.setAttribute('aria-label', 'New findings');
+    block.append(element('p', 'findings-label', `${count} new finding${count === 1 ? '' : 's'}`), findingList(message.findings));
+    bubble.append(block);
+  }
   const carded = new Set<string>();
   for (const id of message.assets) {
     const url = `/api/chats/${snapshot.id}/assets/${id}`;
@@ -406,6 +420,19 @@ function renderMessage(snapshot: ChatSnapshot, message: Message, fresh: boolean,
   // A skipped run is a note on its own, with no task message before it.
   if (message.run) { const wrap = element('div', 'run-note'); wrap.append(runMark(message.run), article); return wrap; }
   return article;
+}
+
+// What a routine found, as a run's reply showed it: each title links to the item's own page.
+function findingList(items: FindingItem[]): HTMLElement {
+  const list = element('ul', 'findings');
+  list.append(...items.map(item => {
+    const row = element('li', 'finding');
+    const title = element('a', 'finding-title', item.title);
+    title.href = item.url; title.target = '_blank'; title.rel = 'noopener noreferrer';
+    row.append(title, element('span', 'finding-site', item.site), element('p', 'finding-summary', item.summary));
+    return row;
+  }));
+  return list;
 }
 
 // The newest version of a document, which every card of that document opens.
@@ -521,6 +548,7 @@ const TOOL_ACTIVITY: Record<ToolName, string> = {
   routine: 'Updating your routines…',
   memory: 'Updating About us…',
   todo: 'Updating your todos…',
+  findings: 'Noting what it found…',
 };
 
 async function openChat(id: string) {
@@ -1229,7 +1257,7 @@ function routineCard(routine: RoutineSummary): HTMLElement {
   edit.onclick = () => editRoutine(routine);
   const remove = element('button', 'ghost danger', 'Delete');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
-  actions.append(open, edit, remove);
+  actions.append(open, ...findingsButton(routine, ui.routinesPage), edit, remove);
   card.append(actions);
   return card;
 }
@@ -1278,6 +1306,10 @@ function editRoutine(routine: RoutineSummary) {
   const researchField = element('label', 'check-field');
   researchField.append(research, 'Deep research: a thorough, sourced report each run');
   researchField.hidden = !me?.deepResearch && !routine.deepResearch;
+  const tracking = element('input');
+  tracking.type = 'checkbox'; tracking.checked = routine.trackFindings;
+  const trackingField = element('label', 'check-field');
+  trackingField.append(tracking, 'Keep a list of what it finds, and share each find only once');
   // Fields for other kinds of schedule are disabled too, so a leftover value in them cannot block Save.
   const showRepeats = () => {
     days.hidden = days.disabled = repeats.value !== 'weekly';
@@ -1292,7 +1324,7 @@ function editRoutine(routine: RoutineSummary) {
       : kind === 'monthly' ? {kind, time: time.value, day: Number(dayOfMonth.value)}
       : kind === 'once' ? {kind, time: time.value, date: date.value}
       : {kind, time: time.value};
-    return {title: title.value.trim(), prompt: prompt.value.trim(), rule: schedule, deepResearch: research.checked};
+    return {title: title.value.trim(), prompt: prompt.value.trim(), rule: schedule, deepResearch: research.checked, trackFindings: tracking.checked};
   };
   const cancel = element('button', 'ghost', 'Cancel');
   cancel.onclick = () => { routineEdit = undefined; renderRoutineCards(routineList); };
@@ -1301,7 +1333,7 @@ function editRoutine(routine: RoutineSummary) {
   const actions = element('div', 'routine-form-actions');
   actions.append(cancel, save);
   form.append(field('Name', title), field('What it does each time', prompt), field('Repeats', repeats), days, monthly, once,
-    field('Time', time), researchField, actions);
+    field('Time', time), researchField, trackingField, actions);
   form.onsubmit = async event => {
     event.preventDefault();
     if (save.disabled) return;
@@ -1364,7 +1396,8 @@ async function setRoutine(id: string, enabled: boolean): Promise<RoutineSummary>
 }
 
 async function deleteRoutine(routine: RoutineSummary) {
-  if (!confirm(`Delete the routine “${routine.title}”? It stops running. Its conversation and past results stay.`)) return;
+  const list = routine.findings ? ` Its list of ${routine.findings} finding${routine.findings === 1 ? '' : 's'} is deleted.` : '';
+  if (!confirm(`Delete the routine “${routine.title}”? It stops running. Its conversation and past results stay.${list}`)) return;
   await api(routinePath(routine.id), 'DELETE');
   if (chat?.routine?.id === routine.id) renderRoutineBar(null);
   await refreshSidebar();
@@ -1378,8 +1411,91 @@ function renderRoutineBar(routine: RoutineSummary | null) {
   const remove = element('button', 'ghost danger', 'Delete routine');
   remove.onclick = () => deleteRoutine(routine).catch(showError);
   const text = element('span', 'routine-text', `${routine.schedule} · ${routine.next}`);
-  keepFocus(ui.routineBar, 'routine', () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), edit, remove));
+  keepFocus(ui.routineBar, 'routine', () => ui.routineBar.replaceChildren(icon('clock'), text, routineSwitch(routine), ...findingsButton(routine), edit, remove));
 }
+
+// Findings: one routine's list of what it shared, by run, newest first. The search runs on the server as the person
+// types; `findingsRun` drops an answer that newer typing, or another opening, has replaced.
+let findingsOf: RoutineSummary | undefined;
+let findingsRun = 0;
+let findingsTimer: number | undefined;
+
+// The way in, for a routine that keeps findings or kept some before. `parent`: the page it is on, which Back returns to.
+function findingsButton(routine: RoutineSummary, parent?: HTMLElement): HTMLButtonElement[] {
+  if (!routine.trackFindings && !routine.findings) return [];
+  const button = element('button', 'ghost', `Findings · ${routine.findings}`);
+  button.onclick = () => openFindings(routine, parent).catch(showError);
+  return [button];
+}
+
+async function openFindings(routine: RoutineSummary, parent?: HTMLElement) {
+  clearTimeout(findingsTimer);
+  ui.findingsSearch.value = '';
+  // Only if the person is still where they asked from once the list arrives.
+  const from = sheet?.node;
+  if (!await loadFindings(routine.id, '') || sheet?.node !== from) return;
+  ui.findingsClose.setAttribute('aria-label', parent === ui.routinesPage ? 'Back to Routines' : 'Back to the conversation');
+  showSheet(ui.findingsPage, parent);
+}
+
+// True if it drew the answer.
+async function loadFindings(id: string, query: string, run = ++findingsRun): Promise<boolean> {
+  const view = await api<FindingsView>(`${routinePath(id)}/findings?q=${encodeURIComponent(query)}`);
+  if (run !== findingsRun) return false;
+  renderFindings(view, query);
+  return true;
+}
+
+function renderFindings({routine, total, runs}: FindingsView, query: string) {
+  findingsOf = routine;
+  ui.findingsRoutine.textContent = routine.title;
+  ui.findingsLede.textContent = !routine.trackFindings
+    ? 'This routine no longer keeps a list, so nothing new is added here. Switch it back on under Edit on the Routines page.'
+    : total ? `Everything it has shared, newest first: ${total} so far. Each link comes up only once, though the same item on another site can still appear again.`
+    : 'Everything it shares will be listed here, newest first, and each link comes up only once.';
+  ui.findingsForm.hidden = !total;
+  ui.findingsRuns.replaceChildren(...(!total ? [element('p', 'empty-note', 'Nothing yet. What its next run finds will show up here.')]
+    : !runs.length ? [element('p', 'empty-note', `No findings mention “${query}”.`)]
+    : runs.map(run => findingsCard(routine, run))));
+}
+
+function findingsCard(routine: RoutineSummary, run: FindingsRun): HTMLElement {
+  const card = element('section', 'card findings-run');
+  const head = element('div', 'card-head');
+  const heading = element('h2', undefined, run.when);
+  head.append(heading, element('span', 'card-note', `${run.items.length} new`));
+  card.append(head, findingList(run.items));
+  // Gone once the conversation no longer has that reply.
+  if (run.digest !== null) {
+    const open = element('button', 'ghost', 'Open digest');
+    open.setAttribute('aria-label', `Open digest, ${run.when}`);
+    open.onclick = () => openDigest(routine.chat, run.digest!).catch(showError);
+    const actions = element('div', 'card-actions');
+    actions.append(open);
+    card.append(actions);
+  }
+  return card;
+}
+
+// Straight to that reply in the routine's conversation, not back to the page Findings was opened from.
+async function openDigest(id: string, message: number) {
+  if (sheet) sheet.parent = undefined;
+  if (chat?.id === id) closeSheet();
+  await openAt(id, message);
+}
+
+ui.findingsSearch.oninput = () => {
+  clearTimeout(findingsTimer);
+  // An answer still on its way is for words no longer in the box.
+  const run = ++findingsRun;
+  const id = findingsOf?.id;
+  if (id) findingsTimer = window.setTimeout(() => loadFindings(id, ui.findingsSearch.value.trim(), run).catch(showError), 200);
+};
+ui.findingsSearch.onkeydown = event => {
+  if (event.key === 'Escape' && ui.findingsSearch.value) { event.stopPropagation(); ui.findingsSearch.value = ''; ui.findingsSearch.dispatchEvent(new Event('input')); }
+};
+// Enter puts the phone keyboard away, so the results can be seen.
+ui.findingsForm.onsubmit = event => { event.preventDefault(); ui.findingsSearch.blur(); };
 
 // The Pause button on a routine's notification.
 async function pauseRoutine(id: string) {

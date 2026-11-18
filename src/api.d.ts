@@ -2,7 +2,7 @@
 // A declaration file, so the browser build imports these types without emitting server code.
 
 export type User = 'owner' | 'guest';
-export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory' | 'todo';
+export type ToolName = 'ask' | 'web_run' | 'imagegen' | 'document' | 'deep_research' | 'routine' | 'memory' | 'todo' | 'findings';
 export type QuestionMethod = 'select' | 'input' | 'editor' | 'confirm';
 
 export interface Question {
@@ -27,7 +27,13 @@ export interface Message {
   // when Pi turned it down, `unknown` from sending it until Pi accepts it, and for good if that never got settled (a
   // restart or a timeout in between). A message whose delivery is unknown cannot be redone.
   delivery?: 'rejected' | 'unknown';
+  // On a routine run's reply, when the routine keeps findings: the new ones it shared, as they were shown.
+  findings?: FindingItem[];
 }
+
+// One thing a routine found, such as a job ad. `site`: the link's host, without www. `run`: when the run that shared it
+// was due, ISO.
+export interface FindingItem { id: string; url: string; title: string; summary: string; site: string; run: string }
 
 // Set on document assets: every version of a document is its own asset, sharing `doc`.
 export interface DocumentInfo { doc: string; title: string; version: number }
@@ -77,7 +83,7 @@ export type RoutineSchedule =
   | {kind: 'once'; time: string; date: string};
 
 // GET /api/routines; POST /api/routines/<id> {enabled} switches one; PATCH edits it with a RoutineEdit; DELETE removes
-// it and keeps its conversation.
+// it with its findings, and keeps its conversation.
 export interface RoutineSummary {
   id: string;
   title: string;
@@ -90,6 +96,9 @@ export interface RoutineSummary {
   // What each run is asked to do.
   prompt: string;
   deepResearch: boolean;
+  // Keeps a list of what it finds, so each find is shared once; `findings` counts the list.
+  trackFindings: boolean;
+  findings: number;
   // "Tomorrow 07:30", "Paused" or "Done"
   next: string;
   // The latest run: when it was due ("Today 07:30") and how it went; null before the first.
@@ -97,7 +106,13 @@ export interface RoutineSummary {
   unread: boolean;
 }
 
-export type RoutineEdit = Partial<Pick<RoutineSummary, 'title' | 'prompt' | 'rule' | 'deepResearch'>>;
+export type RoutineEdit = Partial<Pick<RoutineSummary, 'title' | 'prompt' | 'rule' | 'deepResearch' | 'trackFindings'>>;
+
+// GET /api/routines/<id>/findings?q=<words>: the routine's findings whose title, summary or site has every word, by run,
+// newest first. `when`: when the run was due, in words. `digest`: the index of that run's reply in the routine's
+// conversation, or null once it is no longer there. `total` counts all of them, matching or not.
+export interface FindingsRun { when: string; digest: number | null; items: FindingItem[] }
+export interface FindingsView { routine: RoutineSummary; total: number; runs: FindingsRun[] }
 
 // GET /api/memory: the "About us" notes, one line each. PUT /api/memory {version, mine, shared} replaces both lists, and
 // answers 409 if they changed since `version` was read. `shared` is the same for everyone.

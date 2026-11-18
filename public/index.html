@@ -195,6 +195,25 @@
     </div>
   </section>
 
+  <section id="findings-page" class="page" role="dialog" aria-modal="true" aria-labelledby="findings-title" hidden>
+    <header class="page-bar">
+      <button id="findings-close" class="icon-button" type="button" aria-label="Back">
+        <svg viewBox="0 0 24 24"><use href="#back"/></svg>
+      </button>
+    </header>
+    <div class="page-column page-stack">
+      <p id="findings-routine" class="page-meta"></p>
+      <h1 id="findings-title" class="page-title">Findings</h1>
+      <p id="findings-lede" class="page-lede"></p>
+      <form id="findings-form" class="search findings-search" role="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><use href="#search-icon"/></svg>
+        <input id="findings-search" type="search" maxlength="200" placeholder="Search these findings" aria-label="Search these findings"
+          autocomplete="off" enterkeyhint="search">
+      </form>
+      <div id="findings-runs" class="cards" aria-live="polite"></div>
+    </div>
+  </section>
+
   <section id="todos-page" class="page" role="dialog" aria-modal="true" aria-labelledby="todos-title" hidden>
     <header class="page-bar">
       <button id="todos-close" class="icon-button" type="button" aria-label="Back to the conversation">

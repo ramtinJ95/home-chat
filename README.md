@@ -3,8 +3,8 @@
 A private, mobile-friendly chat app for everyday questions, web search,
 image generation, documents, deep research, scheduled routines, household notes and todo lists. It runs a locked-down [Pi Durable](https://www.npmjs.com/package/@earendil-works/pi-durable)
 agent against a Codex subscription inside Docker. The model can only use
-eight tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
-`routine`, `memory`, `todo`), can only reach OpenAI and Exa, and cannot run commands or read
+nine tools (`ask`, `web_run`, `imagegen`, `document`, `deep_research`,
+`routine`, `memory`, `todo`, `findings`), can only reach OpenAI and Exa, and cannot run commands or read
 files.
 
 It runs in one of two modes:
@@ -73,7 +73,7 @@ log has the provider's own words after `Model request failed:`.
 docker compose stop
 ```
 
-Conversations, images, routines (`routines.json`), household notes (`memory.json`) and credentials live in the `home-chat_chat-data`
+Conversations, images, routines (`routines.json`) and their findings (`findings.json`), household notes (`memory.json`) and credentials live in the `home-chat_chat-data`
 volume, so they survive restarts, rebuilds and `docker compose down`;
 `docker compose down -v` deletes all of them. A reply that is still
 streaming when the app stops keeps the text saved so far (within about two
@@ -162,6 +162,24 @@ Each person can have 10 routines and 20 runs a day; a run has no `ask`,
 `routine` or `memory` tool, and uses deep research only if the routine was set
 up with it.
 
+**Findings.** A routine that looks for new things, such as a daily job search,
+can keep a list of what it finds ("Keep a list of what it finds" under Edit, or
+asked for when it is set up). Its runs then hand each item to the `findings`
+tool with its link, title and a one-sentence summary. The server leaves out
+links shared in an earlier run of that routine and shows the rest as cards under
+the run's reply. Its notification says how many are new, or "Nothing new this
+time". An item counts as shared once that reply is saved, even if the run then
+fails. An item found by a run whose reply never got saved comes up again
+later. Two links are the same item when they differ only in tracking parameters
+(`utm_*`, `gclid` and the like), parameter order or a `#:~:text=` fragment. The
+same job posted on two sites still shows twice. "Findings · 18" on the routine's
+card and on its conversation's bar opens the Findings page. It lists everything
+the routine shared, by run and newest first, with a search over titles,
+summaries and sites, and "Open digest" goes to that run's reply. Turning the
+list off keeps it, and deleting the routine deletes it, though its
+conversation's replies still show what they shared. Nothing is ever pruned from
+the list.
+
 **About us** holds short notes the model is told in every conversation: each
 person's own ("vegetarian, but eats fish") and shared ones for the whole
 household ("we live in Stockholm"), which either person can read and change.
@@ -242,6 +260,7 @@ npm test            # builds, then runs test/*.test.ts (faux model, fake worker 
 | `src/egress.ts` | CONNECT proxy that only reaches OpenAI, Exa, the browser push services and, in public mode, the Cloudflare Access team host, on port 443 |
 | `src/push.ts` | Web Push: push keys, each user's devices, and delivery through the egress proxy |
 | `src/routines.ts` | Routine schedules (via `croner`), next-run labels, `routines.json` and the one timer for the next run |
+| `src/findings.ts` | What routines that keep findings have shared, in `findings.json`, and how a link is compared with earlier ones |
 | `src/search.ts` | Search over a person's conversations: matching, snippets and highlight ranges |
 | `src/library.ts` | The Library in `library.json`, with copies of shared documents and pictures under `library/` |
 | `src/todos.ts` | Todo lists in `todos.json`, private or shared, and the `todo` tool's actions |
@@ -278,14 +297,15 @@ screenshots to the git-ignored `.local/` folder.
 
 - **Tools.** Every conversation runs with exactly one extension,
   `src/agent/extension.ts`, so the model has `ask`, `web_run`, `imagegen`,
-  `document`, `deep_research`, `routine`, `memory` and `todo` and nothing else: no
+  `document`, `deep_research`, `routine`, `memory`, `todo` and `findings` and nothing else: no
   read, write, edit or bash, whatever Pi Durable ships. Every call passes its
   `beforeTool` hook first, which validates the input and applies the
   message's limits: 12 tool calls (30 in deep research mode) and 2 image
   generations. The turn's mode comes from the server, not from the text:
   `deep_research` is refused unless the conversation's switch is on, and
-  `ask`, `routine` and `memory` are refused in a routine run. `routine`,
-  `memory` and `todo` call the server in its own process, bound to the
+  `ask`, `routine` and `memory` are refused in a routine run, and `findings`
+  everywhere except a run of a routine that keeps findings. `routine`,
+  `memory`, `todo` and `findings` call the server in its own process, bound to the
   conversation they run in, which scopes them to the person whose message the turn answers (the routine's owner in a
   routine run). `memory` changes nothing
   without the user's Yes, which the tool asks for itself, and the notes go

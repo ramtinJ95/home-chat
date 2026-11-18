@@ -690,6 +690,11 @@ test('routines are set up by the model, listed and switched in the app, and kept
   assert.match(await f.worker.call!('/routine', {action: 'list'}), /“Morning briefing” \(id /);
   const [routine] = await (await f.request('/api/routines', owner)).json();
   assert.equal(routine.title, 'Morning briefing'); assert.equal(routine.schedule, 'Every day at 07:30'); assert.equal(routine.unread, false);
+  assert.deepEqual([routine.trackFindings, routine.findings], [false, 0]);
+  await assert.rejects(() => f.worker.call!('/routine', {action: 'update', id: routine.id, trackFindings: 'yes'}), /trackFindings must be true or false/);
+  assert.match(await f.worker.call!('/routine', {action: 'update', id: routine.id, trackFindings: true}), /^Updated/);
+  assert.match(await f.worker.call!('/routine', {action: 'list'}), /; keeps findings\. Task:/);
+  await f.worker.call!('/routine', {action: 'update', id: routine.id, trackFindings: false});
   assert.deepEqual(await (await f.request('/api/routines', guest)).json(), []);
   assert.deepEqual(await f.listed(owner, routine.chat), {id: routine.chat, title: 'Morning briefing', unread: false, routine: true, shared: false, mine: true, starred: null});
   assert.equal((await f.state(routine.chat, owner)).routine.id, routine.id);
@@ -955,6 +960,104 @@ test('a routine run whose reply cannot be saved is recorded as failed', async t 
   assert.equal(state.messages[1].error, 'Could not persist the response');
   // Opening it marks it read, and that save must land before the data is removed.
   await until(() => readFile(record, 'utf8').then(() => true, () => false), 'the conversation is saved once it is read');
+});
+// A job a run hands to the findings tool; `url` may carry tracking parameters the app ignores.
+const job = (url: string, title: string) => ({url, title, summary: `${title}, in Stockholm.`});
+test('a routine that keeps findings shows only new ones under each reply, even across restarts and failed runs', async t => {
+  const {f, routine, path, due} = await setUpRoutine(t);
+  routine.trackFindings = true;
+  await due(60_000);
+  const first = await f.restart();
+  await first.asked();
+  assert.equal(first.worker.lastMode?.findings, true);
+  const told = await first.worker.call!('/findings', {items: [
+    job('https://jobs.example/a?utm_source=news&b=2&a=1#:~:text=Go', 'Backend engineer – Acme'),
+    job('https://jobs.example/b/', 'Platform engineer – Norr'),
+    // The same job as the first, through another tracking link: one finding.
+    job('https://JOBS.example/a?a=1&b=2&fbclid=xyz', 'Backend engineer – Acme (again)'),
+  ]});
+  assert.match(told, /^Shown under your reply as new: Backend engineer – Acme; Platform engineer – Norr\.\n2 new so far/);
+  await assert.rejects(() => first.worker.call!('/findings', {items: [job('file:///etc/passwd', 'x')]}), /http or https/);
+  first.worker.answer('question-1', 'One');
+  await until(async () => (await readJson(path))[0].lastRun?.outcome === 'done', 'the first run is done');
+  const owner = await first.login('owner');
+  const shown = (await first.state(routine.chat, owner)).messages[1].findings;
+  assert.deepEqual(shown.map((item: {url: string; site: string}) => [item.url, item.site]),
+    [['https://jobs.example/a?a=1&b=2', 'jobs.example'], ['https://jobs.example/b/', 'jobs.example']]);
+  const [summary] = await (await first.request('/api/routines', owner)).json();
+  assert.deepEqual([summary.trackFindings, summary.findings], [true, 2]);
+  // Outside a run there is nothing to add findings to.
+  await assert.rejects(() => first.worker.call!('/findings', {items: [job('https://jobs.example/c', 'C')]}), /only kept during a routine run/);
+  await first.stop();
+
+  // The next run, after a restart, finds the first job again and a new one, and then stops before it finishes.
+  await due(60_000);
+  const second = await f.restart();
+  await second.asked();
+  assert.match(await second.worker.call!('/findings', {items: [
+    job('https://jobs.example/a?b=2&a=1&utm_medium=email', 'Backend engineer – Acme'),
+    job('https://kvarn.example/careers/payments', 'Staff engineer – Kvarn'),
+  ]}), /^Shown under your reply as new: Staff engineer – Kvarn\.\nAlready shared in an earlier run, so left out: Backend engineer – Acme\./);
+  await second.worker.stop();
+  await until(async () => (await readJson(path))[0].lastRun?.outcome === 'failed', 'the second run fails');
+  const again = await second.login('owner');
+  const failed = (await second.state(routine.chat, again)).messages[3];
+  assert.match(failed.error, /stopped/);
+  // What a failed run showed counts as shared too.
+  assert.deepEqual(failed.findings.map((item: {title: string}) => item.title), ['Staff engineer – Kvarn']);
+
+  // The Findings page: by run, newest first, each with where its reply is; searchable; the owner's alone.
+  const findingsOf = async (query = '', who = again) => second.request(`/api/routines/${routine.id}/findings?q=${encodeURIComponent(query)}`, who);
+  const view = await (await findingsOf()).json();
+  assert.equal(view.total, 3);
+  assert.deepEqual(view.runs.map((run: {digest: number; items: {title: string}[]}) => [run.digest, run.items.map(item => item.title)]),
+    [[3, ['Staff engineer – Kvarn']], [1, ['Backend engineer – Acme', 'Platform engineer – Norr']]]);
+  assert.match(view.runs[0].when, /^\w+day \d+ \w+, \d{2}:\d{2}$/);
+  assert.deepEqual((await (await findingsOf('ACME stockholm')).json()).runs.map((run: {items: unknown[]}) => run.items.length), [1]);
+  assert.deepEqual((await (await findingsOf('kvarn.example')).json()).runs.length, 1);
+  assert.deepEqual((await (await findingsOf('rust')).json()).runs, []);
+  assert.equal((await findingsOf('', await second.login('guest'))).status, 404);
+
+  // Switched off, a routine's runs get no findings tool; its list stays.
+  const off = await (await second.request(`/api/routines/${routine.id}`, {method: 'PATCH', body: {trackFindings: false}, ...again})).json();
+  assert.deepEqual([off.trackFindings, off.findings], [false, 3]);
+  // Deleting the routine deletes its list; its conversation keeps what each reply showed.
+  assert.equal((await second.request(`/api/routines/${routine.id}`, {method: 'DELETE', ...again})).status, 200);
+  assert.deepEqual(await readJson(join(f.data, 'findings.json')), {});
+  assert.equal((await second.state(routine.chat, again)).messages[1].findings.length, 2);
+});
+test('a routine that does not keep findings has no findings tool, and a reply saved only later still counts as shared', async t => {
+  const {f, routine, path, due, write} = await setUpRoutine(t);
+  await due(60_000);
+  const plain = await f.restart();
+  await plain.asked();
+  assert.equal(plain.worker.lastMode?.findings, undefined);
+  await assert.rejects(() => plain.worker.call!('/findings', {items: [job('https://jobs.example/a', 'A')]}), /no longer keeps a list/);
+  plain.worker.answer('question-1', 'One');
+  await until(async () => (await readJson(path))[0].lastRun?.outcome === 'done', 'the run is done');
+  await plain.stop();
+
+  Object.assign(routine, {trackFindings: true, lastRun: undefined});
+  await write(); await due(60_000);
+  const unsaved = await f.restart();
+  await unsaved.asked();
+  assert.match(await unsaved.worker.call!('/findings', {items: [job('https://jobs.example/a', 'A')]}), /new: A/);
+  // Every save of its conversation fails, so the job never shows, and a later run may share it.
+  const record = join(f.data, 'chats', routine.chat, 'chat.json');
+  await rm(record); await mkdir(record);
+  unsaved.worker.answer('question-1', 'One');
+  await until(async () => (await readJson(path))[0].lastRun?.outcome === 'failed', 'the run is recorded as failed');
+  await rm(record, {recursive: true});
+  const owner = await unsaved.login('owner');
+  assert.equal((await (await unsaved.request(`/api/routines/${routine.id}/findings`, owner)).json()).total, 0);
+  // Opening the conversation saves it after all, job included; the next run counts that job as shared before it starts.
+  assert.equal((await unsaved.state(routine.chat, owner)).messages[3].findings[0].title, 'A');
+  await until(() => readJson(record).then(saved => saved.messages[3]?.findings?.length === 1, () => false), 'the reply is saved once it is read');
+  await unsaved.stop();
+  await due(60_000);
+  const next = await f.restart();
+  await next.asked();
+  assert.match(await next.worker.call!('/findings', {items: [job('https://jobs.example/a', 'A')]}), /^Nothing new added\.\nAlready shared in an earlier run/);
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async t => {
   const f = await fixture(t, {ready: false});

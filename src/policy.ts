@@ -3,7 +3,7 @@ import { basename, resolve, sep } from 'node:path';
 import ipaddr from 'ipaddr.js';
 import type { ToolName, User, Weekday } from './api.d.ts';
 
-export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory', 'todo'] as const satisfies readonly ToolName[]);
+export const ALLOWED_TOOLS = Object.freeze(['ask', 'web_run', 'imagegen', 'document', 'deep_research', 'routine', 'memory', 'todo', 'findings'] as const satisfies readonly ToolName[]);
 export const USERS: readonly User[] = Object.freeze(['owner', 'guest']);
 // OpenAI for the model, and Exa for deep_research (src/agent/tools/deep-research.ts).
 export const PROVIDER_HOSTS = new Set(['chatgpt.com', 'api.openai.com', 'auth.openai.com', 'api.exa.ai']);
@@ -31,6 +31,11 @@ export const IMAGE_FILE = /^ig_[0-9a-f]{32}(?:_\d+)?\.png$/;
 export const WEEKDAYS: readonly Weekday[] = Object.freeze(['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']);
 export const MAX_ROUTINE_TITLE = 80;
 export const MAX_ROUTINE_PROMPT = 4000;
+// A routine's findings (src/findings.ts), here so the findings tool's schema (src/agent/tools/findings.ts) states the same limits.
+export const MAX_FINDINGS_PER_RUN = 20;
+export const MAX_FINDING_TITLE = 200;
+export const MAX_FINDING_SUMMARY = 400;
+export const MAX_FINDING_URL = 2000;
 // The most options one question shows in the app (src/agent/worker.ts), here so the ask tool's schema leaves room for the
 // options it adds itself (src/agent/tools/ask.ts).
 export const MAX_QUESTION_OPTIONS = 20;
@@ -43,15 +48,24 @@ several calls covering different angles, with mode deep-reasoning for ambiguous,
 Then save one consolidated report with document, sources included, and reply with a short summary. Answer ordinary chat
 normally, without research.`;
 export const ROUTINE_NOTE = 'This is a scheduled routine run, and nobody is watching.';
-// `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30". `from`: in a shared conversation, the
-// name of the person who sent the message.
-export interface TurnMode { deepResearch?: boolean; routineRun?: string; from?: string }
+// `routineRun`: when the run was due, in words, e.g. "Friday 17 October, 07:30". `findings`: the run's routine keeps a
+// list of what it finds. `from`: in a shared conversation, the name of the person who sent the message.
+export interface TurnMode { deepResearch?: boolean; routineRun?: string; findings?: boolean; from?: string }
 const SHARED_NOTE = 'This conversation is shared by the household, so more than one person writes in it.';
 
-export function composePrompt(message: string, {deepResearch, routineRun, from}: TurnMode = {}): string {
+export const FINDINGS_NOTE = `This routine keeps a list of what it finds. Give every item worth sharing (a job ad, a listing,
+an article) to the findings tool, with the link to the item's own page, a short title and a one-sentence summary. The app
+shows them under your reply and leaves out any shared in an earlier run, so search a few days back rather than only since
+the last run. Do not list the items again in your reply: say briefly what is new, or that nothing new turned up.`;
+
+export function composePrompt(message: string, {deepResearch, routineRun, findings, from}: TurnMode = {}): string {
   const notes = [
     routineRun && `${ROUTINE_NOTE} It was due ${routineRun} (Stockholm time). The message is the routine's standing task: do it and
 reply with the result. You cannot ask questions, change routines or change the household notes during this run.`,
+    // A run cut off by its limits still shows what it handed over by then.
+    routineRun && findings && `${FINDINGS_NOTE} This run may make ${TURN_LIMITS[deepResearch ? 'deep' : 'normal'].toolCalls} tool calls in
+${TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes} minutes and is stopped after that, so hand items to findings as you find them, a few at a time,
+rather than all at the end.`,
     from && `${SHARED_NOTE} This message is from ${from}; the household notes, todo lists and routines you use for it are theirs.`,
     deepResearch && DEEP_RESEARCH_INSTRUCTIONS,
   ].filter(note => typeof note === 'string');
@@ -70,9 +84,10 @@ export function carriesText(prompt: string, text: string): boolean {
 }
 
 // Research costs money per call, so it needs the conversation's switch; an unattended run has nobody to answer a
-// question or confirm a note, and routines never make routines.
+// question or confirm a note, and routines never make routines. Findings exist only in the run of a routine that keeps them.
 export function refusedInTurn(tool: string, mode: TurnMode): string | undefined {
   if (tool === 'deep_research' && !mode.deepResearch) return 'Deep research is off for this conversation; the user can switch it on';
+  if (tool === 'findings' && !(mode.routineRun !== undefined && mode.findings)) return 'findings only works in a run of a routine that keeps a list of what it finds';
   if (mode.routineRun !== undefined && (tool === 'ask' || tool === 'routine' || tool === 'memory')) {
     return 'Nobody is watching this routine run, so it cannot ask questions, change routines or change the household notes';
   }
@@ -81,9 +96,9 @@ export const TURN_LIMITS = Object.freeze({
   normal: {toolCalls: 12, minutes: 5},
   deep: {toolCalls: 30, minutes: 20},
 });
-// How a tool reaches the server for routines, the household notes and the todo lists, in the server's own process (src/server.ts
+// How a tool reaches the server for routines, the household notes, the todo lists and a run's findings, in the server's own process (src/server.ts
 // serverCall). Reads the notes when `body` is absent.
-export type ServerCall = (path: '/routine' | '/memory' | '/todo', body?: unknown) => Promise<string>;
+export type ServerCall = (path: '/routine' | '/memory' | '/todo' | '/findings', body?: unknown) => Promise<string>;
 
 export function isAllowedTool(name: string): name is ToolName {
   return (ALLOWED_TOOLS as readonly string[]).includes(name);
