@@ -62,7 +62,10 @@ export function composePrompt(message: string, {deepResearch, routineRun, findin
   const notes = [
     routineRun && `${ROUTINE_NOTE} It was due ${routineRun} (Stockholm time). The message is the routine's standing task: do it and
 reply with the result. You cannot ask questions, change routines or change the household notes during this run.`,
-    routineRun && findings && FINDINGS_NOTE,
+    // A run cut off by its limits still shows what it handed over by then.
+    routineRun && findings && `${FINDINGS_NOTE} This run may make ${TURN_LIMITS[deepResearch ? 'deep' : 'normal'].toolCalls} tool calls in
+${TURN_LIMITS[deepResearch ? 'deep' : 'normal'].minutes} minutes and is stopped after that, so hand items to findings as you find them, a few at a time,
+rather than all at the end.`,
     from && `${SHARED_NOTE} This message is from ${from}; the household notes, todo lists and routines you use for it are theirs.`,
     deepResearch && DEEP_RESEARCH_INSTRUCTIONS,
   ].filter(note => typeof note === 'string');

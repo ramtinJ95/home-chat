@@ -50,6 +50,9 @@ test('only a run of a routine that keeps findings gets the findings tool and is 
   assert.match(refusedInTurn('findings', {findings: true}) ?? '', /only works in a run/);
   assert.equal(refusedInTurn('findings', {...run, findings: true}), undefined);
   assert.ok(composePrompt('Find jobs', {...run, findings: true}).includes(FINDINGS_NOTE));
+  // Told its limits, so a run cut off by them has handed over what it found by then.
+  assert.match(composePrompt('Find jobs', {...run, findings: true}), /may make 12 tool calls in\n5 minutes/);
+  assert.match(composePrompt('Find jobs', {...run, findings: true, deepResearch: true}), /may make 30 tool calls in\n20 minutes/);
   assert.ok(!composePrompt('Find jobs', run).includes(FINDINGS_NOTE));
   assert.ok(!composePrompt('Find jobs', {findings: true}).includes(FINDINGS_NOTE));
 });
