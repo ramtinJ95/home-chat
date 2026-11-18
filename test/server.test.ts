@@ -1026,7 +1026,7 @@ test('a routine that keeps findings shows only new ones under each reply, even a
   assert.deepEqual(await readJson(join(f.data, 'findings.json')), {});
   assert.equal((await second.state(routine.chat, again)).messages[1].findings.length, 2);
 });
-test('a routine that does not keep findings has no findings tool, and a reply that cannot be saved shares none', async t => {
+test('a routine that does not keep findings has no findings tool, and a reply saved only later still counts as shared', async t => {
   const {f, routine, path, due, write} = await setUpRoutine(t);
   await due(60_000);
   const plain = await f.restart();
@@ -1050,6 +1050,14 @@ test('a routine that does not keep findings has no findings tool, and a reply th
   await rm(record, {recursive: true});
   const owner = await unsaved.login('owner');
   assert.equal((await (await unsaved.request(`/api/routines/${routine.id}/findings`, owner)).json()).total, 0);
+  // Opening the conversation saves it after all, job included; the next run counts that job as shared before it starts.
+  assert.equal((await unsaved.state(routine.chat, owner)).messages[3].findings[0].title, 'A');
+  await until(() => readJson(record).then(saved => saved.messages[3]?.findings?.length === 1, () => false), 'the reply is saved once it is read');
+  await unsaved.stop();
+  await due(60_000);
+  const next = await f.restart();
+  await next.asked();
+  assert.match(await next.worker.call!('/findings', {items: [job('https://jobs.example/a', 'A')]}), /^Nothing new added\.\nAlready shared in an earlier run/);
 });
 test('unconfigured Codex never falls back to API billing or fabricated replies', async t => {
   const f = await fixture(t, {ready: false});

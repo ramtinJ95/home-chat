@@ -31,8 +31,9 @@ export interface Message {
   findings?: FindingItem[];
 }
 
-// One thing a routine found, such as a job ad. `site`: the link's host, without www.
-export interface FindingItem { id: string; url: string; title: string; summary: string; site: string }
+// One thing a routine found, such as a job ad. `site`: the link's host, without www. `run`: when the run that shared it
+// was due, ISO.
+export interface FindingItem { id: string; url: string; title: string; summary: string; site: string; run: string }
 
 // Set on document assets: every version of a document is its own asset, sharing `doc`.
 export interface DocumentInfo { doc: string; title: string; version: number }

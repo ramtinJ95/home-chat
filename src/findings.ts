@@ -8,8 +8,8 @@ import { MAX_FINDING_SUMMARY, MAX_FINDING_TITLE, MAX_FINDING_URL, MAX_FINDINGS_P
 // tool; the server leaves out the ones shared before, shows the rest under the run's reply, and records them here once
 // that reply is saved (src/server.ts endTurn). Each one is a copy of what was shown, never changed later.
 
-// `key`: the link as compared with earlier ones (findingKey). `run`: when the run that shared it was due, ISO.
-export interface Finding extends FindingItem { key: string; run: string }
+// `key`: the link as compared with earlier ones (findingKey).
+export interface Finding extends FindingItem { key: string }
 // Per routine id, oldest first.
 type Saved = Record<string, Finding[]>;
 
@@ -43,7 +43,7 @@ const oneLine = (value: unknown, name: string, maximum: number) => {
 };
 
 // The findings tool's items, checked; a new id each.
-export function findingItems(value: unknown): (FindingItem & {key: string})[] {
+export function findingItems(value: unknown): Omit<Finding, 'run'>[] {
   if (!Array.isArray(value) || !value.length || value.length > MAX_FINDINGS_PER_RUN) {
     throw new FindingError(`items must list 1 to ${MAX_FINDINGS_PER_RUN} findings`);
   }
@@ -62,11 +62,14 @@ export async function createFindings(path: string) {
     list: of,
     count: (routine: string) => of(routine).length,
     known: (routine: string, key: string) => of(routine).some(finding => finding.key === key),
-    // Adds the ones it does not know yet, so recording the same run again changes nothing.
-    record: (routine: string, found: readonly Finding[]) => change(state => {
-      const list = state[routine] ??= [];
-      for (const finding of found) if (!list.some(known => known.key === finding.key)) list.push(finding);
-    }),
+    // Adds the ones it does not know yet, so recording the same ones again changes nothing, and writes nothing.
+    async record(routine: string, found: readonly Finding[]) {
+      if (found.every(finding => of(routine).some(known => known.key === finding.key))) return;
+      await change(state => {
+        const list = state[routine] ??= [];
+        for (const finding of found) if (!list.some(known => known.key === finding.key)) list.push(finding);
+      });
+    },
     remove: (routine: string) => change(state => { delete state[routine]; }),
   };
 }

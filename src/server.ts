@@ -9,7 +9,7 @@ import { PiRejected, type ChatWorker, type PromptImage } from './chat-worker.ts'
 import { createAgent } from './agent/agent.ts';
 import { accessConfigFromEnv, type AccessConfig, type AccessKeySource } from './access.ts';
 import { readJson, serialSave } from './files.ts';
-import { FindingError, createFindings, findingItems, type Finding } from './findings.ts';
+import { FindingError, createFindings, findingItems, findingKey, type Finding } from './findings.ts';
 import { HttpError, fail, jsonBody, recent } from './http.ts';
 import { MemoryConflict, MemoryError, createMemory } from './memory.ts';
 import { TodoError, TodoMissing, createTodos, todoAction } from './todos.ts';
@@ -239,7 +239,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     let group: {run: string; view: FindingsRun} | undefined;
     for (const finding of [...all].reverse()) {
       if (!words.every(word => foldText(`${finding.title} ${finding.summary} ${finding.site}`).includes(word))) continue;
-      const item = {id: finding.id, url: finding.url, title: finding.title, summary: finding.summary, site: finding.site};
+      const {key: _key, ...item} = finding;
       if (group?.run === finding.run) { group.view.items.unshift(item); continue; }
       const digest = messages.findIndex(message => message.findings?.some(shown => shown.id === finding.id));
       group = {run: finding.run, view: {when: runLabel(new Date(finding.run)), digest: digest === -1 ? null : digest, items: [item]}};
@@ -247,6 +247,9 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     }
     return {routine: routineSummary(routine), total: all.length, runs};
   };
+  // The findings a routine's conversation shows under its replies.
+  const shownFindings = (chat: Chat): Finding[] =>
+    chat.messages.flatMap(message => message.findings ?? []).map(item => ({...item, key: findingKey(item.url)}));
   // Open copies of a routine's conversation show its new state: the switch at the top of the thread.
   const showRoutine = (routine: Routine) => {
     const chat = chats.get(routine.chat);
@@ -307,7 +310,7 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     if (error && reply) reply.error = error;
     // What the run found goes under its reply, whether or not the run finished, and counts as shared once that is saved.
     const found = reply ? run?.found ?? [] : [];
-    if (found.length) reply!.findings = found.map(({id, url, title, summary, site}) => ({id, url, title, summary, site}));
+    if (found.length) reply!.findings = found.map(({key: _key, ...item}) => item);
     delete chat.replying;
     // Who missed the reply: a routine run's owner, and in a shared conversation the person who did not send the message.
     for (const user of USERS) {
@@ -317,20 +320,23 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
     const saving: Turn = {by};
     turns.set(chat.id, saving);
     let saved = true;
-    try { await publish(chat); }
-    catch {
-      if (!error) {
-        error = UNSAVED_REPLY;
-        if (reply) reply.error = error;
-        emit(chat.id, {type: 'error', message: error});
+    try {
+      try { await publish(chat); }
+      catch {
+        if (!error) {
+          error = UNSAVED_REPLY;
+          if (reply) reply.error = error;
+          emit(chat.id, {type: 'error', message: error});
+        }
+        await publish(chat).catch(() => { saved = false; console.warn('Could not save a conversation'); });
       }
-      await publish(chat).catch(() => { saved = false; console.warn('Could not save a conversation'); });
+      // Recorded while the conversation is still occupied, so the routine's next run starts only after. Unsaved, they were
+      // never shown, so a later run may find them again; one that fails here is recorded before the next run (startTurn).
+      if (run && found.length && saved && routines.get(run.routine.id) === run.routine) {
+        try { await findings.record(run.routine.id, found); showRoutine(run.routine); }
+        catch { console.warn('Could not save a routine’s findings'); }
+      }
     } finally { release(chat.id, saving); }
-    // Unsaved, they were never shown, so a later run finds them again. A routine deleted meanwhile has no list to add to.
-    if (run && found.length && saved && routines.get(run.routine.id) === run.routine) {
-      try { await findings.record(run.routine.id, found); showRoutine(run.routine); }
-      catch { console.warn('Could not save a routine’s findings'); }
-    }
     if (run) await recordRun(run, error ? 'failed' : 'done');
     if (!watching(chat.id, by)) {
       const result = !run?.routine.trackFindings ? 'New results are ready.'
@@ -382,6 +388,12 @@ export async function createApp({data = '/data', workerFactory, authenticatedPro
       if (chat.title === 'New conversation') chat.title = text.slice(0, 55) || 'Picture conversation';
       chat.replying = true;
       try { await publish(chat); } catch { failed = 'Home Chat could not save this message, so it was not sent'; }
+      // A run sees every finding its conversation shows as shared, including ones whose recording failed or whose reply
+      // was saved only later; without that it could share them again, so it does not start.
+      if (run?.routine.trackFindings && !failed) {
+        try { await findings.record(run.routine.id, shownFindings(chat)); }
+        catch { failed = 'Home Chat could not save this routine’s findings, so the run did not start'; }
+      }
       // Recorded before Pi starts, so the run's own end, however quick, comes after it. Unrecorded, a restart would run
       // it again, so it does not start.
       if (run && !failed) {
