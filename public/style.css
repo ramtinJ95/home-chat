@@ -449,13 +449,15 @@ svg { width: 20px; height: 20px; flex: none; }
 .content th { font-weight: 650; background: var(--paper-deep); }
 .content tbody tr:last-child td { border-bottom: 0; }
 
-/* Typing dots on the reply that is still empty */
-.messages.busy .message.assistant:last-child .content:empty::before {
-  content: ""; display: inline-block; width: 44px; height: 12px;
+/* Under the reply that is still running: typing dots and what it is doing now. */
+.working { display: flex; align-items: center; gap: 10px; margin: 12px 0 0; font-size: 0.86rem; color: var(--ink-soft); }
+.content:empty + .working { margin-top: 2px; }
+.working .dots {
+  flex: none; width: 36px; height: 10px;
   background:
-    radial-gradient(circle 4px, var(--accent) 98%, transparent) 0 50% / 14px 12px no-repeat,
-    radial-gradient(circle 4px, var(--accent) 98%, transparent) 15px 50% / 14px 12px no-repeat,
-    radial-gradient(circle 4px, var(--accent) 98%, transparent) 30px 50% / 14px 12px no-repeat;
+    radial-gradient(circle 3.5px, var(--accent) 98%, transparent) 0 50% / 12px 10px no-repeat,
+    radial-gradient(circle 3.5px, var(--accent) 98%, transparent) 12px 50% / 12px 10px no-repeat,
+    radial-gradient(circle 3.5px, var(--accent) 98%, transparent) 24px 50% / 12px 10px no-repeat;
   animation: breathe 1.2s ease-in-out infinite;
 }
 @keyframes breathe { 50% { opacity: 0.35; } }

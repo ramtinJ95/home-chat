@@ -299,7 +299,18 @@ let shown = '';
 // Whether the reader is at the bottom of the thread; new content only scrolls the view while they are.
 let following = true;
 
+// Under the reply that is running, in the thread where it is being read: what it is doing now (renderChat places it).
+const working = element('p', 'working');
+const workingLabel = element('span');
+working.setAttribute('role', 'status');
+working.append(element('span', 'dots'), workingLabel);
+// Only a change is written, so screen readers hear each new step once and not every streamed word.
+function showWorking(label: string) { if (workingLabel.textContent !== label) workingLabel.textContent = label; }
+
 function setBusy(busy: boolean) {
+  // A reply that starts thinks first; a snapshot of one already running keeps what the stream last said it does
+  // (renderChat starts over for another conversation).
+  if (busy && ui.send.hidden === false) showWorking('Thinking…');
   ui.send.disabled = busy;
   // The switch applies from the next message, so it waits while a reply runs.
   ui.research.disabled = busy;
@@ -307,7 +318,9 @@ function setBusy(busy: boolean) {
   ui.stop.hidden = !busy;
   ui.messages.classList.toggle('busy', busy);
   ui.composer.classList.toggle('busy', busy);
-  ui.activity.textContent = busy ? 'Thinking…' : '';
+  if (!busy) working.remove();
+  // The composer's line holds notes for the moment: a dropped stream, or Enter pressed while a reply runs.
+  ui.activity.textContent = '';
 }
 
 function scrollToEnd() { ui.messages.scrollTop = ui.messages.scrollHeight; following = true; }
@@ -458,6 +471,8 @@ function renderChat(next: ChatSnapshot) {
   // Another conversation replaces the page, and any page over it. An edit ends with its conversation, or once its turn
   // can no longer be redone.
   if (!sameChat) { if (sheet) sheet.parent = undefined; closeSheet(); }
+  // What the last conversation's reply was doing says nothing about this one's, which the stream tells from its next step.
+  if (!sameChat) showWorking('Thinking…');
   if (editing && (!sameChat || !canRedo(next))) stopEditing();
   const previousCount = sameChat && chat ? chat.messages.length : next.messages.length;
   chat = next;
@@ -485,6 +500,7 @@ function renderChat(next: ChatSnapshot) {
   const last = next.messages.at(-1);
   const content = ui.messages.lastElementChild?.querySelector<HTMLElement>('.content');
   streaming = last?.role === 'assistant' && content ? {node: content, text: last.text} : undefined;
+  if (next.busy) (streaming ? content!.parentElement! : ui.messages).append(working);
   markFound();
   // The question card shrinks the thread, so place it before scrolling.
   showQuestion(next.question);
@@ -582,8 +598,8 @@ function listen(id: string) {
     switch (event.type) {
       // The stream opens with the snapshot connect just drew, which is not drawn again.
       case 'snapshot': if (update(event.chat)) refreshSidebar().catch(showError); break;
-      case 'delta': appendDelta(event.text); break;
-      case 'tool': ui.activity.textContent = TOOL_ACTIVITY[event.name]; break;
+      case 'delta': showWorking('Writing…'); appendDelta(event.text); break;
+      case 'tool': showWorking(TOOL_ACTIVITY[event.name]); break;
       case 'question': showQuestion(event.question); keepFollowing(); break;
       case 'error': showError(event.message); setBusy(false); break;
       case 'library': refreshLibrary().catch(showError); break;
@@ -684,7 +700,9 @@ ui.draft.onkeydown = event => {
   if (event.key === 'Escape' && editing) { stopEditing(); return; }
   if (event.key !== 'Enter' || event.shiftKey || event.isComposing || touchKeyboard.matches) return;
   event.preventDefault();
-  if (!ui.send.disabled) ui.composer.requestSubmit();
+  // While a reply runs the draft waits; saying so beats a key that seems to do nothing.
+  if (ui.send.disabled) ui.activity.textContent = 'Wait for this reply to finish, or press Stop';
+  else ui.composer.requestSubmit();
 };
 
 // Editing the last message happens in the composer. `draft` is whatever was there before, given back when the edit
