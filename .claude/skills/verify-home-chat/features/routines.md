@@ -12,7 +12,9 @@ delete it. Routines are private: the guest never sees the owner's.
 - `routine-toggle`: the switch named "Run “<title>”" pauses the routine and turns it back on.
 - `routine-edit`: "Edit" turns the card into a form, and saving changes the schedule or task.
 - `routine-open`: "Open conversation" opens the routine's conversation, with a bar `#routine-bar` at its top.
-- `routine-delete`: "Delete" removes the routine and keeps its conversation as an ordinary one.
+- `routine-delete`: "Delete" removes the routine and its findings, and keeps its conversation as an ordinary one.
+- `routine-findings`: a routine with "Keep a list of what it finds" on shows each run's new items as cards under its
+  reply (`section.findings-block`), never one shared in an earlier run, and lists them all on its Findings page.
 
 ## How to get to it (user POV)
 
@@ -43,13 +45,19 @@ lookup to the card: `#routine-cards article.card` that has the routine's title a
 - **Toggle.** Uncheck the card's switch. The card and the sidebar row read "Paused", and `routines.json` has
   `enabled: false`. Checking it again works out a new next run.
 - **Edit.** Tap the card's "Edit". The card becomes `form.card.routine-form` named "Edit “Fun fact”", with fields Name,
-  What it does each time, Repeats, the days, day of the month or date that the repeat needs, Time, and Deep research
-  when it is set up. Change the task and tap "Save". The toast reads "Saved “Fun fact”. Next run: …." and the card's
+  What it does each time, Repeats, the days, day of the month or date that the repeat needs, Time, Deep research when
+  it is set up, and "Keep a list of what it finds, and share each find only once". Change the task and tap "Save". The toast reads "Saved “Fun fact”. Next run: …." and the card's
   `.routine-task` shows the new text. Choosing "On certain days" with no day ticked is refused with "Pick at least one
   day".
 - **Delete.** Tap the card's "Delete" (exact name, unlike "Delete routine" elsewhere) and accept "Delete the routine
-  “Fun fact”? It stops running. Its conversation and past results stay." The card goes away, and the conversation moves
+  “Fun fact”? It stops running. Its conversation and past results stay." (followed by "Its list of N findings is
+  deleted." when it has some). The card goes away, and the conversation moves
   to `#chat-list`. After the last one, the page reads "No routines yet." and `#routines` is hidden.
+- **Findings.** A routine that keeps findings has "Findings · N" on its card and on `#routine-bar`. It opens
+  `#findings-page`: `#findings-routine` names the routine, `#findings-search` searches titles, summaries and sites, and
+  `#findings-runs` holds one `section.card.findings-run` per run, newest first, with its `li.finding` items and an
+  "Open digest" button that scrolls the conversation to that run's reply. From a card, Back returns to Routines.
+  `findings.json` holds the list per routine id. Proving that a repeat is left out needs two real runs.
 - **Guest.** The guest's Routines page reads "No routines yet." and the routine's conversation is not in their sidebar.
 
 ## Gotchas
