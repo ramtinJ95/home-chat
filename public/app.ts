@@ -1415,7 +1415,7 @@ function renderRoutineBar(routine: RoutineSummary | null) {
 }
 
 // Findings: one routine's list of what it shared, by run, newest first. The search runs on the server as the person
-// types; `findingsRun` drops an answer that newer typing has replaced.
+// types; `findingsRun` drops an answer that newer typing, or another opening, has replaced.
 let findingsOf: RoutineSummary | undefined;
 let findingsRun = 0;
 let findingsTimer: number | undefined;
@@ -1431,15 +1431,19 @@ function findingsButton(routine: RoutineSummary, parent?: HTMLElement): HTMLButt
 async function openFindings(routine: RoutineSummary, parent?: HTMLElement) {
   clearTimeout(findingsTimer);
   ui.findingsSearch.value = '';
-  await loadFindings(routine.id, '');
+  // Only if the person is still where they asked from once the list arrives.
+  const from = sheet?.node;
+  if (!await loadFindings(routine.id, '') || sheet?.node !== from) return;
   ui.findingsClose.setAttribute('aria-label', parent === ui.routinesPage ? 'Back to Routines' : 'Back to the conversation');
   showSheet(ui.findingsPage, parent);
 }
 
-async function loadFindings(id: string, query: string) {
-  const run = ++findingsRun;
+// True if it drew the answer.
+async function loadFindings(id: string, query: string, run = ++findingsRun): Promise<boolean> {
   const view = await api<FindingsView>(`${routinePath(id)}/findings?q=${encodeURIComponent(query)}`);
-  if (run === findingsRun) renderFindings(view, query);
+  if (run !== findingsRun) return false;
+  renderFindings(view, query);
+  return true;
 }
 
 function renderFindings({routine, total, runs}: FindingsView, query: string) {
@@ -1482,8 +1486,10 @@ async function openDigest(id: string, message: number) {
 
 ui.findingsSearch.oninput = () => {
   clearTimeout(findingsTimer);
+  // An answer still on its way is for words no longer in the box.
+  const run = ++findingsRun;
   const id = findingsOf?.id;
-  if (id) findingsTimer = window.setTimeout(() => loadFindings(id, ui.findingsSearch.value.trim()).catch(showError), 200);
+  if (id) findingsTimer = window.setTimeout(() => loadFindings(id, ui.findingsSearch.value.trim(), run).catch(showError), 200);
 };
 ui.findingsSearch.onkeydown = event => {
   if (event.key === 'Escape' && ui.findingsSearch.value) { event.stopPropagation(); ui.findingsSearch.value = ''; ui.findingsSearch.dispatchEvent(new Event('input')); }
